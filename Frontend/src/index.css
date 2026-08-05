@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+/*
+ * AOS is looked at all day, by people who are on the phone while they use it.
+ * Dense, quiet, high-contrast where it matters. Colour carries meaning and is
+ * never decorative — a stage badge is coloured because the stage means
+ * something, and nothing else competes with it.
+ */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-ink-900: oklch(0.21 0.02 260);
+  --color-ink-700: oklch(0.38 0.015 260);
+  --color-ink-500: oklch(0.55 0.012 260);
+  --color-ink-300: oklch(0.78 0.008 260);
+  --color-ink-100: oklch(0.94 0.004 260);
+  --color-ink-50: oklch(0.975 0.003 260);
+
+  --color-brand-600: oklch(0.52 0.16 258);
+  --color-brand-500: oklch(0.6 0.16 258);
+  --color-brand-100: oklch(0.94 0.03 258);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-50 text-ink-900 antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Tabular numerals everywhere a figure is compared to another figure. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}

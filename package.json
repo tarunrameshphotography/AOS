@@ -1,0 +1,35 @@
+{
+  "name": "aos",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Amaze Operating System — internal operating system for Amaze Loans Pvt Ltd",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "seed:permissions": "vitest run src/domain/permissions/seed.test.ts -u",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
+  }
+}

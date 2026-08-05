@@ -11,14 +11,14 @@
  * customer is the moment the system visibly beats memory.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { createCase } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import { casesForPerson, primaryPhone, verifiedDocumentsFor, when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Field, Input, Select, cx, useToast } from "../ui/index.js";
+import { Button, Card, Field, Input, Select, cx, useToast } from "../ui/index.js";
+import { PersonSearchField } from "../ui/pickers.js";
 
 export function NewCase(): ReactNode {
   const db = useDatabase();
@@ -42,46 +42,6 @@ export function NewCase(): ReactNode {
       </Card>
     );
   }
-
-  /**
-   * Candidates, tiered by strength.
-   *
-   * A phone match on its own is Probable, never Definite — that is the family
-   * phone and the recycled-number case, and assuming identity there is how one
-   * person's history ends up attached to another's (ADR-013).
-   */
-  const candidates = useMemo(() => {
-    const digits = phone.replace(/\D/g, "");
-    const needle = name.trim().toLowerCase();
-    if (digits.length < 4 && needle.length < 3) return [];
-
-    return db.people
-      .map((person) => {
-        const phoneHit =
-          digits.length >= 4 &&
-          person.identifiers.some(
-            (identifier) =>
-              identifier.type === "phone" &&
-              identifier.value.replace(/\D/g, "").includes(digits),
-          );
-        const nameHit =
-          needle.length >= 3 &&
-          [person.fullName, ...person.aliases].some((value) =>
-            value.toLowerCase().includes(needle),
-          );
-
-        if (!phoneHit && !nameHit) return null;
-
-        const tier: "definite" | "probable" | "possible" =
-          phoneHit && nameHit ? "definite" : phoneHit ? "probable" : "possible";
-
-        return { person, tier };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-      .slice(0, 4);
-  }, [db.people, name, phone]);
-
-  const chosen = db.people.find((p) => p.id === chosenPersonId);
 
   const submit = (): void => {
     const caseId = createCase(
@@ -110,76 +70,16 @@ export function NewCase(): ReactNode {
       </div>
 
       <Card title="Who is applying">
-        <div className="space-y-3">
-          {chosen ? (
-            <div className="flex items-start gap-3 rounded-md bg-brand-100 p-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{chosen.fullName}</p>
-                <p className="text-xs text-ink-700">
-                  {casesForPerson(db, chosen.id).length} previous case
-                  {casesForPerson(db, chosen.id).length === 1 ? "" : "s"} ·{" "}
-                  {verifiedDocumentsFor(db, chosen.id)} verified documents on file
-                </p>
-                <p className="mt-1 text-xs text-ink-500">
-                  Their KYC carries over. This case will open with those requirements already
-                  satisfied.
-                </p>
-              </div>
-              <Button onClick={() => setChosenPersonId(null)}>Change</Button>
-            </div>
-          ) : (
-            <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Name">
-                  <Input
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="However they said it"
-                  />
-                </Field>
-                <Field label="Phone">
-                  <Input
-                    value={phone}
-                    onChange={(event) => setPhone(event.target.value)}
-                    placeholder="98431 20045"
-                  />
-                </Field>
-              </div>
-
-              {candidates.length > 0 && (
-                <div className="rounded-md ring-1 ring-amber-200">
-                  <p className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    AOS may already know them. A missed duplicate is a permanent data wound; a false
-                    warning costs two seconds.
-                  </p>
-                  <ul className="divide-y divide-ink-100">
-                    {candidates.map(({ person, tier }) => (
-                      <li key={person.id} className="flex items-center gap-3 px-3 py-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium">{person.fullName}</p>
-                          <p className="text-xs text-ink-500">
-                            {primaryPhone(person)} · {casesForPerson(db, person.id).length} cases
-                            {person.aliases.length > 0 && ` · also "${person.aliases[0]}"`}
-                          </p>
-                        </div>
-                        <Badge
-                          tone={tier === "definite" ? "good" : tier === "probable" ? "warn" : "neutral"}
-                        >
-                          {tier}
-                        </Badge>
-                        <Button onClick={() => setChosenPersonId(person.id)}>This one</Button>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="border-t border-ink-100 px-3 py-2 text-xs text-ink-500">
-                    None of these? Carry on typing — creating a different person is always
-                    available, and the assertion is recorded.
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+        <PersonSearchField
+          db={db}
+          name={name}
+          phone={phone}
+          chosenPersonId={chosenPersonId}
+          onNameChange={setName}
+          onPhoneChange={setPhone}
+          onChoose={setChosenPersonId}
+          chosenHint="Their KYC carries over. This case will open with those requirements already satisfied."
+        />
       </Card>
 
       <Card title="What they want">

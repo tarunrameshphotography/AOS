@@ -100,19 +100,22 @@ export function buildSeed(): Database {
   ];
 
   const organisations: Database["organisations"] = [
-    { id: id("org", 1), canonicalName: "HDFC Bank", roles: ["lender"], city: "Mumbai" },
-    { id: id("org", 2), canonicalName: "HDFC Bank — Madurai Main", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 1) },
-    { id: id("org", 3), canonicalName: "IIFL Home Finance Ltd", roles: ["lender"], city: "Mumbai" },
-    { id: id("org", 4), canonicalName: "IIFL — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 3) },
-    { id: id("org", 5), canonicalName: "LIC Housing Finance", roles: ["lender"], city: "Mumbai" },
-    { id: id("org", 6), canonicalName: "LIC HFL — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 5) },
-    { id: id("org", 7), canonicalName: "Sundaram Finance", roles: ["lender"], city: "Chennai" },
-    { id: id("org", 8), canonicalName: "Sundaram — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 7) },
+    { id: id("org", 1), canonicalName: "HDFC Bank", roles: ["lender"], city: "Mumbai", aliases: [] },
+    { id: id("org", 2), canonicalName: "HDFC Bank — Madurai Main", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 1), aliases: [] },
+    // The alias ADR-009 and Identity Resolution Part 4 use as the running
+    // example — "IIFL" / "IIFL Home Finance Ltd" / "India Infoline" is one
+    // organisation, and search should find it through any of the three.
+    { id: id("org", 3), canonicalName: "IIFL Home Finance Ltd", roles: ["lender"], city: "Mumbai", aliases: ["IIFL", "India Infoline"] },
+    { id: id("org", 4), canonicalName: "IIFL — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 3), aliases: [] },
+    { id: id("org", 5), canonicalName: "LIC Housing Finance", roles: ["lender"], city: "Mumbai", aliases: ["LIC HFL"] },
+    { id: id("org", 6), canonicalName: "LIC HFL — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 5), aliases: [] },
+    { id: id("org", 7), canonicalName: "Sundaram Finance", roles: ["lender"], city: "Chennai", aliases: [] },
+    { id: id("org", 8), canonicalName: "Sundaram — Madurai", roles: ["branch"], city: "Madurai", parentOrganisationId: id("org", 7), aliases: [] },
     // Employers and a borrowing firm — same table, different flags (ADR-014).
-    { id: id("org", 20), canonicalName: "ABC Textiles Pvt Ltd", roles: ["employer"], industry: "Textiles", city: "Madurai" },
-    { id: id("org", 21), canonicalName: "Meenakshi Mission Hospital", roles: ["employer"], industry: "Healthcare", city: "Madurai" },
-    { id: id("org", 22), canonicalName: "Sri Lakshmi Traders", roles: ["employer", "borrower"], industry: "Wholesale", city: "Madurai" },
-    { id: id("org", 23), canonicalName: "Vaigai Constructions", roles: ["builder", "developer"], industry: "Construction", city: "Madurai" },
+    { id: id("org", 20), canonicalName: "ABC Textiles Pvt Ltd", roles: ["employer"], industry: "Textiles", city: "Madurai", aliases: ["ABC Textiles"] },
+    { id: id("org", 21), canonicalName: "Meenakshi Mission Hospital", roles: ["employer"], industry: "Healthcare", city: "Madurai", aliases: [] },
+    { id: id("org", 22), canonicalName: "Sri Lakshmi Traders", roles: ["employer", "borrower"], industry: "Wholesale", city: "Madurai", aliases: [] },
+    { id: id("org", 23), canonicalName: "Vaigai Constructions", roles: ["builder", "developer"], industry: "Construction", city: "Madurai", aliases: [] },
   ];
 
   const employments: Database["employments"] = [

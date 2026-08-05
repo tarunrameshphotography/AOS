@@ -443,22 +443,85 @@ function regenerate(caseId: Id, cause: string): void {
   }
 }
 
+export interface AddPartySubject {
+  personId?: Id;
+  organisationId?: Id;
+  /** Search found nothing: create the person inline, same as at case creation. */
+  newPersonName?: string;
+  newPersonPhone?: string;
+  /** Search found nothing: create the organisation inline (ADR-009 — typing a
+   * name is the entire creation experience, there is no separate "new
+   * organisation" form). */
+  newOrganisationName?: string;
+}
+
 export function addParty(
   caseId: Id,
   role: CasePartyRole,
-  subject: { personId?: Id; organisationId?: Id },
+  subject: AddPartySubject,
   actorUserId: Id,
 ): ActionResult {
-  const person = db.people.find((p) => p.id === subject.personId);
-  const organisation = db.organisations.find((o) => o.id === subject.organisationId);
+  let personId = subject.personId;
+  let organisationId = subject.organisationId;
+
+  if (!personId && !organisationId && subject.newPersonName?.trim()) {
+    personId = nextId();
+    db.people = [
+      ...db.people,
+      {
+        id: personId,
+        fullName: subject.newPersonName.trim(),
+        aliases: [],
+        identifiers: subject.newPersonPhone?.trim()
+          ? [
+              {
+                id: nextId(),
+                type: "phone",
+                value: subject.newPersonPhone.trim(),
+                isPrimary: true,
+                verificationSource: "self_declared",
+              },
+            ]
+          : [],
+      },
+    ];
+    record({
+      actorUserId,
+      entityType: "person",
+      entityId: personId,
+      eventType: "person.created",
+      summary: `Person created: ${subject.newPersonName.trim()}`,
+    });
+  } else if (!personId && !organisationId && subject.newOrganisationName?.trim()) {
+    organisationId = nextId();
+    db.organisations = [
+      ...db.organisations,
+      {
+        id: organisationId,
+        canonicalName: subject.newOrganisationName.trim(),
+        roles: ["borrower"],
+        aliases: [],
+      },
+    ];
+    record({
+      actorUserId,
+      entityType: "organisation",
+      entityId: organisationId,
+      eventType: "organisation.created",
+      summary: `Organisation created: ${subject.newOrganisationName.trim()}`,
+    });
+  }
+
+  const person = db.people.find((p) => p.id === personId);
+  const organisation = db.organisations.find((o) => o.id === organisationId);
 
   db.caseParties = [
     ...db.caseParties,
     {
       id: nextId(),
       caseId,
-      ...(subject.personId ? { personId: subject.personId } : {}),
-      ...(subject.organisationId ? { organisationId: subject.organisationId } : {}),
+      ...(personId ? { personId } : {}),
+      ...(organisationId ? { organisationId } : {}),
       role,
       isPrimary: false,
     },

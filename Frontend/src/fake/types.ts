@@ -44,6 +44,7 @@ export interface Organisation {
   industry?: string;
   city?: string;
   parentOrganisationId?: Id;
+  aliases: string[];
 }
 
 export interface Employment {

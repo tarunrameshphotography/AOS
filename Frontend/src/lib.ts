@@ -1,6 +1,6 @@
 /** Lookups and formatting shared across screens. */
 
-import type { Database, Id, LoanCase, Person } from "./fake/types.js";
+import type { Database, Id, LoanCase, Organisation, Person } from "./fake/types.js";
 
 export function money(amount?: number): string {
   if (amount === undefined) return "—";
@@ -237,4 +237,86 @@ export function search(db: Database, query: string): SearchHit[] {
   }
 
   return hits;
+}
+
+// ---------------------------------------------------------------------------
+// Search-first candidates for person and organisation pickers
+//
+// The workflow every person- or organisation-attaching screen must follow
+// (Product Principle #3, Identity Resolution Parts 2 and 4): type, search
+// existing records, rank likely matches, create immediately if nothing
+// matches. A dropdown listing every person or every organisation on file is
+// the exact failure this exists to remove.
+// ---------------------------------------------------------------------------
+
+export interface PersonCandidate {
+  person: Person;
+  tier: "definite" | "probable" | "possible";
+}
+
+/**
+ * A phone match alone is never Definite — that is the family-phone and
+ * recycled-number case, and assuming identity there is how one person's
+ * history ends up attached to another's (ADR-013).
+ */
+export function personCandidates(db: Database, name: string, phone: string): PersonCandidate[] {
+  const digits = phone.replace(/\D/g, "");
+  const needle = name.trim().toLowerCase();
+  if (digits.length < 4 && needle.length < 3) return [];
+
+  return db.people
+    .map((person) => {
+      const phoneHit =
+        digits.length >= 4 &&
+        person.identifiers.some(
+          (identifier) =>
+            identifier.type === "phone" && identifier.value.replace(/\D/g, "").includes(digits),
+        );
+      const nameHit =
+        needle.length >= 3 &&
+        [person.fullName, ...person.aliases].some((value) => value.toLowerCase().includes(needle));
+
+      if (!phoneHit && !nameHit) return null;
+      const tier: PersonCandidate["tier"] =
+        phoneHit && nameHit ? "definite" : phoneHit ? "probable" : "possible";
+      return { person, tier };
+    })
+    .filter((entry): entry is PersonCandidate => entry !== null)
+    .slice(0, 4);
+}
+
+/** Legal suffixes stripped before comparison, so "ABC Textiles" and "ABC
+ * Textiles Pvt Ltd" collide as intended (Identity Resolution Part 4). */
+const ORG_SUFFIXES = /\b(private limited|pvt\.?\s*ltd\.?|ltd\.?|limited|&\s*co\.?|and co\.?|enterprises|traders)\b/gi;
+
+export function normaliseOrgName(value: string): string {
+  return value.toLowerCase().replace(ORG_SUFFIXES, "").replace(/[^a-z0-9]/g, "").trim();
+}
+
+export interface OrganisationCandidate {
+  organisation: Organisation;
+  tier: "definite" | "possible";
+}
+
+/**
+ * Near-matches surface as suggestions; they are never auto-merged. "Sri
+ * Lakshmi Traders" and "Sri Lakshmi Textiles" are plausibly different
+ * businesses, and only a human knows (Identity Resolution Part 4).
+ */
+export function organisationCandidates(db: Database, name: string): OrganisationCandidate[] {
+  const needle = normaliseOrgName(name);
+  if (needle.length < 3) return [];
+
+  return db.organisations
+    .map((organisation) => {
+      const hit =
+        normaliseOrgName(organisation.canonicalName).includes(needle) ||
+        organisation.aliases.some((alias) => normaliseOrgName(alias).includes(needle));
+      if (!hit) return null;
+      const tier: OrganisationCandidate["tier"] =
+        normaliseOrgName(organisation.canonicalName) === needle ? "definite" : "possible";
+      return { organisation, tier };
+    })
+    .filter((entry): entry is OrganisationCandidate => entry !== null)
+    .slice(0, 4);
 }

@@ -38,7 +38,7 @@ import {
   waiveRequirement,
 } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { CasePartyRole, SubmissionStatus } from "../fake/types.js";
+import type { CasePartyRole, Id, SubmissionStatus } from "../fake/types.js";
 import {
   bytes,
   exactly,
@@ -70,6 +70,7 @@ import {
   cx,
   useToast,
 } from "../ui/index.js";
+import { OrganisationSearchField, PersonSearchField } from "../ui/pickers.js";
 
 type Tab = "overview" | "documents" | "banks" | "timeline";
 
@@ -623,15 +624,33 @@ function AddPartyDialog({
   const session = useSession();
   const toast = useToast();
   const [role, setRole] = useState<CasePartyRole>("co_applicant");
-  const [subjectId, setSubjectId] = useState("");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [chosenPersonId, setChosenPersonId] = useState<Id | null>(null);
+  const [chosenOrganisationId, setChosenOrganisationId] = useState<Id | null>(null);
 
   const isFirm = role === "borrower_firm";
-  const options = isFirm
-    ? db.organisations.filter((o) => o.roles.includes("borrower") || o.roles.includes("employer"))
-    : db.people;
+
+  const reset = (): void => {
+    setName("");
+    setPhone("");
+    setChosenPersonId(null);
+    setChosenOrganisationId(null);
+  };
+
+  const ready = isFirm
+    ? chosenOrganisationId !== null || name.trim().length > 1
+    : chosenPersonId !== null || name.trim().length > 1;
 
   return (
-    <Modal open={open} title="Add someone to this case" onClose={onClose}>
+    <Modal
+      open={open}
+      title="Add someone to this case"
+      onClose={() => {
+        reset();
+        onClose();
+      }}
+    >
       <div className="space-y-3">
         <p className="text-sm text-ink-700">
           Adding a co-applicant generates their requirements immediately, and progress will move
@@ -643,7 +662,7 @@ function AddPartyDialog({
             value={role}
             onChange={(event) => {
               setRole(event.target.value as CasePartyRole);
-              setSubjectId("");
+              reset();
             }}
           >
             <option value="co_applicant">Co-applicant</option>
@@ -652,36 +671,54 @@ function AddPartyDialog({
             <option value="borrower_firm">Borrowing firm</option>
           </Select>
         </Field>
-        <Field
-          label={isFirm ? "Firm" : "Person"}
-          hint={
-            isFirm
-              ? "A borrowing firm is an organisation. The other roles are people — the schema will not let you mix them up."
-              : undefined
-          }
-        >
-          <Select value={subjectId} onChange={(event) => setSubjectId(event.target.value)}>
-            <option value="">Choose…</option>
-            {options.map((option) => (
-              <option key={option.id} value={option.id}>
-                {"fullName" in option ? option.fullName : option.canonicalName}
-              </option>
-            ))}
-          </Select>
-        </Field>
+
+        {isFirm ? (
+          <OrganisationSearchField
+            db={db}
+            name={name}
+            chosenOrganisationId={chosenOrganisationId}
+            onNameChange={setName}
+            onChoose={setChosenOrganisationId}
+          />
+        ) : (
+          <PersonSearchField
+            db={db}
+            name={name}
+            phone={phone}
+            chosenPersonId={chosenPersonId}
+            onNameChange={setName}
+            onPhoneChange={setPhone}
+            onChoose={setChosenPersonId}
+          />
+        )}
+
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={() => {
+              reset();
+              onClose();
+            }}
+          >
+            Cancel
+          </Button>
           <Button
             variant="primary"
-            disabled={!subjectId}
+            disabled={!ready}
             onClick={() => {
               addParty(
                 caseId,
                 role,
-                isFirm ? { organisationId: subjectId } : { personId: subjectId },
+                isFirm
+                  ? chosenOrganisationId
+                    ? { organisationId: chosenOrganisationId }
+                    : { newOrganisationName: name.trim() }
+                  : chosenPersonId
+                    ? { personId: chosenPersonId }
+                    : { newPersonName: name.trim(), newPersonPhone: phone.trim() },
                 session.user.id,
               );
               toast.show("Added. Requirements regenerated.");
+              reset();
               onClose();
             }}
           >

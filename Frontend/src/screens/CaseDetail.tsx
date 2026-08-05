@@ -21,15 +21,18 @@ import {
   type LostReason,
 } from "@domain/case/stages.js";
 import { evaluateTransition } from "@domain/case/transitions.js";
+import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
 
 import {
   acceptOffer,
+  addFinancialYearRequirement,
   addNote,
   addParty,
   createSubmission,
   logCommunication,
   moveStage,
   progressFor,
+  selectableFinancialYears,
   setHold,
   snapshotOf,
   updateSubmissionStatus,
@@ -39,6 +42,8 @@ import {
 } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import type { CasePartyRole, Id, SubmissionStatus } from "../fake/types.js";
+import type { FyGroup } from "./document-financial-years.js";
+import { financialYearGroups } from "./document-financial-years.js";
 import {
   bytes,
   exactly,
@@ -821,6 +826,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [waiveFor, setWaiveFor] = useState<string | null>(null);
   const [waiveReason, setWaiveReason] = useState("");
+  const [addingYearFor, setAddingYearFor] = useState<FyGroup | null>(null);
 
   if (!session.can("document.read", "own")) {
     return (
@@ -859,6 +865,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
 
   const outstanding = due.filter((r) => r.status === "pending" || r.status === "received");
   const settled = due.filter((r) => ["verified", "waived", "not_applicable"].includes(r.status));
+  const fyGroups = financialYearGroups(db, requirements);
 
   const onFileChosen = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0];
@@ -896,7 +903,10 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     return (
       <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5 first:pt-0 last:pb-0">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{type?.name}</p>
+          <p className="text-sm font-medium">
+            {type?.name}
+            {requirement.periodStart && ` · FY ${financialYearOf(new Date(requirement.periodStart)).label}`}
+          </p>
           <p className="text-xs text-ink-500">
             {subject}
             {document && ` · ${document.fileName} · ${bytes(document.fileSizeBytes)}`}
@@ -968,6 +978,45 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         )}
       </Card>
 
+      {fyGroups.length > 0 && (
+        <Card
+          title="Financial years"
+          subtitle="GST returns, ITR, balance sheet, profit and loss and bank statements are tracked and verified per year — one filing never stands in for another year's"
+        >
+          <ul className="divide-y divide-ink-100">
+            {fyGroups.map((group) => (
+              <li key={group.key} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5 first:pt-0 last:pb-0">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{group.documentTypeName}</p>
+                  <p className="text-xs text-ink-500">{group.subjectLabel}</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {group.years.map(({ requirement, label }) => (
+                    <Badge
+                      key={requirement.id}
+                      tone={
+                        requirement.status === "verified"
+                          ? "good"
+                          : requirement.status === "received"
+                            ? "info"
+                            : requirement.status === "waived"
+                              ? "warn"
+                              : "neutral"
+                      }
+                    >
+                      FY {label}
+                    </Badge>
+                  ))}
+                </div>
+                {session.can("document.upload", "own") && (
+                  <Button onClick={() => setAddingYearFor(group)}>+ Another year</Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       {upcoming.length > 0 && (
         <Card
           title="Not due yet"
@@ -1027,7 +1076,97 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
           </div>
         </div>
       </Modal>
+
+      <AddFinancialYearDialog
+        caseId={caseId}
+        group={addingYearFor}
+        onClose={() => setAddingYearFor(null)}
+      />
     </div>
+  );
+}
+
+function AddFinancialYearDialog({
+  caseId,
+  group,
+  onClose,
+}: {
+  caseId: string;
+  group: FyGroup | null;
+  onClose: () => void;
+}): ReactNode {
+  const session = useSession();
+  const toast = useToast();
+  const [selected, setSelected] = useState("");
+
+  const options = group
+    ? selectableFinancialYears(caseId, group.documentTypeId, {
+        ...(group.casePartyId ? { casePartyId: group.casePartyId } : {}),
+        ...(group.casePropertyId ? { casePropertyId: group.casePropertyId } : {}),
+      })
+    : [];
+
+  const close = (): void => {
+    setSelected("");
+    onClose();
+  };
+
+  return (
+    <Modal
+      open={group !== null}
+      title={group ? `Request another year — ${group.documentTypeName}` : "Request another year"}
+      onClose={close}
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          The default window covers the common case. If a bank has asked for one more year than
+          usual, add it here — it becomes its own row, uploaded and verified independently of the
+          others.
+        </p>
+        {options.length === 0 ? (
+          <p className="text-sm text-ink-500">
+            Nothing further back is available to request for this document type.
+          </p>
+        ) : (
+          <Field label="Financial year">
+            <Select value={selected} onChange={(event) => setSelected(event.target.value)}>
+              <option value="">Choose…</option>
+              {options.map((fy) => (
+                <option key={fy.startDate} value={fy.startDate}>
+                  FY {fy.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button onClick={close}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!selected || !group}
+            onClick={() => {
+              if (!group) return;
+              const financialYear = options.find((option) => option.startDate === selected);
+              if (!financialYear) return;
+              const result = addFinancialYearRequirement(
+                caseId,
+                group.documentTypeId,
+                {
+                  ...(group.casePartyId ? { casePartyId: group.casePartyId } : {}),
+                  ...(group.casePropertyId ? { casePropertyId: group.casePropertyId } : {}),
+                },
+                financialYear,
+                session.user.id,
+              );
+              toast.show(result.ok ? "Added" : (result.message ?? ""), result.ok ? "good" : "bad");
+              if (result.ok) close();
+            }}
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

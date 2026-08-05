@@ -162,7 +162,13 @@ export function buildSeed(): Database {
     { id: id("dty", 7), code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true },
     { id: id("dty", 8), code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true },
     { id: id("dty", 9), code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false },
+    // financial_statements is retained (not deleted, per BR-027's pattern) but
+    // no longer generated — superseded by the two split-out, financial-year-
+    // scoped types below (Database/migrations/0011).
     { id: id("dty", 10), code: "financial_statements", name: "Financial Statements", ownerKind: "organisation", requiresPeriod: true },
+    { id: id("dty", 17), code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true },
+    { id: id("dty", 18), code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true },
+    { id: id("dty", 19), code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true },
     { id: id("dty", 11), code: "sale_deed", name: "Sale Deed", ownerKind: "property", requiresPeriod: false },
     { id: id("dty", 12), code: "encumbrance_cert", name: "Encumbrance Certificate", ownerKind: "property", requiresPeriod: true },
     { id: id("dty", 13), code: "approved_plan", name: "Approved Building Plan", ownerKind: "property", requiresPeriod: false },

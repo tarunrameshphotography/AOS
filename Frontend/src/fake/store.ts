@@ -25,6 +25,7 @@ import {
   evaluateTransition,
 } from "@domain/case/transitions.js";
 import { type Requirement, summariseProgress } from "@domain/requirements/progress.js";
+import { recentFinancialYears } from "@domain/requirements/financial-year.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import { buildSeed } from "./seed.js";
@@ -639,6 +640,11 @@ export function uploadDocument(
       ...(party?.organisationId ? { organisationId: party.organisationId } : {}),
       ...(caseProperty ? { propertyId: caseProperty.propertyId } : {}),
       ...(!party && !caseProperty ? { caseId: requirement.caseId } : {}),
+      // A financial-year-scoped requirement (e.g. "ITR — FY2024-25") already
+      // pins the year — the row uploaded against is the year selector, so the
+      // document inherits it rather than asking again.
+      ...(requirement.periodStart ? { periodStart: requirement.periodStart } : {}),
+      ...(requirement.periodEnd ? { periodEnd: requirement.periodEnd } : {}),
       fileName: file.name,
       fileSizeBytes: file.size,
       uploadedAt: new Date().toISOString(),
@@ -732,6 +738,96 @@ export function waiveRequirement(
   });
 
   reconcileReadiness(requirement.caseId, "Requirement waived");
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Financial years selectable for a given group of requirement rows (same
+ * document type and subject): the trailing window plus a few years further
+ * back, minus whichever years already have a live row. This is the explicit
+ * "request another year" control — a case's default requirement set covers
+ * the common case, and a bank asking for one more year than usual is a real,
+ * if less common, situation (Requirements and Progress Part 1: optional
+ * participants and requirements are added by an explicit action, never a
+ * form field sitting empty).
+ */
+export function selectableFinancialYears(
+  caseId: Id,
+  documentTypeId: Id,
+  subject: { casePartyId?: Id; casePropertyId?: Id },
+): Array<{ startDate: string; endDate: string; label: string }> {
+  const taken = new Set(
+    db.requirements
+      .filter(
+        (r) =>
+          r.caseId === caseId &&
+          r.documentTypeId === documentTypeId &&
+          r.requiredOfCasePartyId === subject.casePartyId &&
+          r.requiredOfCasePropertyId === subject.casePropertyId &&
+          r.status !== "not_applicable" &&
+          r.periodStart,
+      )
+      .map((r) => r.periodStart),
+  );
+  return recentFinancialYears(6).filter((fy) => !taken.has(fy.startDate));
+}
+
+export function addFinancialYearRequirement(
+  caseId: Id,
+  documentTypeId: Id,
+  subject: { casePartyId?: Id; casePropertyId?: Id },
+  financialYear: { startDate: string; endDate: string },
+  actorUserId: Id,
+): ActionResult {
+  const alreadyRequested = db.requirements.some(
+    (r) =>
+      r.caseId === caseId &&
+      r.documentTypeId === documentTypeId &&
+      r.requiredOfCasePartyId === subject.casePartyId &&
+      r.requiredOfCasePropertyId === subject.casePropertyId &&
+      r.status !== "not_applicable" &&
+      r.periodStart === financialYear.startDate,
+  );
+  if (alreadyRequested) {
+    return { ok: false, message: "That financial year has already been requested." };
+  }
+
+  const documentType = db.documentTypes.find((t) => t.id === documentTypeId);
+  const sibling = db.requirements.find(
+    (r) =>
+      r.caseId === caseId &&
+      r.documentTypeId === documentTypeId &&
+      r.requiredOfCasePartyId === subject.casePartyId &&
+      r.requiredOfCasePropertyId === subject.casePropertyId,
+  );
+
+  const requirementId = nextId();
+  db.requirements = [
+    ...db.requirements,
+    {
+      id: requirementId,
+      caseId,
+      documentTypeId,
+      ...(subject.casePartyId ? { requiredOfCasePartyId: subject.casePartyId } : {}),
+      ...(subject.casePropertyId ? { requiredOfCasePropertyId: subject.casePropertyId } : {}),
+      status: "pending" as const,
+      applicableFromStage: sibling?.applicableFromStage ?? "documents_pending",
+      periodStart: financialYear.startDate,
+      periodEnd: financialYear.endDate,
+    },
+  ];
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "document_requirement",
+    entityId: requirementId,
+    eventType: "requirement.year_requested",
+    summary: `${documentType?.name ?? "Requirement"} requested for an additional financial year`,
+  });
+
+  reconcileReadiness(caseId, "Additional financial year requested");
   commit();
   return { ok: true };
 }

@@ -11,12 +11,22 @@
  *    is silence (Principle #1, ADR-010).
  *  - Regeneration keeps what was already satisfied and marks what no longer
  *    applies `not_applicable` rather than deleting it (BR-034).
+ *  - A financial-year-scoped document type (GST returns, ITR, balance sheet,
+ *    profit and loss, bank statements) generates one row per required year,
+ *    not one row that any year's document can satisfy — see
+ *    src/domain/requirements/financial-year.ts.
  *
  * If this file's output is wrong the progress bar lies, so it is the one piece
  * of fake backend worth being careful about.
  */
 
 import type { ProgressionStage } from "@domain/case/stages.js";
+import {
+  FINANCIAL_YEAR_DOCUMENT_TYPES,
+  financialYearOf,
+  recentFinancialYears,
+  type FinancialYear,
+} from "@domain/requirements/financial-year.js";
 
 import type {
   CaseParty,
@@ -68,9 +78,16 @@ const CONSTRUCTION_EXTRA: Template[] = [
   { documentTypeCode: "approved_plan", applicableFromStage: "documents_pending" },
 ];
 
+/**
+ * gst_returns, balance_sheet and profit_and_loss are financial-year-scoped
+ * (Database/migrations/0011): gst_certificate is not — it is a one-time
+ * registration document, not a periodic filing.
+ */
 const FIRM_DOCUMENTS: Template[] = [
   { documentTypeCode: "gst_certificate", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "financial_statements", applicableFromStage: "documents_pending" },
+  { documentTypeCode: "gst_returns", applicableFromStage: "documents_pending" },
+  { documentTypeCode: "balance_sheet", applicableFromStage: "documents_pending" },
+  { documentTypeCode: "profit_and_loss", applicableFromStage: "documents_pending" },
 ];
 
 const CASE_DOCUMENTS: Template[] = [
@@ -92,6 +109,80 @@ interface GeneratedRow {
   applicableFromStage: ProgressionStage;
   casePartyId?: Id;
   casePropertyId?: Id;
+  periodStart?: string;
+  periodEnd?: string;
+}
+
+/**
+ * Financial years to generate a row for: the default trailing window, plus
+ * any year that already has a live (non-`not_applicable`) row for this exact
+ * document type and subject.
+ *
+ * That union is what stops two things from happening on every regenerate:
+ * a verified three-year-old ITR silently becoming `not_applicable` just
+ * because the default window rolled forward, and a year a user explicitly
+ * requested beyond the default (`addFinancialYearRequirement` in
+ * fake/store.ts) being discarded the next time anything else on the case
+ * triggers regeneration.
+ */
+function financialYearsFor(
+  db: Database,
+  loanCase: LoanCase,
+  documentTypeId: Id,
+  subject: { casePartyId?: Id; casePropertyId?: Id },
+  trailingYears: number,
+): FinancialYear[] {
+  const byLabel = new Map<string, FinancialYear>();
+  for (const fy of recentFinancialYears(trailingYears)) {
+    byLabel.set(fy.label, fy);
+  }
+
+  for (const requirement of db.requirements) {
+    if (
+      requirement.caseId !== loanCase.id ||
+      requirement.documentTypeId !== documentTypeId ||
+      requirement.status === "not_applicable" ||
+      requirement.requiredOfCasePartyId !== subject.casePartyId ||
+      requirement.requiredOfCasePropertyId !== subject.casePropertyId ||
+      !requirement.periodStart
+    ) {
+      continue;
+    }
+    const fy = financialYearOf(new Date(requirement.periodStart));
+    byLabel.set(fy.label, fy);
+  }
+
+  return [...byLabel.values()].sort((a, b) => b.startDate.localeCompare(a.startDate));
+}
+
+/**
+ * Expand one template into one or more generated rows. Most document types
+ * are not financial-year-scoped and expand to exactly one row, unchanged
+ * from before this feature existed.
+ */
+function expandTemplate(
+  db: Database,
+  loanCase: LoanCase,
+  template: Template,
+  subject: { casePartyId?: Id; casePropertyId?: Id },
+): GeneratedRow[] {
+  const trailingYears = FINANCIAL_YEAR_DOCUMENT_TYPES[template.documentTypeCode];
+  if (trailingYears === undefined) {
+    return [{ ...template, ...subject }];
+  }
+
+  const documentType = db.documentTypes.find((t) => t.code === template.documentTypeCode);
+  if (!documentType) {
+    return [{ ...template, ...subject }];
+  }
+
+  const years = financialYearsFor(db, loanCase, documentType.id, subject, trailingYears);
+  return years.map((fy) => ({
+    ...template,
+    ...subject,
+    periodStart: fy.startDate,
+    periodEnd: fy.endDate,
+  }));
 }
 
 /** What this case genuinely requires, given what it actually contains. */
@@ -111,13 +202,13 @@ function planFor(db: Database, loanCase: LoanCase): GeneratedRow[] {
 
     if (party.role === "borrower_firm") {
       for (const template of FIRM_DOCUMENTS) {
-        rows.push({ ...template, casePartyId: party.id });
+        rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
       }
       continue;
     }
 
     for (const template of KYC) {
-      rows.push({ ...template, casePartyId: party.id });
+      rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
     }
 
     if (INCOME_ROLES.has(party.role)) {
@@ -127,7 +218,7 @@ function planFor(db: Database, loanCase: LoanCase): GeneratedRow[] {
       const income =
         employment?.employmentType === "salaried" ? SALARIED_INCOME : SELF_EMPLOYED_INCOME;
       for (const template of income) {
-        rows.push({ ...template, casePartyId: party.id });
+        rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
       }
     }
   }
@@ -135,18 +226,18 @@ function planFor(db: Database, loanCase: LoanCase): GeneratedRow[] {
   if (product && SECURED_PRODUCTS.has(product.code)) {
     for (const caseProperty of caseProperties) {
       for (const template of PROPERTY_DOCUMENTS) {
-        rows.push({ ...template, casePropertyId: caseProperty.id });
+        rows.push(...expandTemplate(db, loanCase, template, { casePropertyId: caseProperty.id }));
       }
       if (product.code === "hl_self_construct") {
         for (const template of CONSTRUCTION_EXTRA) {
-          rows.push({ ...template, casePropertyId: caseProperty.id });
+          rows.push(...expandTemplate(db, loanCase, template, { casePropertyId: caseProperty.id }));
         }
       }
     }
   }
 
   for (const template of CASE_DOCUMENTS) {
-    rows.push({ ...template });
+    rows.push(...expandTemplate(db, loanCase, template, {}));
   }
 
   return rows;
@@ -156,10 +247,14 @@ function keyOf(row: {
   documentTypeId: Id;
   requiredOfCasePartyId?: Id | undefined;
   requiredOfCasePropertyId?: Id | undefined;
+  periodStart?: string | undefined;
 }): string {
-  return [row.documentTypeId, row.requiredOfCasePartyId ?? "-", row.requiredOfCasePropertyId ?? "-"].join(
-    "|",
-  );
+  return [
+    row.documentTypeId,
+    row.requiredOfCasePartyId ?? "-",
+    row.requiredOfCasePropertyId ?? "-",
+    row.periodStart ?? "-",
+  ].join("|");
 }
 
 /**
@@ -194,6 +289,8 @@ export function regenerateRequirements(
         applicableFromStage: row.applicableFromStage,
         requiredOfCasePartyId: row.casePartyId,
         requiredOfCasePropertyId: row.casePropertyId,
+        periodStart: row.periodStart,
+        periodEnd: row.periodEnd,
       };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null);
@@ -219,6 +316,8 @@ export function regenerateRequirements(
       ...(row.requiredOfCasePropertyId
         ? { requiredOfCasePropertyId: row.requiredOfCasePropertyId }
         : {}),
+      ...(row.periodStart ? { periodStart: row.periodStart } : {}),
+      ...(row.periodEnd ? { periodEnd: row.periodEnd } : {}),
     });
   }
 
@@ -235,11 +334,14 @@ export function regenerateRequirements(
 
 /**
  * A requirement is auto-satisfied when the person already has a verified
- * document of that type on file.
+ * document of that type — and, for a financial-year-scoped requirement, of
+ * that same year — on file.
  *
  * This is the whole point of documents belonging to people rather than cases
  * (ADR-007): a repeat customer's second case opens with KYC already done, and
- * the product should show that as a win rather than leave it implicit.
+ * the product should show that as a win rather than leave it implicit. The
+ * year check matters equally: a person's FY2022-23 ITR on file must not
+ * silently satisfy a new case's FY2024-25 requirement.
  */
 export function applyExistingDocuments(
   db: Database,
@@ -257,6 +359,9 @@ export function applyExistingDocuments(
 
     const match = db.documents.find((document) => {
       if (document.documentTypeId !== requirement.documentTypeId || !document.verifiedAt) {
+        return false;
+      }
+      if (requirement.periodStart && document.periodStart !== requirement.periodStart) {
         return false;
       }
       if (party?.personId) return document.personId === party.personId;

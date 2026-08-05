@@ -151,6 +151,11 @@ export interface DocumentFile {
   caseId?: Id;
   fileName: string;
   fileSizeBytes: number;
+  /** Which period this document covers, e.g. one financial year's ITR — set
+   * to the same range as the requirement it satisfied. Mirrors
+   * document.period_start/period_end (Database/migrations/0005). */
+  periodStart?: string;
+  periodEnd?: string;
   uploadedAt: string;
   uploadedBy: Id;
   verifiedAt?: string;
@@ -169,6 +174,13 @@ export interface DocumentRequirement {
   waivedBy?: Id;
   waivedAt?: string;
   reason?: string;
+  /** The financial year (or other period) this specific row is for, when the
+   * document type needs more than one period — e.g. separate rows for ITR
+   * FY2024-25 and FY2023-24. Mirrors document.period_start/period_end
+   * (Database/migrations/0011). Undefined for document types that are not
+   * financial-year-scoped. */
+  periodStart?: string;
+  periodEnd?: string;
 }
 
 export type SubmissionStatus =

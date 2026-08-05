@@ -869,12 +869,25 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
 
   const onFileChosen = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0];
-    if (file && uploadingFor) {
-      uploadDocument(uploadingFor, { name: file.name, size: file.size }, session.user.id);
-      toast.show(`${file.name} uploaded. It still needs a human to verify it.`);
-    }
+    const requirementId = uploadingFor;
     setUploadingFor(null);
     event.target.value = "";
+    if (!file || !requirementId) return;
+
+    void file.arrayBuffer().then((buffer) => {
+      void uploadDocument(
+        requirementId,
+        {
+          name: file.name,
+          size: file.size,
+          bytes: new Uint8Array(buffer),
+          ...(file.type ? { contentType: file.type } : {}),
+        },
+        session.user.id,
+      ).then(() => {
+        toast.show(`${file.name} uploaded. It still needs a human to verify it.`);
+      });
+    });
   };
 
   const Row = ({ requirementId }: { requirementId: string }): ReactNode => {

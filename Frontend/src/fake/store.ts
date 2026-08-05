@@ -26,8 +26,14 @@ import {
 } from "@domain/case/transitions.js";
 import { type Requirement, summariseProgress } from "@domain/requirements/progress.js";
 import { recentFinancialYears } from "@domain/requirements/financial-year.js";
+import {
+  buildStoragePath,
+  nextVersion,
+  resolveDocumentOwner,
+} from "@domain/storage/index.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
+import { storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
 import type {
   AosEvent,
@@ -615,11 +621,11 @@ export function assignOwner(caseId: Id, ownerUserId: Id, actorUserId: Id): Actio
 // Documents
 // ---------------------------------------------------------------------------
 
-export function uploadDocument(
+export async function uploadDocument(
   requirementId: Id,
-  file: { name: string; size: number },
+  file: { name: string; size: number; bytes: Uint8Array; contentType?: string },
   actorUserId: Id,
-): ActionResult {
+): Promise<ActionResult> {
   const requirement = db.requirements.find((r) => r.id === requirementId);
   if (!requirement) return { ok: false, message: "Requirement not found." };
 
@@ -629,17 +635,51 @@ export function uploadDocument(
   );
   const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
 
+  // Ownership is never asked of the user — it follows from what the
+  // requirement is already known to be for (BR-030, ADR-007). This is the
+  // same resolution uploadDocument has always done; it is now also what
+  // decides the document's storage path, so "where does this file live" and
+  // "who does this file belong to" can never disagree.
+  const ownerKind = documentType?.ownerKind ?? "case";
+  const ownerFields = {
+    ownerKind,
+    ...(party?.personId ? { personId: party.personId } : {}),
+    ...(party?.organisationId ? { organisationId: party.organisationId } : {}),
+    ...(caseProperty ? { propertyId: caseProperty.propertyId } : {}),
+    ...(!party && !caseProperty ? { caseId: requirement.caseId } : {}),
+  } as const;
+  const owner = resolveDocumentOwner(ownerFields);
+
+  // A previously-satisfied requirement being uploaded against again is a
+  // replacement, not an overwrite (BR-031): the new document supersedes the
+  // old one and takes the next version number, both stored under a new path
+  // so the old bytes remain reachable.
+  const previousDocument = db.documents.find((d) => d.id === requirement.satisfiedByDocumentId);
+  const version = nextVersion(previousDocument);
+
+  const filePath = buildStoragePath({
+    owner,
+    documentTypeCode: documentType?.code ?? "unknown",
+    version,
+    ...(requirement.periodStart ? { periodStart: requirement.periodStart } : {}),
+    fileName: file.name,
+  });
+  await storageAdapter.put(
+    filePath,
+    file.bytes,
+    file.contentType ? { contentType: file.contentType } : undefined,
+  );
+
   const documentId = nextId();
   db.documents = [
     ...db.documents,
     {
       id: documentId,
       documentTypeId: requirement.documentTypeId,
-      ownerKind: documentType?.ownerKind ?? "case",
-      ...(party?.personId ? { personId: party.personId } : {}),
-      ...(party?.organisationId ? { organisationId: party.organisationId } : {}),
-      ...(caseProperty ? { propertyId: caseProperty.propertyId } : {}),
-      ...(!party && !caseProperty ? { caseId: requirement.caseId } : {}),
+      ...ownerFields,
+      filePath,
+      version,
+      ...(previousDocument ? { supersedesDocumentId: previousDocument.id } : {}),
       // A financial-year-scoped requirement (e.g. "ITR — FY2024-25") already
       // pins the year — the row uploaded against is the year selector, so the
       // document inherits it rather than asking again.

@@ -11,9 +11,17 @@
  *  - A name with three spellings, so search has something to forgive.
  */
 
+import { buildStoragePath, type DocumentOwner } from "@domain/storage/index.js";
+
 import type { Database } from "./types.js";
 
 const id = (prefix: string, n: number): string => `${prefix}_${String(n).padStart(3, "0")}`;
+
+/** Seeded documents go through the same path builder a live upload would —
+ * the seed is fake data, not a fake layout. */
+function seedPath(owner: DocumentOwner, documentTypeCode: string, fileName: string): string {
+  return buildStoragePath({ owner, documentTypeCode, version: 1, fileName });
+}
 
 /** Days ago, as an ISO string. Keeps the seed relative so it never looks stale. */
 function daysAgo(days: number): string {
@@ -271,15 +279,15 @@ export function buildSeed(): Database {
   // Ravi's KYC, already on file. Case 7 opens with it satisfied — the visible win
   // that "information is entered once" is supposed to produce.
   const documents: Database["documents"] = [
-    { id: id("doc", 1), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 1), fileName: "ravi-pan.pdf", fileSizeBytes: 184320, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(137), verifiedBy: id("usr", 2) },
-    { id: id("doc", 2), documentTypeId: id("dty", 2), ownerKind: "person", personId: id("per", 1), fileName: "ravi-aadhaar-masked.pdf", fileSizeBytes: 210944, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(137), verifiedBy: id("usr", 2) },
-    { id: id("doc", 3), documentTypeId: id("dty", 3), ownerKind: "person", personId: id("per", 1), fileName: "ravi-eb-bill.pdf", fileSizeBytes: 96256, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(136), verifiedBy: id("usr", 2) },
-    { id: id("doc", 4), documentTypeId: id("dty", 5), ownerKind: "person", personId: id("per", 1), fileName: "ravi-payslips-q1.pdf", fileSizeBytes: 331776, uploadedAt: daysAgo(60), uploadedBy: id("usr", 2), verifiedAt: daysAgo(59), verifiedBy: id("usr", 2) },
-    { id: id("doc", 5), documentTypeId: id("dty", 7), ownerKind: "person", personId: id("per", 1), fileName: "ravi-hdfc-6mo.pdf", fileSizeBytes: 542720, uploadedAt: daysAgo(60), uploadedBy: id("usr", 2), verifiedAt: daysAgo(59), verifiedBy: id("usr", 2) },
-    { id: id("doc", 6), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 2), fileName: "sasirekha-pan.pdf", fileSizeBytes: 176128, uploadedAt: daysAgo(58), uploadedBy: id("usr", 2), verifiedAt: daysAgo(57), verifiedBy: id("usr", 2) },
-    { id: id("doc", 7), documentTypeId: id("dty", 11), ownerKind: "property", propertyId: id("prp", 1), fileName: "green-meadows-sale-deed.pdf", fileSizeBytes: 1458176, uploadedAt: daysAgo(55), uploadedBy: id("usr", 2), verifiedAt: daysAgo(54), verifiedBy: id("usr", 2) },
+    { id: id("doc", 1), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 1), filePath: seedPath({ kind: "person", id: id("per", 1) }, "pan_card", "ravi-pan.pdf"), version: 1, fileName: "ravi-pan.pdf", fileSizeBytes: 184320, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(137), verifiedBy: id("usr", 2) },
+    { id: id("doc", 2), documentTypeId: id("dty", 2), ownerKind: "person", personId: id("per", 1), filePath: seedPath({ kind: "person", id: id("per", 1) }, "aadhaar_card", "ravi-aadhaar-masked.pdf"), version: 1, fileName: "ravi-aadhaar-masked.pdf", fileSizeBytes: 210944, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(137), verifiedBy: id("usr", 2) },
+    { id: id("doc", 3), documentTypeId: id("dty", 3), ownerKind: "person", personId: id("per", 1), filePath: seedPath({ kind: "person", id: id("per", 1) }, "address_proof", "ravi-eb-bill.pdf"), version: 1, fileName: "ravi-eb-bill.pdf", fileSizeBytes: 96256, uploadedAt: daysAgo(138), uploadedBy: id("usr", 2), verifiedAt: daysAgo(136), verifiedBy: id("usr", 2) },
+    { id: id("doc", 4), documentTypeId: id("dty", 5), ownerKind: "person", personId: id("per", 1), filePath: seedPath({ kind: "person", id: id("per", 1) }, "salary_slip", "ravi-payslips-q1.pdf"), version: 1, fileName: "ravi-payslips-q1.pdf", fileSizeBytes: 331776, uploadedAt: daysAgo(60), uploadedBy: id("usr", 2), verifiedAt: daysAgo(59), verifiedBy: id("usr", 2) },
+    { id: id("doc", 5), documentTypeId: id("dty", 7), ownerKind: "person", personId: id("per", 1), filePath: seedPath({ kind: "person", id: id("per", 1) }, "bank_statement", "ravi-hdfc-6mo.pdf"), version: 1, fileName: "ravi-hdfc-6mo.pdf", fileSizeBytes: 542720, uploadedAt: daysAgo(60), uploadedBy: id("usr", 2), verifiedAt: daysAgo(59), verifiedBy: id("usr", 2) },
+    { id: id("doc", 6), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 2), filePath: seedPath({ kind: "person", id: id("per", 2) }, "pan_card", "sasirekha-pan.pdf"), version: 1, fileName: "sasirekha-pan.pdf", fileSizeBytes: 176128, uploadedAt: daysAgo(58), uploadedBy: id("usr", 2), verifiedAt: daysAgo(57), verifiedBy: id("usr", 2) },
+    { id: id("doc", 7), documentTypeId: id("dty", 11), ownerKind: "property", propertyId: id("prp", 1), filePath: seedPath({ kind: "property", id: id("prp", 1) }, "sale_deed", "green-meadows-sale-deed.pdf"), version: 1, fileName: "green-meadows-sale-deed.pdf", fileSizeBytes: 1458176, uploadedAt: daysAgo(55), uploadedBy: id("usr", 2), verifiedAt: daysAgo(54), verifiedBy: id("usr", 2) },
     // Received but not yet verified — feeds the login desk's queue.
-    { id: id("doc", 8), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 5), fileName: "arun-pan.jpg", fileSizeBytes: 88064, uploadedAt: daysAgo(2), uploadedBy: id("usr", 1) },
+    { id: id("doc", 8), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 5), filePath: seedPath({ kind: "person", id: id("per", 5) }, "pan_card", "arun-pan.jpg"), version: 1, fileName: "arun-pan.jpg", fileSizeBytes: 88064, uploadedAt: daysAgo(2), uploadedBy: id("usr", 1) },
   ];
 
   const submissions: Database["submissions"] = [

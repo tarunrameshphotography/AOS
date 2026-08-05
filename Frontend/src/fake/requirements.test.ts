@@ -189,6 +189,7 @@ describe("applyExistingDocuments — financial-year matching", () => {
     db.documents = [
       {
         id: "doc_1", documentTypeId: "dty_itr", ownerKind: "person", personId: "per_1",
+        filePath: "person/per_1/itr/v1-itr-old.pdf", version: 1,
         fileName: "itr-old.pdf", fileSizeBytes: 1000, uploadedAt: new Date().toISOString(),
         uploadedBy: "usr_1", verifiedAt: new Date().toISOString(), verifiedBy: "usr_1",
         periodStart: lastYear.startDate, periodEnd: lastYear.endDate,
@@ -215,6 +216,7 @@ describe("applyExistingDocuments — financial-year matching", () => {
     db.documents = [
       {
         id: "doc_1", documentTypeId: "dty_itr", ownerKind: "person", personId: "per_1",
+        filePath: "person/per_1/itr/v1-itr-current.pdf", version: 1,
         fileName: "itr-current.pdf", fileSizeBytes: 1000, uploadedAt: new Date().toISOString(),
         uploadedBy: "usr_1", verifiedAt: new Date().toISOString(), verifiedBy: "usr_1",
         periodStart: thisYear.startDate, periodEnd: thisYear.endDate,

@@ -149,6 +149,10 @@ export interface DocumentFile {
   propertyId?: Id;
   organisationId?: Id;
   caseId?: Id;
+  /** Where the bytes live in object storage, computed by
+   * @domain/storage's buildStoragePath — never chosen by a user.
+   * Mirrors document.file_path (Database/migrations/0005). */
+  filePath: string;
   fileName: string;
   fileSizeBytes: number;
   /** Which period this document covers, e.g. one financial year's ITR — set
@@ -160,6 +164,13 @@ export interface DocumentFile {
   uploadedBy: Id;
   verifiedAt?: string;
   verifiedBy?: Id;
+  /** Documents are never overwritten (BR-031). 1 for a first upload;
+   * incremented by @domain/storage's nextVersion for a replacement. */
+  version: number;
+  /** The document this one replaces, if any — the audit trail
+   * @domain/storage's versionHistory walks. Mirrors
+   * document.supersedes_document_id (Database/migrations/0005). */
+  supersedesDocumentId?: Id;
 }
 
 export interface DocumentRequirement {

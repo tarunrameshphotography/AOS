@@ -36,16 +36,32 @@ import { applyExistingDocuments, regenerateRequirements } from "./requirements.j
 import { storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
 import type { LendingProduct } from "@domain/products/index.js";
+import type {
+  LenderBranch,
+  LenderInsight as DomainLenderInsight,
+  LenderInstitution,
+  SubmissionRule as DomainSubmissionRule,
+  SupportedProduct as DomainSupportedProduct,
+} from "@domain/lenders/index.js";
 
 import type {
   AosEvent,
   AvailabilityStatus,
+  BankBranch,
+  BankContact,
+  BankProduct,
+  BranchStatus,
   CasePartyRole,
   Database,
   Id,
+  LenderInsight,
+  LenderProfile,
+  LenderSubmissionRule,
   LoanCase,
   LoanProduct,
   MasterDataRecord,
+  Organisation,
+  Person,
   SubmissionStatus,
 } from "./types.js";
 
@@ -56,8 +72,12 @@ import type {
  * product. A stale v1 store would render a catalogue of products that all
  * look retired, which is worse than starting fresh from a seed that is, by
  * the footer's own admission, fake.
+ *
+ * v3 for the Bank & NBFC Catalogue (Milestone 8), which adds ten collections
+ * — a stale v2 store would open the Lenders screen on an empty catalogue and
+ * read as a broken feature rather than as stale data.
  */
-const STORAGE_KEY = "aos.prototype.v2";
+const STORAGE_KEY = "aos.prototype.v3";
 
 let counter = 1000;
 const nextId = (): string => `gen_${++counter}`;
@@ -1187,6 +1207,11 @@ export const MASTER_DATA_KINDS = [
   "borrowerTypes",
   "securityTypes",
   "requirementApplicabilities",
+  // Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019.
+  "lenderTypes",
+  "lenderRelationshipRoles",
+  "submissionModes",
+  "lenderInsightCategories",
 ] as const;
 
 export type MasterDataKind = (typeof MASTER_DATA_KINDS)[number];
@@ -1203,6 +1228,10 @@ export const MASTER_DATA_LABELS: Record<MasterDataKind, string> = {
   borrowerTypes: "Borrower Type",
   securityTypes: "Security Type",
   requirementApplicabilities: "Requirement Applicability",
+  lenderTypes: "Lender Type",
+  lenderRelationshipRoles: "Relationship Role",
+  submissionModes: "Submission Mode",
+  lenderInsightCategories: "Lender Note Category",
 };
 
 export interface MasterDataInput {
@@ -1710,3 +1739,901 @@ export function lendingProductsAsDomain(source: Database = db): LendingProduct[]
     typicalDocumentsSummary: product.typicalDocumentsSummary,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Bank & NBFC Catalogue (Milestone 8) â€” Database/migrations/0019, 0020.
+//
+// Five concepts, kept apart here exactly as the schema keeps them apart:
+// institution, branch, relationship manager, supported product, submission
+// rule â€” plus the lender profile notes that fit into none of them.
+//
+// An institution is an organisation holding the `lender` role plus a
+// LenderProfile; a branch is an organisation holding the `branch` role plus a
+// BankBranch. Nothing here creates a second "bank" entity beside
+// organisation, because that is how "IIFL" ends up in the database three
+// times (ADR-014).
+//
+// Records are deactivated, never deleted, and every write pairs with an event
+// (BR-050). Governed by master_data.manage, checked by the screen that calls
+// these (BR-060), as everywhere else in this store.
+// ---------------------------------------------------------------------------
+
+const trimmed = (value?: string): string | undefined => (value?.trim() ? value.trim() : undefined);
+
+export interface InstitutionInput {
+  name: string;
+  code: string;
+  lenderTypeId: Id;
+  headOfficeCity?: string;
+  primaryServiceRegion?: string;
+  websiteUrl?: string;
+  isOnPanel: boolean;
+  typicalTurnaroundDays?: number;
+  preferredCustomerSegments?: string;
+  knownStrengths?: string;
+  knownLimitations?: string;
+  commonRejectionPatterns?: string;
+  internalRemarks?: string;
+  notes?: string;
+}
+
+/**
+ * Rejects what the database's own check constraints would reject, in the
+ * words an office user would use â€” the same division of labour the lending
+ * product catalogue uses. The constraint is the real guard; this exists so
+ * the message arrives before the save rather than after it.
+ */
+function validateInstitution(input: InstitutionInput): string | undefined {
+  if (!input.name.trim()) return "The lender's name is required.";
+  if (!input.code.trim()) return "A short code is required â€” it is what reports key on.";
+  if (!/^[a-z][a-z0-9_]*$/.test(input.code.trim())) {
+    return "Code must be lowercase letters, numbers and underscores, starting with a letter.";
+  }
+  if (!input.lenderTypeId) return "Choose what kind of lender this is.";
+  if (input.typicalTurnaroundDays !== undefined && input.typicalTurnaroundDays <= 0) {
+    return "Turnaround time must be a positive number of days.";
+  }
+  return undefined;
+}
+
+/** Only the fields the input actually carries â€” exactOptionalPropertyTypes. */
+function institutionFields(input: InstitutionInput): Partial<LenderProfile> {
+  return {
+    ...(trimmed(input.headOfficeCity) ? { headOfficeCity: trimmed(input.headOfficeCity) as string } : {}),
+    ...(trimmed(input.primaryServiceRegion)
+      ? { primaryServiceRegion: trimmed(input.primaryServiceRegion) as string }
+      : {}),
+    ...(trimmed(input.websiteUrl) ? { websiteUrl: trimmed(input.websiteUrl) as string } : {}),
+    ...(input.typicalTurnaroundDays !== undefined
+      ? { typicalTurnaroundDays: input.typicalTurnaroundDays }
+      : {}),
+    ...(trimmed(input.preferredCustomerSegments)
+      ? { preferredCustomerSegments: trimmed(input.preferredCustomerSegments) as string }
+      : {}),
+    ...(trimmed(input.knownStrengths) ? { knownStrengths: trimmed(input.knownStrengths) as string } : {}),
+    ...(trimmed(input.knownLimitations)
+      ? { knownLimitations: trimmed(input.knownLimitations) as string }
+      : {}),
+    ...(trimmed(input.commonRejectionPatterns)
+      ? { commonRejectionPatterns: trimmed(input.commonRejectionPatterns) as string }
+      : {}),
+    ...(trimmed(input.internalRemarks)
+      ? { internalRemarks: trimmed(input.internalRemarks) as string }
+      : {}),
+    ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
+  };
+}
+
+/** Maps a master-data lender type onto the three-value legacy enum. A Small
+ * Finance Bank and a Regional Rural Bank are both banks â€” a widening, never a
+ * lie (Database/migrations/0019). */
+function legacyLenderType(code: string): LenderProfile["lenderType"] {
+  if (code === "nbfc") return "nbfc";
+  if (code === "housing_finance_company") return "hfc";
+  return "bank";
+}
+
+/**
+ * Adds a lender: one organisation row carrying the `lender` role, and one
+ * lender profile beside it.
+ */
+export function createInstitution(input: InstitutionInput, actorUserId: Id): ActionResult {
+  const problem = validateInstitution(input);
+  if (problem) return { ok: false, message: problem };
+
+  const name = input.name.trim();
+  const code = input.code.trim();
+  if (db.lenderProfiles.some((profile) => profile.code === code)) {
+    return { ok: false, message: `"${code}" is already in use â€” lender codes must be unique.` };
+  }
+  // A near-match is a suggestion and never a refusal (Principle #7), but an
+  // exact duplicate name almost always means somebody did not find the row
+  // that is already there, and a second "HDFC Bank" is precisely what
+  // modelling lenders as organisations exists to prevent (ADR-014).
+  const duplicate = db.organisations.find(
+    (org) => org.roles.includes("lender") && org.canonicalName.toLowerCase() === name.toLowerCase(),
+  );
+  if (duplicate) {
+    return { ok: false, message: `${duplicate.canonicalName} is already in the catalogue.` };
+  }
+
+  const lenderType = db.lenderTypes.find((type) => type.id === input.lenderTypeId);
+  if (!lenderType) return { ok: false, message: "That lender type no longer exists." };
+
+  const organisationId = nextId();
+  const organisation: Organisation = {
+    id: organisationId,
+    canonicalName: name,
+    roles: ["lender"],
+    industry: "Banking and Finance",
+    aliases: [],
+    isActive: true,
+    ...(trimmed(input.headOfficeCity) ? { city: trimmed(input.headOfficeCity) as string } : {}),
+  };
+  const profile: LenderProfile = {
+    organisationId,
+    lenderTypeId: lenderType.id,
+    // The legacy enum, still written so nothing reading it breaks.
+    lenderType: legacyLenderType(lenderType.code),
+    code,
+    isOnPanel: input.isOnPanel,
+    displayOrder: (db.lenderProfiles.length + 1) * 10,
+    ...institutionFields(input),
+  };
+
+  db = {
+    ...db,
+    organisations: [...db.organisations, organisation],
+    lenderProfiles: [...db.lenderProfiles, profile],
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_profile",
+    entityId: organisationId,
+    eventType: "master_data.created",
+    summary: `Lender added: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateInstitution(
+  organisationId: Id,
+  input: InstitutionInput,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.lenderProfiles.find((p) => p.organisationId === organisationId);
+  if (!existing) return { ok: false, message: "Lender not found." };
+  const problem = validateInstitution(input);
+  if (problem) return { ok: false, message: problem };
+
+  const name = input.name.trim();
+  const code = input.code.trim();
+  if (db.lenderProfiles.some((p) => p.code === code && p.organisationId !== organisationId)) {
+    return { ok: false, message: `"${code}" is already in use â€” lender codes must be unique.` };
+  }
+  const lenderType = db.lenderTypes.find((type) => type.id === input.lenderTypeId);
+  if (!lenderType) return { ok: false, message: "That lender type no longer exists." };
+
+  db = {
+    ...db,
+    organisations: db.organisations.map((org) =>
+      org.id === organisationId
+        ? {
+            ...org,
+            canonicalName: name,
+            ...(trimmed(input.headOfficeCity) ? { city: trimmed(input.headOfficeCity) as string } : {}),
+          }
+        : org,
+    ),
+    lenderProfiles: db.lenderProfiles.map((profile) =>
+      profile.organisationId === organisationId
+        ? {
+            // Rebuilt rather than merged, the same reasoning the lending
+            // product catalogue uses: a field the user cleared must stay
+            // cleared, and spreading the old row would silently keep it.
+            organisationId: profile.organisationId,
+            lenderTypeId: lenderType.id,
+            lenderType: legacyLenderType(lenderType.code),
+            code,
+            isOnPanel: input.isOnPanel,
+            displayOrder: profile.displayOrder,
+            ...institutionFields(input),
+          }
+        : profile,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_profile",
+    entityId: organisationId,
+    eventType: "master_data.updated",
+    summary: `Lender updated: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Whether the lender still exists at all â€” deliberately distinct from panel
+ * status, which is on the form above. Lakshmi Vilas Bank is inactive because
+ * it ceased to exist; a lender Amaze has simply stopped using is off panel
+ * and could be back next month.
+ */
+export function setInstitutionActive(
+  organisationId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const organisation = db.organisations.find((org) => org.id === organisationId);
+  if (!organisation) return { ok: false, message: "Lender not found." };
+
+  db = {
+    ...db,
+    organisations: db.organisations.map((org) =>
+      org.id === organisationId ? { ...org, isActive } : org,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_profile",
+    entityId: organisationId,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Lender ${isActive ? "reactivated" : "deactivated"}: ${organisation.canonicalName}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Branches
+// ---------------------------------------------------------------------------
+
+export interface BranchInput {
+  institutionOrganisationId: Id;
+  name: string;
+  branchCode?: string;
+  cityId?: Id;
+  districtId?: Id;
+  addressLine?: string;
+  contactNumber?: string;
+  email?: string;
+  operationalStatus: BranchStatus;
+  notes?: string;
+}
+
+function branchFields(input: BranchInput): Partial<BankBranch> {
+  return {
+    ...(trimmed(input.branchCode) ? { branchCode: trimmed(input.branchCode) as string } : {}),
+    ...(input.cityId ? { cityId: input.cityId } : {}),
+    ...(input.districtId ? { districtId: input.districtId } : {}),
+    ...(trimmed(input.addressLine) ? { addressLine: trimmed(input.addressLine) as string } : {}),
+    ...(trimmed(input.contactNumber) ? { contactNumber: trimmed(input.contactNumber) as string } : {}),
+    ...(trimmed(input.email) ? { email: trimmed(input.email) as string } : {}),
+    ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
+  };
+}
+
+export function createBranch(input: BranchInput, actorUserId: Id): ActionResult {
+  if (!input.name.trim()) return { ok: false, message: "The branch name is required." };
+  const institution = db.organisations.find((org) => org.id === input.institutionOrganisationId);
+  if (!institution) return { ok: false, message: "That lender no longer exists." };
+
+  const organisationId = nextId();
+  const organisation: Organisation = {
+    id: organisationId,
+    canonicalName: input.name.trim(),
+    roles: ["branch"],
+    industry: "Banking and Finance",
+    parentOrganisationId: institution.id,
+    aliases: [],
+    isActive: true,
+  };
+  const branch: BankBranch = {
+    organisationId,
+    operationalStatus: input.operationalStatus,
+    displayOrder: (db.bankBranches.length + 1) * 10,
+    ...branchFields(input),
+  };
+
+  db = {
+    ...db,
+    organisations: [...db.organisations, organisation],
+    bankBranches: [...db.bankBranches, branch],
+  };
+
+  record({
+    actorUserId,
+    entityType: "bank_branch",
+    entityId: organisationId,
+    eventType: "master_data.created",
+    summary: `Branch added: ${organisation.canonicalName}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateBranch(organisationId: Id, input: BranchInput, actorUserId: Id): ActionResult {
+  const existing = db.bankBranches.find((branch) => branch.organisationId === organisationId);
+  if (!existing) return { ok: false, message: "Branch not found." };
+  if (!input.name.trim()) return { ok: false, message: "The branch name is required." };
+
+  db = {
+    ...db,
+    organisations: db.organisations.map((org) =>
+      org.id === organisationId ? { ...org, canonicalName: input.name.trim() } : org,
+    ),
+    bankBranches: db.bankBranches.map((branch) =>
+      branch.organisationId === organisationId
+        ? {
+            organisationId: branch.organisationId,
+            operationalStatus: input.operationalStatus,
+            displayOrder: branch.displayOrder,
+            ...branchFields(input),
+          }
+        : branch,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "bank_branch",
+    entityId: organisationId,
+    eventType: "master_data.updated",
+    summary: `Branch updated: ${input.name.trim()}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Relationship managers
+//
+// A person plus a relationship, never a standalone "RM" row: a manager who
+// moves to another bank next year is one new relationship, not a second
+// person (ADR-013, ADR-014).
+// ---------------------------------------------------------------------------
+
+export interface RelationshipManagerInput {
+  fullName: string;
+  institutionOrganisationId: Id;
+  /** Optional â€” a regional manager belongs to no single branch, and that is
+   * a complete record rather than a partial one. */
+  branchOrganisationId?: Id;
+  relationshipRoleId?: Id;
+  designation?: string;
+  workMobile?: string;
+  workEmail?: string;
+  notes?: string;
+}
+
+function contactFields(input: RelationshipManagerInput): Partial<BankContact> {
+  return {
+    ...(input.branchOrganisationId ? { branchOrganisationId: input.branchOrganisationId } : {}),
+    ...(input.relationshipRoleId ? { relationshipRoleId: input.relationshipRoleId } : {}),
+    ...(trimmed(input.designation) ? { designation: trimmed(input.designation) as string } : {}),
+    ...(trimmed(input.workMobile) ? { workMobile: trimmed(input.workMobile) as string } : {}),
+    ...(trimmed(input.workEmail) ? { workEmail: trimmed(input.workEmail) as string } : {}),
+    ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
+  };
+}
+
+export function createRelationshipManager(
+  input: RelationshipManagerInput,
+  actorUserId: Id,
+): ActionResult {
+  const name = input.fullName.trim();
+  if (!name) return { ok: false, message: "The manager's name is required." };
+  const institution = db.organisations.find((org) => org.id === input.institutionOrganisationId);
+  if (!institution) return { ok: false, message: "That lender no longer exists." };
+
+  // The person row is created here rather than searched for: a bank manager
+  // is almost never already in the system, and the search-first picker
+  // belongs on a case. When identity resolution runs over this screen it
+  // replaces these two lines and nothing else.
+  const personId = nextId();
+  const person: Person = { id: personId, fullName: name, aliases: [], identifiers: [] };
+
+  const contact: BankContact = {
+    id: nextId(),
+    personId,
+    institutionOrganisationId: institution.id,
+    isActive: true,
+    ...contactFields(input),
+  };
+
+  db = { ...db, people: [...db.people, person], bankContacts: [...db.bankContacts, contact] };
+
+  record({
+    actorUserId,
+    entityType: "bank_contact",
+    entityId: contact.id,
+    eventType: "master_data.created",
+    summary: `Contact added at ${institution.canonicalName}: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateRelationshipManager(
+  contactId: Id,
+  input: RelationshipManagerInput,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.bankContacts.find((contact) => contact.id === contactId);
+  if (!existing) return { ok: false, message: "Contact not found." };
+  const name = input.fullName.trim();
+  if (!name) return { ok: false, message: "The manager's name is required." };
+  if (!db.organisations.some((org) => org.id === input.institutionOrganisationId)) {
+    return { ok: false, message: "That lender no longer exists." };
+  }
+
+  db = {
+    ...db,
+    people: db.people.map((person) =>
+      person.id === existing.personId ? { ...person, fullName: name } : person,
+    ),
+    bankContacts: db.bankContacts.map((contact) =>
+      contact.id === contactId
+        ? {
+            id: contact.id,
+            personId: contact.personId,
+            institutionOrganisationId: input.institutionOrganisationId,
+            isActive: contact.isActive,
+            ...contactFields(input),
+          }
+        : contact,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "bank_contact",
+    entityId: contactId,
+    eventType: "master_data.updated",
+    summary: `Contact updated: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/** Deactivated, never deleted: a manager who has moved on is history worth
+ * keeping, and older submissions still name them. */
+export function setRelationshipManagerActive(
+  contactId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.bankContacts.find((contact) => contact.id === contactId);
+  if (!existing) return { ok: false, message: "Contact not found." };
+  const person = db.people.find((p) => p.id === existing.personId);
+
+  db = {
+    ...db,
+    bankContacts: db.bankContacts.map((contact) =>
+      contact.id === contactId ? { ...contact, isActive } : contact,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "bank_contact",
+    entityId: contactId,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Contact ${isActive ? "reactivated" : "marked as moved on"}: ${person?.fullName ?? "Unknown"}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Supported products
+//
+// A pointer at the Lending Product Catalogue, never a second definition of a
+// product (Database/migrations/0019, Part 5).
+// ---------------------------------------------------------------------------
+
+export interface SupportedProductInput {
+  organisationId: Id;
+  loanProductId: Id;
+  /** The lender's own name for it. Defaults to the lending product's name,
+   * because the row's purpose is to record that this lender does this
+   * product and a blank name would hide that rather than admit it. */
+  name?: string;
+  minAmount?: number;
+  maxAmount?: number;
+  indicativeRate?: number;
+  notes?: string;
+}
+
+export function addSupportedProduct(input: SupportedProductInput, actorUserId: Id): ActionResult {
+  const organisation = db.organisations.find((org) => org.id === input.organisationId);
+  if (!organisation) return { ok: false, message: "That lender no longer exists." };
+  const product = db.loanProducts.find((p) => p.id === input.loanProductId);
+  if (!product) return { ok: false, message: "That lending product no longer exists." };
+  if (
+    db.bankProducts.some(
+      (bp) =>
+        bp.organisationId === input.organisationId &&
+        bp.loanProductId === input.loanProductId &&
+        bp.isActive,
+    )
+  ) {
+    return { ok: false, message: `${organisation.canonicalName} already offers this product.` };
+  }
+  const { minAmount, maxAmount } = input;
+  if (minAmount !== undefined && maxAmount !== undefined && maxAmount < minAmount) {
+    return { ok: false, message: "Maximum amount cannot be less than the minimum." };
+  }
+
+  const entry: BankProduct = {
+    id: nextId(),
+    organisationId: input.organisationId,
+    loanProductId: input.loanProductId,
+    name: trimmed(input.name) ?? product.name ?? product.variant,
+    isActive: true,
+    displayOrder: product.displayOrder,
+    ...(minAmount !== undefined ? { minAmount } : {}),
+    ...(maxAmount !== undefined ? { maxAmount } : {}),
+    ...(input.indicativeRate !== undefined ? { indicativeRate: input.indicativeRate } : {}),
+    ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
+  };
+
+  db = { ...db, bankProducts: [...db.bankProducts, entry] };
+
+  record({
+    actorUserId,
+    entityType: "bank_product",
+    entityId: entry.id,
+    eventType: "master_data.created",
+    summary: `${organisation.canonicalName} offers ${entry.name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setSupportedProductActive(
+  bankProductId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.bankProducts.find((bp) => bp.id === bankProductId);
+  if (!existing) return { ok: false, message: "Product not found." };
+
+  db = {
+    ...db,
+    bankProducts: db.bankProducts.map((bp) => (bp.id === bankProductId ? { ...bp, isActive } : bp)),
+  };
+
+  record({
+    actorUserId,
+    entityType: "bank_product",
+    entityId: bankProductId,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Supported product ${isActive ? "restored" : "withdrawn"}: ${existing.name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Submission rules â€” reference material. Nothing executes one.
+// ---------------------------------------------------------------------------
+
+export interface SubmissionRuleInput {
+  organisationId: Id;
+  loanProductId?: Id;
+  submissionModeId?: Id;
+  portalUrl?: string;
+  whatToCarry?: string;
+  loginFeeNotes?: string;
+  turnaroundNotes?: string;
+  notes?: string;
+}
+
+function submissionRuleFields(input: SubmissionRuleInput): Partial<LenderSubmissionRule> {
+  return {
+    ...(input.loanProductId ? { loanProductId: input.loanProductId } : {}),
+    ...(input.submissionModeId ? { submissionModeId: input.submissionModeId } : {}),
+    ...(trimmed(input.portalUrl) ? { portalUrl: trimmed(input.portalUrl) as string } : {}),
+    ...(trimmed(input.whatToCarry) ? { whatToCarry: trimmed(input.whatToCarry) as string } : {}),
+    ...(trimmed(input.loginFeeNotes) ? { loginFeeNotes: trimmed(input.loginFeeNotes) as string } : {}),
+    ...(trimmed(input.turnaroundNotes)
+      ? { turnaroundNotes: trimmed(input.turnaroundNotes) as string }
+      : {}),
+    ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
+  };
+}
+
+export function createSubmissionRule(input: SubmissionRuleInput, actorUserId: Id): ActionResult {
+  const organisation = db.organisations.find((org) => org.id === input.organisationId);
+  if (!organisation) return { ok: false, message: "That lender no longer exists." };
+
+  const rule: LenderSubmissionRule = {
+    id: nextId(),
+    organisationId: input.organisationId,
+    isActive: true,
+    displayOrder: (db.lenderSubmissionRules.length + 1) * 10,
+    ...submissionRuleFields(input),
+  };
+  db = { ...db, lenderSubmissionRules: [...db.lenderSubmissionRules, rule] };
+
+  record({
+    actorUserId,
+    entityType: "lender_submission_rule",
+    entityId: rule.id,
+    eventType: "master_data.created",
+    summary: `Submission note added for ${organisation.canonicalName}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateSubmissionRule(
+  ruleId: Id,
+  input: SubmissionRuleInput,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.lenderSubmissionRules.find((rule) => rule.id === ruleId);
+  if (!existing) return { ok: false, message: "Submission note not found." };
+
+  db = {
+    ...db,
+    lenderSubmissionRules: db.lenderSubmissionRules.map((rule) =>
+      rule.id === ruleId
+        ? {
+            id: rule.id,
+            organisationId: input.organisationId,
+            isActive: rule.isActive,
+            displayOrder: rule.displayOrder,
+            ...submissionRuleFields(input),
+          }
+        : rule,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_submission_rule",
+    entityId: ruleId,
+    eventType: "master_data.updated",
+    summary: "Submission note updated",
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setSubmissionRuleActive(
+  ruleId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.lenderSubmissionRules.find((rule) => rule.id === ruleId);
+  if (!existing) return { ok: false, message: "Submission note not found." };
+
+  db = {
+    ...db,
+    lenderSubmissionRules: db.lenderSubmissionRules.map((rule) =>
+      rule.id === ruleId ? { ...rule, isActive } : rule,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_submission_rule",
+    entityId: ruleId,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Submission note ${isActive ? "restored" : "removed"}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// The lender profile â€” institutional knowledge.
+//
+// GUIDANCE, NEVER A RULE. `body` is stored, shown, and never parsed. Nothing
+// in this store, this prototype or the domain layer branches on its content,
+// and nothing may (ADR-034).
+// ---------------------------------------------------------------------------
+
+export interface LenderInsightInput {
+  organisationId: Id;
+  lenderInsightCategoryId: Id;
+  body: string;
+  loanProductId?: Id;
+  observedOn?: string;
+}
+
+export function addLenderInsight(input: LenderInsightInput, actorUserId: Id): ActionResult {
+  const organisation = db.organisations.find((org) => org.id === input.organisationId);
+  if (!organisation) return { ok: false, message: "That lender no longer exists." };
+  if (!input.body.trim()) return { ok: false, message: "Write the note before saving it." };
+  if (!input.lenderInsightCategoryId) {
+    return { ok: false, message: "Choose what kind of note this is." };
+  }
+
+  const insight: LenderInsight = {
+    id: nextId(),
+    organisationId: input.organisationId,
+    lenderInsightCategoryId: input.lenderInsightCategoryId,
+    body: input.body.trim(),
+    isActive: true,
+    displayOrder: (db.lenderInsights.length + 1) * 10,
+    ...(input.loanProductId ? { loanProductId: input.loanProductId } : {}),
+    ...(input.observedOn ? { observedOn: input.observedOn } : {}),
+  };
+  db = { ...db, lenderInsights: [...db.lenderInsights, insight] };
+
+  record({
+    actorUserId,
+    entityType: "lender_insight",
+    entityId: insight.id,
+    eventType: "master_data.created",
+    summary: `Note added about ${organisation.canonicalName}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setLenderInsightActive(
+  insightId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.lenderInsights.find((insight) => insight.id === insightId);
+  if (!existing) return { ok: false, message: "Note not found." };
+
+  db = {
+    ...db,
+    lenderInsights: db.lenderInsights.map((insight) =>
+      insight.id === insightId ? { ...insight, isActive } : insight,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "lender_insight",
+    entityId: insightId,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Note ${isActive ? "restored" : "retired"}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Derived reads â€” the same translation the server will do when it loads a
+// lender out of Postgres, done here so the catalogue screen filters through
+// the real domain code rather than through a second implementation of it.
+// ---------------------------------------------------------------------------
+
+export interface LenderCatalogueView {
+  institutions: LenderInstitution[];
+  branches: LenderBranch[];
+  supportedProducts: DomainSupportedProduct[];
+  insights: DomainLenderInsight[];
+  submissionRules: DomainSubmissionRule[];
+}
+
+/**
+ * Projects the stored lender catalogue into the domain layer's shape â€” ids
+ * resolved to codes, which is what @domain/lenders reasons about.
+ *
+ * Branches, and anything hanging off one, have no code of their own, so their
+ * id stands in as their code. Deliberate and safe: the domain layer only
+ * compares these values with each other, never with a code anybody typed.
+ */
+export function lendersAsDomain(source: Database = db): LenderCatalogueView {
+  const profileCode = (organisationId: Id): string | undefined =>
+    source.lenderProfiles.find((profile) => profile.organisationId === organisationId)?.code;
+  const masterCode = (list: readonly MasterDataRecord[], id?: Id): string | undefined =>
+    id === undefined ? undefined : list.find((record) => record.id === id)?.code;
+  const productCode = (id?: Id): string | undefined =>
+    id === undefined ? undefined : source.loanProducts.find((p) => p.id === id)?.code;
+  /** An institution's code, or a branch's id â€” whichever this row hangs off. */
+  const organisationKey = (organisationId: Id): string =>
+    profileCode(organisationId) ?? organisationId;
+
+  const institutions: LenderInstitution[] = source.lenderProfiles.flatMap((profile) => {
+    const organisation = source.organisations.find((org) => org.id === profile.organisationId);
+    if (!organisation || profile.code === undefined) return [];
+    return [
+      {
+        code: profile.code,
+        name: organisation.canonicalName,
+        lenderTypeCode: masterCode(source.lenderTypes, profile.lenderTypeId),
+        headOfficeCity: profile.headOfficeCity,
+        primaryServiceRegion: profile.primaryServiceRegion,
+        websiteUrl: profile.websiteUrl,
+        isOnPanel: profile.isOnPanel,
+        // `isActive` is optional on Organisation and absent means active,
+        // matching the column's default in the schema.
+        isActive: organisation.isActive !== false,
+        typicalTurnaroundDays: profile.typicalTurnaroundDays,
+        preferredCustomerSegments: profile.preferredCustomerSegments,
+        knownStrengths: profile.knownStrengths,
+        knownLimitations: profile.knownLimitations,
+        commonRejectionPatterns: profile.commonRejectionPatterns,
+        internalRemarks: profile.internalRemarks,
+        notes: profile.notes,
+        aliases: organisation.aliases,
+      },
+    ];
+  });
+
+  const branches: LenderBranch[] = source.bankBranches.flatMap((branch) => {
+    const organisation = source.organisations.find((org) => org.id === branch.organisationId);
+    if (!organisation?.parentOrganisationId) return [];
+    const institutionCode = profileCode(organisation.parentOrganisationId);
+    if (institutionCode === undefined) return [];
+    return [
+      {
+        id: branch.organisationId,
+        institutionCode,
+        name: organisation.canonicalName,
+        cityCode: masterCode(source.cities, branch.cityId),
+        districtCode: masterCode(source.districts, branch.districtId),
+        addressLine: branch.addressLine,
+        contactNumber: branch.contactNumber,
+        email: branch.email,
+        status: branch.operationalStatus,
+        isActive: organisation.isActive !== false,
+        notes: branch.notes,
+      },
+    ];
+  });
+
+  const supportedProducts: DomainSupportedProduct[] = source.bankProducts.flatMap((entry) => {
+    const code = productCode(entry.loanProductId);
+    if (code === undefined) return [];
+    return [
+      {
+        id: entry.id,
+        organisationCode: organisationKey(entry.organisationId),
+        lendingProductCode: code,
+        name: entry.name,
+        minAmount: entry.minAmount,
+        maxAmount: entry.maxAmount,
+        indicativeRate: entry.indicativeRate,
+        notes: entry.notes,
+        isActive: entry.isActive,
+      },
+    ];
+  });
+
+  const insights: DomainLenderInsight[] = source.lenderInsights.flatMap((insight) => {
+    const category = masterCode(source.lenderInsightCategories, insight.lenderInsightCategoryId);
+    if (category === undefined) return [];
+    return [
+      {
+        id: insight.id,
+        organisationCode: organisationKey(insight.organisationId),
+        categoryCode: category,
+        body: insight.body,
+        lendingProductCode: productCode(insight.loanProductId),
+        observedOn: insight.observedOn,
+        isActive: insight.isActive,
+      },
+    ];
+  });
+
+  const submissionRules: DomainSubmissionRule[] = source.lenderSubmissionRules.map((rule) => ({
+    id: rule.id,
+    organisationCode: organisationKey(rule.organisationId),
+    lendingProductCode: productCode(rule.loanProductId),
+    submissionModeCode: masterCode(source.submissionModes, rule.submissionModeId),
+    portalUrl: rule.portalUrl,
+    whatToCarry: rule.whatToCarry,
+    loginFeeNotes: rule.loginFeeNotes,
+    turnaroundNotes: rule.turnaroundNotes,
+    notes: rule.notes,
+    isActive: rule.isActive,
+  }));
+
+  return { institutions, branches, supportedProducts, insights, submissionRules };
+}
+

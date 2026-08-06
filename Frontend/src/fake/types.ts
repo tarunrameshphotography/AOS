@@ -48,6 +48,12 @@ export interface Organisation {
   /** Meaningful only for organisations holding the `borrower` role
    * (ADR-014). Master data — see MasterDataRecord below. */
   businessConstitutionId?: Id;
+  /** Does this organisation still exist? Absent means yes, matching the
+   * column's default (Database/migrations/0003). For a lender this is
+   * deliberately NOT panel status: Lakshmi Vilas Bank is inactive because it
+   * ceased to exist, while a lender Amaze has stopped using is merely off
+   * panel — see LenderProfile.isOnPanel (Milestone 8). */
+  isActive?: boolean;
 }
 
 export interface Employment {
@@ -121,6 +127,13 @@ export type City = MasterDataRecord;
 export type BorrowerType = MasterDataRecord;
 export type SecurityType = MasterDataRecord;
 export type RequirementApplicability = MasterDataRecord;
+// Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019. The shared
+// shape a fourth time. `lenderTypes` supersedes the three-value
+// `app.lender_type` enum (ADR-034) without a new concept for staff to learn.
+export type LenderTypeRecord = MasterDataRecord;
+export type LenderRelationshipRole = MasterDataRecord;
+export type SubmissionMode = MasterDataRecord;
+export type LenderInsightCategory = MasterDataRecord;
 
 export interface AppUser {
   id: Id;
@@ -190,6 +203,155 @@ export interface LoanProduct {
    * not a requirement template (Milestone 7.1). */
   typicalDocumentsSummary?: string;
   notes?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019, 0020.
+//
+// The five concepts the milestone keeps apart, in the same five shapes the
+// schema uses. Four of them extend what already existed rather than replacing
+// it: an institution is an `Organisation` holding the `lender` role plus a
+// `LenderProfile`, and a branch is an `Organisation` holding the `branch`
+// role plus a `BankBranch` (ADR-014, ADR-015). There is deliberately no
+// second "bank" entity beside `Organisation`.
+// ---------------------------------------------------------------------------
+
+/** Extension on an `Organisation` holding the `lender` role. Mirrors
+ * `lender_profile` after Database/migrations/0019. */
+export interface LenderProfile {
+  organisationId: Id;
+  /** Master data (`lenderTypes`). Supersedes the free-text `lenderType`
+   * below, which is kept and kept populated (ADR-034). */
+  lenderTypeId?: Id;
+  /** The legacy three-value enum: bank / nbfc / hfc. Widened, never wrong —
+   * a Small Finance Bank is recorded here as a bank. */
+  lenderType: "bank" | "nbfc" | "hfc";
+  /** Stable internal handle: sbi, hdfc_bank, bajaj_finance. */
+  code?: string;
+  headOfficeCity?: string;
+  /** Free text, as staff say it: "Tamil Nadu and Kerala", "Pan-India". */
+  primaryServiceRegion?: string;
+  websiteUrl?: string;
+  /** Does Amaze currently work with this lender? Distinct from the
+   * organisation's own active flag, which is whether it still exists. */
+  isOnPanel: boolean;
+  /** Calendar days, as the office observes it. Informational, never an SLA. */
+  typicalTurnaroundDays?: number;
+  // Business intelligence. All prose, all written by staff for staff —
+  // nothing here is an eligibility rule (ADR-016, ADR-034).
+  preferredCustomerSegments?: string;
+  knownStrengths?: string;
+  knownLimitations?: string;
+  commonRejectionPatterns?: string;
+  internalRemarks?: string;
+  notes?: string;
+  displayOrder: number;
+}
+
+/** operational / temporarily_closed / closed. Distinct from the
+ * organisation's active flag (Database/migrations/0019). */
+export type BranchStatus = "operational" | "temporarily_closed" | "closed";
+
+/** Extension on an `Organisation` holding the `branch` role. */
+export interface BankBranch {
+  organisationId: Id;
+  branchCode?: string;
+  cityId?: Id;
+  districtId?: Id;
+  addressLine?: string;
+  contactNumber?: string;
+  email?: string;
+  operationalStatus: BranchStatus;
+  notes?: string;
+  displayOrder: number;
+}
+
+/**
+ * A person's working relationship with a lender — the relationship manager.
+ * Mirrors `bank_contact` after Database/migrations/0019.
+ *
+ * The institution is required and the branch optional: a regional manager
+ * belongs to no single branch, and that is a complete record rather than a
+ * partial one. Work mobile and work email are here and not on
+ * `PersonIdentifier` because they belong to the posting, not to the person
+ * (ADR-013).
+ */
+export interface BankContact {
+  id: Id;
+  personId: Id;
+  institutionOrganisationId: Id;
+  branchOrganisationId?: Id;
+  /** Master data (`lenderRelationshipRoles`). */
+  relationshipRoleId?: Id;
+  /** The lender's own job title, verbatim (ADR-028's two-layer pattern). */
+  designation?: string;
+  workMobile?: string;
+  workEmail?: string;
+  notes?: string;
+  isActive: boolean;
+}
+
+/**
+ * That a lender offers a lending product. NOT a redefinition of the product
+ * — the definition stays in the Lending Product Catalogue and this only
+ * names it. `organisationId` is the institution, or one of its branches when
+ * that branch genuinely differs.
+ */
+export interface BankProduct {
+  id: Id;
+  organisationId: Id;
+  loanProductId: Id;
+  /** The lender's own name for it, or the lending product's name where the
+   * office does not know one (Database/migrations/0019). */
+  name: string;
+  minAmount?: number;
+  maxAmount?: number;
+  indicativeRate?: number;
+  notes?: string;
+  isActive: boolean;
+  displayOrder: number;
+}
+
+/**
+ * How a file is lodged with a lender. REFERENCE MATERIAL — read by a person,
+ * executed by nothing. The submission workflow is a later milestone and
+ * works off `Submission` (Database/migrations/0006).
+ */
+export interface LenderSubmissionRule {
+  id: Id;
+  organisationId: Id;
+  /** Absent means the rule covers every product this lender does. */
+  loanProductId?: Id;
+  submissionModeId?: Id;
+  portalUrl?: string;
+  whatToCarry?: string;
+  loginFeeNotes?: string;
+  turnaroundNotes?: string;
+  notes?: string;
+  isActive: boolean;
+  displayOrder: number;
+}
+
+/**
+ * The lender profile: a piece of institutional knowledge about working with
+ * a lender, filed under a category and dated.
+ *
+ * GUIDANCE, NEVER A RULE. `body` is never parsed or branched on. It exists so
+ * that what an experienced loan team knows stops living in two people's heads
+ * — and so that a future assistant can quote it as something the team
+ * observed rather than as a condition it checked (ADR-034).
+ */
+export interface LenderInsight {
+  id: Id;
+  /** An institution, or one of its branches. */
+  organisationId: Id;
+  lenderInsightCategoryId: Id;
+  loanProductId?: Id;
+  body: string;
+  /** ISO date. Experience ages, and a reader who sees the date can discount it. */
+  observedOn?: string;
+  isActive: boolean;
+  displayOrder: number;
 }
 
 export interface DocumentType {
@@ -413,6 +575,17 @@ export interface Database {
   borrowerTypes: BorrowerType[];
   securityTypes: SecurityType[];
   requirementApplicabilities: RequirementApplicability[];
+  // Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019, 0020.
+  lenderTypes: LenderTypeRecord[];
+  lenderRelationshipRoles: LenderRelationshipRole[];
+  submissionModes: SubmissionMode[];
+  lenderInsightCategories: LenderInsightCategory[];
+  lenderProfiles: LenderProfile[];
+  bankBranches: BankBranch[];
+  bankContacts: BankContact[];
+  bankProducts: BankProduct[];
+  lenderSubmissionRules: LenderSubmissionRule[];
+  lenderInsights: LenderInsight[];
   cases: LoanCase[];
   caseParties: CaseParty[];
   caseProperties: CaseProperty[];

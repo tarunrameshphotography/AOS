@@ -128,6 +128,11 @@ const SECTIONS: Section[] = [
   { kind: "simple", key: "borrowerTypes", label: "Borrower Types", hint: "Who can borrow — resident individual, NRI, or a firm in its own name.", category: "business" },
   { kind: "simple", key: "securityTypes", label: "Security Types", hint: "What secures a lending product — a mortgage, pledged gold, hypothecated stock, a guarantee.", category: "business" },
   { kind: "simple", key: "referralSources", label: "Referral Sources", hint: "How a lead reached Amaze. Populates the Source field on case creation.", category: "business" },
+  // Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019.
+  { kind: "simple", key: "lenderTypes", label: "Lender Types", hint: "Public Sector Bank, NBFC, Housing Finance Company and the rest. Add a kind here and it appears on the Lenders screen without a deploy.", category: "business" },
+  { kind: "simple", key: "lenderRelationshipRoles", label: "Relationship Roles", hint: "What a person at a lender does for us — Relationship Manager, Credit Manager, Branch Manager.", category: "operational" },
+  { kind: "simple", key: "submissionModes", label: "Submission Modes", hint: "How a file reaches a lender — at the branch, by email, through their portal. Reference only; nothing acts on it.", category: "operational" },
+  { kind: "simple", key: "lenderInsightCategories", label: "Lender Note Categories", hint: "How a note about a lender is filed — a strength, a limitation, a documentation habit. Guidance, never a rule.", category: "operational" },
 ];
 
 interface PlannedEntity {
@@ -146,14 +151,12 @@ const PLANNED_BY_CATEGORY: Record<MasterDataCategory, PlannedEntity[]> = {
   system: [],
   business: [
     { name: "Lending Products", note: "Has its own screen — Products in the top bar (Milestone 7, ADR-032). The vocabulary it is built from is managed here." },
-    { name: "Banks", note: "Organisation rows holding the lender role (ADR-014). Own screen: \"Coimbatore Bank & NBFC Catalogue\" milestone." },
-    { name: "NBFCs", note: "Organisation rows, lender_profile.lender_type = 'nbfc'. Same upcoming screen as Banks." },
-    { name: "Housing Finance Companies", note: "Organisation rows, lender_profile.lender_type = 'hfc'. Same upcoming screen as Banks." },
-    { name: "Bank Branches", note: "Organisation rows holding the branch role (ADR-015). Same upcoming screen as Banks." },
+    { name: "Banks, NBFCs and Housing Finance Companies", note: "Have their own screen — Lenders in the top bar (Milestone 8, ADR-034). Organisation rows holding the lender role (ADR-014); the kinds of lender are managed here." },
+    { name: "Bank Branches", note: "On the Lenders screen, under each lender. Organisation rows holding the branch role, plus the operational facts a branch has (ADR-015, Milestone 8)." },
   ],
   operational: [
     { name: "Employees", note: "Modelled today as app_user + person." },
-    { name: "Relationship Managers", note: "Modelled today as person + bank_contact — a relationship, not vocabulary." },
+    { name: "Relationship Managers", note: "On the Lenders screen, under each lender. A person plus a relationship, not vocabulary — so a manager who moves banks is a new relationship, never a lost contact (Milestone 8)." },
     { name: "Builders", note: "Modelled as organisation rows holding the builder role." },
     { name: "Developers", note: "Modelled as organisation rows holding the developer role." },
     { name: "Advocates", note: "Not yet modelled." },

@@ -15,6 +15,7 @@ import { useDatabase } from "./fake/useDatabase.js";
 import { search } from "./lib.js";
 import { CaseDetail } from "./screens/CaseDetail.js";
 import { CaseList } from "./screens/CaseList.js";
+import { LenderCatalogue } from "./screens/LenderCatalogue.js";
 import { LendingProducts } from "./screens/LendingProducts.js";
 import { MasterData } from "./screens/MasterData.js";
 import { NewCase } from "./screens/NewCase.js";
@@ -41,6 +42,7 @@ export function App(): ReactNode {
           <Route path="/cases/:caseId" element={<CaseDetail />} />
           <Route path="/people/:personId" element={<PersonProfile />} />
           <Route path="/admin/lending-products" element={<LendingProducts />} />
+          <Route path="/admin/lenders" element={<LenderCatalogue />} />
           <Route path="/admin/master-data" element={<MasterData />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -92,6 +94,19 @@ function TopBar(): ReactNode {
               }
             >
               Products
+            </NavLink>
+          )}
+          {session.can("master_data.read", "all") && (
+            <NavLink
+              to="/admin/lenders"
+              className={({ isActive }) =>
+                cx(
+                  "rounded-md px-3 py-1.5 text-sm font-medium",
+                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
+                )
+              }
+            >
+              Lenders
             </NavLink>
           )}
           {session.can("master_data.read", "all") && (

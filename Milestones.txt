@@ -7,7 +7,7 @@ The sequence I'd follow
 ✅ Master Data Refinement
 ✅ Lending Product Catalogue
 ✅ Lending Product Refinement
-Coimbatore Bank & NBFC Catalogue
+✅ Bank & NBFC Catalogue
 Document Requirement Engine
 Workflow Polish
 OCR & AI

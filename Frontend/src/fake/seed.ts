@@ -438,6 +438,248 @@ export function buildSeed(): Database {
     };
   });
 
+  // ---------------------------------------------------------------------
+  // Bank & NBFC Catalogue (Milestone 8) — Database/migrations/0019, 0020.
+  // Mirrors the DB seed: real Indian institutions, their real head offices,
+  // and nothing else.
+  //
+  // What is deliberately absent, exactly as in the migration: relationship
+  // managers (inventing the names of bank employees would put fictional
+  // people in an operational contact list), branch addresses and phone
+  // numbers, turnaround days, rates and limits — and every lender insight.
+  // The insight table is the most valuable one in this milestone and it
+  // starts empty on purpose: "excellent for textile businesses" is only
+  // worth storing when it is Amaze's own observation, and a seeded one would
+  // be an invented opinion attributed to the team.
+  //
+  // The four Madurai lenders seeded above (HDFC Bank, IIFL, LIC HFL,
+  // Sundaram) stay exactly as they were — existing submissions point at
+  // their branches. HDFC Bank and LIC Housing Finance are the same
+  // institutions this catalogue would otherwise add, so they gain a profile
+  // rather than a duplicate row, which is the whole reason lenders are
+  // organisations (ADR-014).
+  // ---------------------------------------------------------------------
+
+  const lenderTypes: Database["lenderTypes"] = [
+    { id: id("lty", 1), code: "public_sector_bank", name: "Public Sector Bank", description: "A commercial bank majority-owned by the Government of India. Broad product range, competitive rates, process-driven and usually slower.", isActive: true, displayOrder: 10 },
+    { id: id("lty", 2), code: "private_sector_bank", name: "Private Sector Bank", description: "A privately-owned commercial bank. Faster decisions, wider risk appetite, generally priced above the public sector.", isActive: true, displayOrder: 20 },
+    { id: id("lty", 3), code: "small_finance_bank", name: "Small Finance Bank", description: "Licensed to serve small businesses, micro enterprises and the unbanked. Small ticket sizes, local reach, higher rates.", isActive: true, displayOrder: 30 },
+    { id: id("lty", 4), code: "regional_rural_bank", name: "Regional Rural Bank", description: "Sponsored by a commercial bank to serve a defined rural region. Priority-sector and agricultural lending.", isActive: true, displayOrder: 40 },
+    { id: id("lty", 5), code: "cooperative_bank", name: "Cooperative Bank", description: "A member-owned bank under state or multi-state cooperative law. Strong local presence, narrower product range.", isActive: true, displayOrder: 50 },
+    { id: id("lty", 6), code: "nbfc", name: "NBFC", description: "A non-banking financial company. Lends but takes no demand deposits. Flexible assessment, faster turnaround, higher rates.", isActive: true, displayOrder: 60 },
+    { id: id("lty", 7), code: "housing_finance_company", name: "Housing Finance Company", description: "An NBFC specialising in housing finance. Home loans, loans against property, construction finance.", isActive: true, displayOrder: 70 },
+  ];
+
+  const lenderRelationshipRoles: Database["lenderRelationshipRoles"] = [
+    { id: id("lrr", 1), code: "relationship_manager", name: "Relationship Manager", description: "The day-to-day contact for files lodged with this lender. The default.", isActive: true, displayOrder: 10 },
+    { id: id("lrr", 2), code: "branch_manager", name: "Branch Manager", description: "Heads the branch. Usually the escalation, not the first call.", isActive: true, displayOrder: 20 },
+    { id: id("lrr", 3), code: "credit_manager", name: "Credit Manager", description: "Assesses the file. Queries and conditions usually originate here.", isActive: true, displayOrder: 30 },
+    { id: id("lrr", 4), code: "sales_manager", name: "Sales Manager", description: "Sourcing side. Owns targets, and often the one who agrees to look at a borderline case.", isActive: true, displayOrder: 40 },
+    { id: id("lrr", 5), code: "operations_officer", name: "Operations Officer", description: "Processing and disbursement. Chased for sanction letters and disbursement dates.", isActive: true, displayOrder: 50 },
+    { id: id("lrr", 6), code: "channel_manager", name: "Channel Manager", description: "Manages the lender's DSA and connector channel.", isActive: true, displayOrder: 60 },
+  ];
+
+  const submissionModes: Database["submissionModes"] = [
+    { id: id("smd", 1), code: "branch_counter", name: "At the Branch", description: "A physical file handed over at the branch. Still the norm at most public sector banks.", isActive: true, displayOrder: 10 },
+    { id: id("smd", 2), code: "email", name: "By Email", description: "A scanned set emailed to a credit desk or relationship manager.", isActive: true, displayOrder: 20 },
+    { id: id("smd", 3), code: "partner_portal", name: "Lender Portal", description: "Logged through the lender's own partner or DSA portal.", isActive: true, displayOrder: 30 },
+    { id: id("smd", 4), code: "connector_app", name: "Connector App", description: "Logged through the lender's mobile connector app.", isActive: true, displayOrder: 40 },
+    { id: id("smd", 5), code: "rm_pickup", name: "Collected by the RM", description: "The relationship manager collects the file and lodges it internally.", isActive: true, displayOrder: 50 },
+  ];
+
+  const lenderInsightCategories: Database["lenderInsightCategories"] = [
+    { id: id("lic", 1), code: "segment_fit", name: "Good Fit For", description: "Customer segments, trades or profiles this lender handles well. Experience, not a rule.", isActive: true, displayOrder: 10 },
+    { id: id("lic", 2), code: "strength", name: "Known Strength", description: "What this lender is genuinely good at — pricing, speed, flexibility on a particular point.", isActive: true, displayOrder: 20 },
+    { id: id("lic", 3), code: "limitation", name: "Known Limitation", description: "Where this lender is difficult, slow or unwilling. Worth knowing before lodging.", isActive: true, displayOrder: 30 },
+    { id: id("lic", 4), code: "documentation_habit", name: "Documentation Habit", description: "What this lender routinely asks for beyond the standard set.", isActive: true, displayOrder: 40 },
+    { id: id("lic", 5), code: "process_tip", name: "Process Tip", description: "How to get a file through faster. Practical, learned the hard way.", isActive: true, displayOrder: 50 },
+    { id: id("lic", 6), code: "communication_preference", name: "Communication Preference", description: "How this lender or its managers prefer to be contacted and followed up.", isActive: true, displayOrder: 60 },
+    { id: id("lic", 7), code: "rejection_pattern", name: "Rejection Pattern", description: "What this lender tends to decline. Distinct from the standardised rejection reason recorded against an actual rejected file (ADR-028).", isActive: true, displayOrder: 70 },
+  ];
+
+  /**
+   * The institutions, as a table: internal code, name, type, the legacy
+   * enum value, head office, service region, website, aliases, and — for the
+   * two that need one — a note of record. Head offices are public record;
+   * everything operational is left blank on purpose.
+   */
+  const institutionRows: Array<[
+    string, string, string, "bank" | "nbfc" | "hfc", string, string, string | undefined,
+    string[], string | undefined, boolean,
+  ]> = [
+    ["sbi", "State Bank of India", "public_sector_bank", "bank", "Mumbai", "Pan-India", "https://sbi.co.in", ["SBI"], undefined, true],
+    ["indian_bank", "Indian Bank", "public_sector_bank", "bank", "Chennai", "Pan-India, strongest in Tamil Nadu", "https://indianbank.in", [], undefined, true],
+    ["canara_bank", "Canara Bank", "public_sector_bank", "bank", "Bengaluru", "Pan-India, strongest in South India", "https://canarabank.com", [], undefined, true],
+    ["bank_of_baroda", "Bank of Baroda", "public_sector_bank", "bank", "Vadodara", "Pan-India", "https://bankofbaroda.in", ["BoB"], undefined, true],
+    ["union_bank", "Union Bank of India", "public_sector_bank", "bank", "Mumbai", "Pan-India", "https://unionbankofindia.co.in", [], undefined, true],
+    ["pnb", "Punjab National Bank", "public_sector_bank", "bank", "New Delhi", "Pan-India, strongest in North India", "https://pnbindia.in", ["PNB"], undefined, true],
+    ["iob", "Indian Overseas Bank", "public_sector_bank", "bank", "Chennai", "Pan-India, strongest in Tamil Nadu", "https://iob.in", ["IOB"], undefined, true],
+    ["icici_bank", "ICICI Bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://icicibank.com", [], "Registered office is in Vadodara; the corporate office and the lending business are run from Mumbai.", true],
+    ["axis_bank", "Axis Bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://axisbank.com", [], "Registered office is in Ahmedabad; the corporate office is in Mumbai.", true],
+    ["kotak_bank", "Kotak Mahindra Bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://kotak.com", [], undefined, true],
+    ["federal_bank", "Federal Bank", "private_sector_bank", "bank", "Aluva", "Kerala and Tamil Nadu, plus metros", "https://federalbank.co.in", [], undefined, true],
+    ["south_indian_bank", "South Indian Bank", "private_sector_bank", "bank", "Thrissur", "Kerala and Tamil Nadu", "https://southindianbank.com", [], undefined, true],
+    ["csb_bank", "CSB Bank", "private_sector_bank", "bank", "Thrissur", "Kerala and Tamil Nadu", "https://csb.co.in", [], undefined, true],
+    ["tmb", "Tamilnad Mercantile Bank", "private_sector_bank", "bank", "Thoothukudi", "Tamil Nadu", "https://tmb.in", ["TMB"], undefined, true],
+    ["kvb", "Karur Vysya Bank", "private_sector_bank", "bank", "Karur", "Tamil Nadu", "https://kvb.co.in", ["KVB"], undefined, true],
+    ["city_union_bank", "City Union Bank", "private_sector_bank", "bank", "Kumbakonam", "Tamil Nadu", "https://cityunionbank.com", ["CUB"], undefined, true],
+    // Legacy reference. Amalgamated into DBS Bank India on 27 November 2020,
+    // so it is seeded inactive — old cases naming it still resolve, and
+    // nobody can pick it for a new one (the never-delete convention, 0014).
+    ["lvb", "Lakshmi Vilas Bank", "private_sector_bank", "bank", "Chennai", "Tamil Nadu", undefined, ["LVB"], "LEGACY REFERENCE ONLY. Amalgamated into DBS Bank India Ltd on 27 November 2020 and no longer exists as a lender.", false],
+    ["bajaj_finance", "Bajaj Finance", "nbfc", "nbfc", "Pune", "Pan-India", "https://bajajfinserv.in", [], undefined, true],
+    ["tata_capital", "Tata Capital", "nbfc", "nbfc", "Mumbai", "Pan-India", "https://tatacapital.com", [], undefined, true],
+    ["aditya_birla_finance", "Aditya Birla Finance", "nbfc", "nbfc", "Mumbai", "Pan-India", "https://adityabirlacapital.com", [], undefined, true],
+    ["chola", "Cholamandalam Investment and Finance Company", "nbfc", "nbfc", "Chennai", "Pan-India, strongest in South India", "https://cholamandalam.com", ["Chola", "Cholamandalam Finance"], undefined, true],
+    ["shriram_finance", "Shriram Finance", "nbfc", "nbfc", "Chennai", "Pan-India, strongest in South India", "https://shriramfinance.in", [], undefined, true],
+    ["lt_finance", "L&T Finance", "nbfc", "nbfc", "Mumbai", "Pan-India", "https://ltfs.com", ["LTF"], undefined, true],
+    ["poonawalla_fincorp", "Poonawalla Fincorp", "nbfc", "nbfc", "Pune", "Pan-India", "https://poonawallafincorp.com", [], undefined, true],
+    ["pnb_hfl", "PNB Housing Finance", "housing_finance_company", "hfc", "New Delhi", "Pan-India", "https://pnbhousing.com", ["PNB HFL"], undefined, true],
+    ["aavas", "Aavas Financiers", "housing_finance_company", "hfc", "Jaipur", "Pan-India, semi-urban and rural focus", "https://aavas.in", [], undefined, true],
+    ["aptus", "Aptus Value Housing Finance India", "housing_finance_company", "hfc", "Chennai", "South India, semi-urban and rural", "https://aptusindia.com", ["Aptus"], undefined, true],
+  ];
+
+  const lenderProfiles: Database["lenderProfiles"] = [];
+  const bankBranches: Database["bankBranches"] = [];
+
+  /** Adds a profile to an organisation that already exists in the seed. */
+  const profileFor = (
+    organisationId: string,
+    code: string,
+    typeCode: string,
+    legacy: "bank" | "nbfc" | "hfc",
+    headOffice: string,
+    region: string,
+    website: string | undefined,
+    order: number,
+    notes?: string,
+  ): void => {
+    lenderProfiles.push({
+      organisationId,
+      lenderTypeId: idOf(lenderTypes, typeCode),
+      lenderType: legacy,
+      code,
+      headOfficeCity: headOffice,
+      primaryServiceRegion: region,
+      isOnPanel: true,
+      displayOrder: order,
+      ...(website ? { websiteUrl: website } : {}),
+      ...(notes ? { notes } : {}),
+    });
+  };
+
+  // The four lenders seeded above for the Madurai cases, given the profile
+  // this milestone adds. Not duplicated as new rows: HDFC Bank is HDFC Bank
+  // (ADR-014).
+  profileFor(id("org", 1), "hdfc_bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://hdfcbank.com", 110,
+    "HDFC Ltd merged into HDFC Bank with effect from 1 July 2023. What the market still calls \"HDFC Home Loans\" is this institution — there is deliberately no separate housing finance entity for it in this catalogue.");
+  profileFor(id("org", 3), "iifl_home_finance", "housing_finance_company", "hfc", "Mumbai", "Pan-India", "https://iiflhomeloans.com", 450);
+  profileFor(id("org", 5), "lic_hfl", "housing_finance_company", "hfc", "Mumbai", "Pan-India", "https://lichousing.com", 410);
+  profileFor(id("org", 7), "sundaram_finance", "nbfc", "nbfc", "Chennai", "South India", "https://sundaramfinance.in", 380);
+
+  // The existing Madurai branches, given the branch extension. Madurai is
+  // outside the seeded Coimbatore-first geography (Database/migrations/0014),
+  // so their district and city are left unset rather than forced into a
+  // district they are not in.
+  for (const branchId of [id("org", 2), id("org", 4), id("org", 6), id("org", 8)]) {
+    bankBranches.push({ organisationId: branchId, operationalStatus: "operational", displayOrder: 10 });
+  }
+
+  institutionRows.forEach((row, index) => {
+    const [code, name, typeCode, legacy, headOffice, region, website, aliases, notes, isActive] = row;
+    const orgId = id("org", 100 + index);
+    organisations.push({
+      id: orgId,
+      canonicalName: name,
+      roles: ["lender"],
+      industry: "Banking and Finance",
+      city: headOffice,
+      aliases,
+      // Inactive means the institution no longer exists — which is true of
+      // exactly one row here, and is a different fact from being off panel.
+      isActive,
+    });
+    lenderProfiles.push({
+      organisationId: orgId,
+      lenderTypeId: idOf(lenderTypes, typeCode),
+      lenderType: legacy,
+      code,
+      headOfficeCity: headOffice,
+      primaryServiceRegion: region,
+      isOnPanel: isActive,
+      displayOrder: (index + 1) * 10,
+      ...(website ? { websiteUrl: website } : {}),
+      ...(notes ? { notes } : {}),
+    });
+
+    // Geography only. That each of these lenders has a Coimbatore presence
+    // is not a guess; which branch on which street is, so the address, the
+    // phone and the email stay empty until the office fills them in.
+    if (!isActive) return;
+    const branchId = id("org", 200 + index);
+    organisations.push({
+      id: branchId,
+      canonicalName: `${name} — Coimbatore`,
+      roles: ["branch"],
+      industry: "Banking and Finance",
+      city: "Coimbatore",
+      parentOrganisationId: orgId,
+      aliases: [],
+    });
+    bankBranches.push({
+      organisationId: branchId,
+      cityId: idOf(cities, "coimbatore"),
+      districtId: idOf(districts, "coimbatore"),
+      operationalStatus: "operational",
+      displayOrder: 10,
+      notes: "Seeded as this lender's Coimbatore presence, with geography only. Rename it to the actual branch and fill in the address, phone and email.",
+    });
+  });
+
+  /**
+   * Supported products — only what is true by the nature of the institution.
+   *
+   * A housing finance company does home loans and loans against property:
+   * that is what the licence is for. A universal commercial bank does home
+   * loans, LAP, business term loans and working capital: that is what a
+   * full-service bank is. Anything finer — who does used commercial
+   * vehicles, who will look at an unsecured business loan above fifty lakh —
+   * is real knowledge that varies by year and by branch, and it belongs to
+   * the office, entered on the screen.
+   */
+  const BANK_PRODUCT_CODES = ["hl_purchase", "hl_self_construct", "hl_balance_transfer", "lap", "bl_term_loan", "bl_working_capital"];
+  const HFC_PRODUCT_CODES = ["hl_purchase", "hl_self_construct", "hl_plot_construction", "hl_improvement", "hl_balance_transfer", "hl_top_up", "lap"];
+
+  const bankProducts: Database["bankProducts"] = [];
+  let bankProductSeq = 0;
+  for (const profile of lenderProfiles) {
+    const typeCode = lenderTypes.find((t) => t.id === profile.lenderTypeId)?.code;
+    const productCodes =
+      typeCode === "public_sector_bank" || typeCode === "private_sector_bank"
+        ? BANK_PRODUCT_CODES
+        : typeCode === "housing_finance_company"
+          ? HFC_PRODUCT_CODES
+          : [];
+    for (const productCode of productCodes) {
+      const product = loanProducts.find((p) => p.code === productCode);
+      if (!product) continue;
+      bankProducts.push({
+        id: id("bpr", ++bankProductSeq),
+        organisationId: profile.organisationId,
+        loanProductId: product.id,
+        name: product.name ?? product.variant,
+        isActive: true,
+        displayOrder: product.displayOrder,
+        notes: "Recorded because an institution of this kind offers this product. Replace the name with the lender's own if it has one, and add limits and rates as the office learns them.",
+      });
+    }
+  }
+
+  // Empty on purpose — see this section's header comment.
+  const bankContacts: Database["bankContacts"] = [];
+  const lenderSubmissionRules: Database["lenderSubmissionRules"] = [];
+  const lenderInsights: Database["lenderInsights"] = [];
+
   const year = new Date().getFullYear();
   const num = (n: number): string => `AL-${year}-${String(n).padStart(5, "0")}`;
 
@@ -587,6 +829,9 @@ export function buildSeed(): Database {
     customerProducts, employmentTypes, businessConstitutions, propertyTypes,
     propertyOwnershipTypes, referralSources, districts, cities,
     borrowerTypes, securityTypes, requirementApplicabilities,
+    lenderTypes, lenderRelationshipRoles, submissionModes, lenderInsightCategories,
+    lenderProfiles, bankBranches, bankContacts, bankProducts,
+    lenderSubmissionRules, lenderInsights,
     cases, caseParties, caseProperties, documents,
     requirements: [], submissions, offers, communications, notes, tasks, events,
     caseNumberSequence: { [year]: 47 },

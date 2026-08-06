@@ -1144,3 +1144,110 @@ match how Amaze's own staff describe it, a suspended product is
 distinguishable from a retired one, and a telecaller can see who a product is
 usually for and what it usually asks for without waiting for the requirement
 engine to exist.
+
+---
+
+## ADR-034 — The lender catalogue extends the organisation model; institutional knowledge is stored separately from rules
+
+Date: 2026-08-06
+Status: Accepted
+
+**Decision.** Milestone 8 builds AOS's lender intelligence layer by deepening
+four tables that already existed and adding three that did not. Nothing about
+the organisation model changes.
+
+| Concept | Where it lives | New in Milestone 8 |
+| --- | --- | --- |
+| Institution | `organisation` (role `lender`) + `lender_profile` | Eleven columns on the extension |
+| Branch | `organisation` (role `branch`) + `bank_branch` | The extension table |
+| Relationship Manager | `bank_contact` | Institution, role, work contact, notes |
+| Supported Products | `bank_product` | Notes and audit columns only |
+| Submission Rules | `lender_submission_rule` | New, declarative |
+| Lender Profile | `lender_insight` | New, guidance only |
+
+**Why not a `bank` table.** The obvious reading of "create a catalogue of
+lending institutions" is a new entity. ADR-014 already refused that, and the
+reason has not weakened: "IIFL" / "IIFL Home Finance Ltd" / "India Infoline"
+is the same alias-and-dedup problem as "ABC Textiles," and a separate bank
+table means alias, fuzzy match, merge and tombstone-redirect are all built
+twice — or, more realistically, built once for borrowers and never for
+lenders, at which point the catalogue accumulates three HDFC Banks. The
+milestone's own seed proves the point twice over: HDFC Ltd merged into HDFC
+Bank in July 2023, and "HDFC Home Loans" is an alias rather than a second
+institution.
+
+**`app.lender_type` becomes master data.** The enum has three values —
+`bank`, `nbfc`, `hfc` — and the brief asked for seven with room for more. A
+Small Finance Bank is not an engineering distinction from a Public Sector
+Bank; it is a business one, it changes what a case is worth routing there,
+and the list grows (payments banks, microfinance institutions, fintech
+lenders) on a timescale of months. That is ADR-030's test for table-over-enum
+and the enum fails it. The enum column is kept and kept populated, widened
+rather than falsified — a Small Finance Bank is recorded there as a `bank` —
+so every pre-Milestone-8 reader keeps working. Same pattern as
+`loan_product.category` in ADR-032.
+
+**`bank_contact.branch_organisation_id` becomes nullable, and the institution
+becomes required.** A regional or state-level relationship manager belongs to
+a lender and to no single branch, and refusing to record one would push the
+most senior contacts out of the system entirely. The backfill runs before the
+constraint changes, so every existing row keeps the branch it had and no
+existing reader sees a null it did not see before. Work mobile and work email
+sit on `bank_contact`, deliberately not on `person_identifier`: a person's own
+phone is their identity and follows them for life, while a desk number and a
+bank email address belong to the posting and die with it — storing them as
+identifiers would leave a dead @hdfcbank.com address on a human being's
+identity record for ever and quietly make it a matching signal (ADR-013).
+
+**Submission rules are declarative and named as a hazard.** The office calls
+them rules, so the table is called `lender_submission_rule` — and both the
+table comment and the permission binding say in as many words that nothing in
+AOS may ever execute one. Calling it something safer would have hidden the
+risk rather than removed it. It records how a file is lodged and what to
+carry; the submission workflow milestone still reads `submission` (0006).
+
+**The lender profile: experience stored apart from criteria.** The most
+valuable thing an experienced loan team knows does not fit in fields.
+"Excellent for textile businesses." "Responds quickly to MSME manufacturing
+cases." "Very strict on GST compliance." "Often asks for an extra year of
+ITR." "The RM prefers WhatsApp before email." Today that lives in two
+people's heads.
+
+`lender_insight` stores it as categorised, dated free text attached to an
+institution or a branch, and the separation from `lender_profile`'s own
+columns is the decision, not an implementation detail:
+
+- A lender's stated criteria and the office's lived experience of it are
+  different kinds of claim with different reliability, and a schema that
+  interleaves them makes the difference unrecoverable.
+- The category is what keeps that visible downstream. "Known limitation" and
+  "process tip" must never read the same to a person or to an assistant, and
+  they cannot if the category travels with the note.
+- `observed_on` exists because experience ages. A note about a manager who
+  transferred last year is worse than no note; a reader who can see the date
+  can discount it.
+- When AI features arrive, these are **context to quote, never conditions to
+  evaluate** — "the team notes that this lender is strict on GST compliance,"
+  not "this lender requires GST compliance." ADR-016's warning about
+  confidently wrong answers applies with more force here than anywhere else
+  in the schema, because an insight is honest about being one person's
+  experience and a rules engine is not. `body` is not parsed, matched or
+  branched on by `@domain/lenders`, and must not be by anything downstream.
+
+**What was seeded, and what was refused.** Real institutions with real head
+offices; Lakshmi Vilas Bank inactive with the amalgamation noted; branches
+carrying district and city and nothing else. No relationship managers, no
+phone numbers, no addresses, no turnaround days, no rates, no limits, no
+insights. `Frontend/src/fake/lenders.test.ts` asserts each of those absences,
+so a later "7 days" that nobody measured fails the build rather than becoming
+fact by repetition.
+
+**Consequences.** Case Routing, Eligibility Suggestions, Submission Tracking,
+Turnaround Analytics, AI Recommendations and Reporting all now have a layer to
+read, and each remains its own milestone — none is started here. Adding a
+lender, a branch, a manager, a supported product, a submission note or a piece
+of hard-won experience is data entry on one screen; adding a *kind* of lender,
+role, submission mode or note category is a row in master data. Neither needs
+a developer. What stays hard, deliberately: getting AOS to decide anything
+about a lender. That is the next argument to have, and this milestone is the
+evidence it will need.

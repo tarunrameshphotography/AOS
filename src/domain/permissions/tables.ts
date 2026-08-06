@@ -216,12 +216,18 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     table: "bank_contact",
     family: "reference",
     purpose:
-      "A person's working relationship with a bank branch, modelled as a relationship " +
-      "so a manager changing branches is one new row rather than a lost contact.",
+      "A person's working relationship with a lender — the relationship manager. " +
+      "Modelled as a relationship so a manager changing branches is one new row " +
+      "rather than a lost contact.",
     select: permits("organisation.read"),
     insert: permits("organisation.update"),
     update: permits("organisation.update"),
     delete: NEVER_DELETED,
+    notes:
+      "The institution is required and the branch optional (Database/migrations/" +
+      "0019): a regional manager belongs to no single branch. Work mobile and work " +
+      "email live here rather than on person_identifier — they belong to the " +
+      "posting, not to the person (ADR-013).",
   },
 
   // ── The case and everything on it ────────────────────────────────────────
@@ -411,11 +417,113 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
   {
     table: "lender_profile",
     family: "reference",
-    purpose: "Bank-specific operational facts: lender type, panel status, standard turnaround.",
+    purpose:
+      "Bank-specific operational facts: lender type, panel status, service region, " +
+      "turnaround, and the business intelligence the office keeps about a lender " +
+      "(Database/migrations/0019, ADR-034).",
     select: permits("organisation.read"),
     insert: permits("master_data.manage"),
     update: permits("master_data.manage"),
     delete: NEVER_DELETED,
+    notes:
+      "Known strengths, known limitations and common rejection patterns are prose " +
+      "written by staff for staff. Nothing may execute them (ADR-016, ADR-034).",
+  },
+
+  // ── Bank & NBFC Catalogue (Milestone 8, ADR-034) ─────────────────────────
+  {
+    table: "bank_branch",
+    family: "reference",
+    purpose:
+      "The operational facts about a lender's branch — district, address, desk " +
+      "phone, whether it is open. An extension on organisation, which already " +
+      "holds the name and the parent institution (ADR-014, ADR-015).",
+    select: permits("organisation.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+    notes:
+      "operational_status is distinct from organisation.is_active: a branch can be " +
+      "temporarily closed and still be the right branch for next week's file.",
+  },
+  {
+    table: "lender_type",
+    family: "reference",
+    purpose:
+      "Public Sector Bank, Private Sector Bank, Small Finance Bank, Regional Rural " +
+      "Bank, Cooperative Bank, NBFC, Housing Finance Company. Supersedes the " +
+      "three-value app.lender_type enum, which stays populated (Database/" +
+      "migrations/0019).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "lender_relationship_role",
+    family: "reference",
+    purpose:
+      "What a person at a lender does for Amaze — relationship manager, branch " +
+      "manager, credit manager. The standardised layer beside bank_contact." +
+      "designation, which keeps the lender's own job title verbatim (ADR-028).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "submission_mode",
+    family: "reference",
+    purpose:
+      "How a file physically reaches a lender — counter, email, partner portal, " +
+      "connector app. Reference material for the person lodging it; it drives no " +
+      "workflow (Database/migrations/0019).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "lender_insight_category",
+    family: "reference",
+    purpose:
+      "What kind of practical knowledge a lender insight is — a strength, a " +
+      "limitation, a documentation habit, a process tip. The category is what " +
+      "keeps 'known limitation' from ever reading like 'process tip' (ADR-034).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "lender_submission_rule",
+    family: "reference",
+    purpose:
+      "How a file is lodged with a lender and what to have ready. DECLARATIVE " +
+      "reference material — it moves no case and creates no submission " +
+      "(Database/migrations/0019).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+    notes:
+      "Called a rule because that is what the office calls it. Nothing in AOS may " +
+      "ever execute one; the submission workflow reads `submission` (0006).",
+  },
+  {
+    table: "lender_insight",
+    family: "reference",
+    purpose:
+      "The lender profile: what the team has learned about working with a lender, " +
+      "in the words of whoever learned it. Guidance, never a rule (ADR-034).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+    notes:
+      "`body` is free text and must never be parsed or branched on. A future " +
+      "assistant may quote an insight as something the team observed; it may not " +
+      "present one as a condition it checked.",
   },
   {
     table: "loan_product",

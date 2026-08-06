@@ -280,7 +280,22 @@ export interface BankBranch {
  */
 export interface BankContact {
   id: Id;
-  personId: Id;
+  /**
+   * The human being, when there is one (Milestone 10,
+   * Database/migrations/0024).
+   *
+   * Optional since the Bank Submission Workflow: a great many of the
+   * addresses a file is actually sent to are desks, not people —
+   * "homeloans.cbe@bank.com" is an address and inventing a `Person` to hold
+   * it would put fictional people in an operational contact list. Kept rather
+   * than replaced by `contactName`, because a named manager who moves to
+   * another bank next year is one new contact against the same person, which
+   * is the whole point of ADR-006 and ADR-014.
+   */
+  personId?: Id;
+  /** The name as the office recorded it, and the display name. Optional —
+   * a shared mailbox has none, and that is a complete record. */
+  contactName?: string;
   institutionOrganisationId: Id;
   branchOrganisationId?: Id;
   /** Master data (`lenderRelationshipRoles`). */
@@ -289,6 +304,10 @@ export interface BankContact {
   designation?: string;
   workMobile?: string;
   workEmail?: string;
+  /** The one contact at this branch a file goes to first. At most one per
+   * branch among the active contacts — a second is a data entry mistake, not
+   * a preference. The Add Bank workflow pre-selects it. */
+  isPrimaryContact?: boolean;
   notes?: string;
   isActive: boolean;
 }
@@ -560,13 +579,80 @@ export type SubmissionStatus =
 export interface Submission {
   id: Id;
   caseId: Id;
+  /** The counterparty a file physically goes to (ADR-015). */
   branchOrganisationId: Id;
+  /**
+   * The lending institution (Milestone 10, Database/migrations/0024).
+   * Reachable through the branch's parent link, but that is master data like
+   * any other and a branch can be re-parented when banks merge — which is
+   * exactly when you least want "which bank was this?" answered by walking a
+   * mutable pointer.
+   */
+  institutionOrganisationId?: Id;
+  /** How the file goes out — master data (`submissionModes`). Records intent
+   * only. NOTHING IN AOS SENDS ANYTHING. */
+  submissionModeId?: Id;
+  /**
+   * What the bank and branch were CALLED when the file went to them
+   * (Milestone 10, ADR-036).
+   *
+   * Denormalised on purpose, and the one place in this prototype where that
+   * is correct: master data is edited — branches are renamed, moved and
+   * closed — and an edit must never rewrite what a historical submission says
+   * it did. The live ids above are how you reach the branch as it is NOW;
+   * these are what it was then, and neither can be derived from the other.
+   */
+  bankNameAtSubmission?: string;
+  branchNameAtSubmission?: string;
+  branchAddressAtSubmission?: string;
+  branchCityAtSubmission?: string;
+  /** When the snapshot was captured. Absent means the row was reconstructed
+   * from master data rather than recorded at the time — a reconstruction is
+   * not a record, and anything reporting on historical accuracy has to be
+   * able to tell them apart. */
+  snapshotTakenAt?: string;
   status: SubmissionStatus;
   submittedAt?: string;
   rejectionReasonId?: Id;
   bankReasonText?: string;
   loginFeeAmount?: number;
   bankReferenceNumber?: string;
+  createdAt: string;
+}
+
+/**
+ * One banker a submission was addressed to (Milestone 10, ADR-036,
+ * Database/migrations/0024).
+ *
+ * Multiple recipients are the norm rather than an edge case: the relationship
+ * manager, the credit manager who will actually raise the query, and the
+ * branch's shared mailbox so the file does not die when one person is on
+ * leave. A model holding one of them pushes the rest into a free-text note
+ * where nothing can read them.
+ *
+ * Every field except the email is snapshotted from the catalogue at the
+ * moment the bank was added, for the reason `Submission`'s own snapshot
+ * exists — editing a contact must not rewrite who a historical file went to.
+ */
+export interface SubmissionRecipient {
+  id: Id;
+  submissionId: Id;
+  /** The catalogue contact this came from, when it came from one. Absent for
+   * an address typed in on the spot, which must stay possible or people keep
+   * a second list outside the system. */
+  bankContactId?: Id;
+  email: string;
+  contactName?: string;
+  designation?: string;
+  /** Who was addressed first on THIS file. Distinct from
+   * `BankContact.isPrimaryContact`, which is the branch's standing
+   * arrangement. */
+  isPrimary: boolean;
+  /** to / cc. Records the office's intent about who is addressed and who is
+   * copied. Read by nothing today — it exists so a future Gmail or Outlook
+   * integration consumes it rather than re-asking. */
+  recipientKind: "to" | "cc";
+  displayOrder: number;
   createdAt: string;
 }
 
@@ -665,6 +751,8 @@ export interface Database {
   // Document Requirement Engine (Milestone 9) — Database/migrations/0021, 0022.
   documentRequirementRules: DocumentRequirementRule[];
   submissions: Submission[];
+  // Bank Submission Workflow (Milestone 10) — Database/migrations/0024.
+  submissionRecipients: SubmissionRecipient[];
   offers: Offer[];
   communications: Communication[];
   notes: Note[];

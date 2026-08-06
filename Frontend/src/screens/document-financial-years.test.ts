@@ -46,6 +46,7 @@ function baseDb(): Database {
     requirements: [],
     documentRequirementRules: [],
     submissions: [],
+    submissionRecipients: [],
     offers: [],
     communications: [],
     notes: [],

@@ -45,6 +45,14 @@ import type {
   SubmissionRule as DomainSubmissionRule,
   SupportedProduct as DomainSupportedProduct,
 } from "@domain/lenders/index.js";
+import {
+  describeCounterparty,
+  describeProblem,
+  describeRecipientCount,
+  isEmailShaped,
+  validateRecipients,
+  type RecipientDraft,
+} from "@domain/submissions/index.js";
 
 import type {
   AosEvent,
@@ -65,6 +73,8 @@ import type {
   MasterDataRecord,
   Organisation,
   Person,
+  Submission,
+  SubmissionRecipient,
   SubmissionStatus,
 } from "./types.js";
 
@@ -90,8 +100,15 @@ import type {
  * to repair one: once two cases share an id, which of them the user meant is
  * unrecoverable. Discarding it is the only outcome that cannot silently show
  * somebody the wrong case.
+ *
+ * v6 for the Bank Submission Workflow (Milestone 10). A stale v5 store has no
+ * `submissionRecipients` collection at all, and its lenders still carry the
+ * single placeholder "— Coimbatore" branch rather than the localities a file
+ * is actually lodged at. Adding a bank would fail on a missing array, which
+ * is the kind of failure that reads as a broken feature rather than as stale
+ * data.
  */
-const STORAGE_KEY = "aos.prototype.v5";
+const STORAGE_KEY = "aos.prototype.v6";
 
 /**
  * Row identity.
@@ -1452,38 +1469,139 @@ export function addFinancialYearRequirement(
 // Submissions
 // ---------------------------------------------------------------------------
 
-export function createSubmission(
-  caseId: Id,
-  branchOrganisationId: Id,
-  actorUserId: Id,
-): ActionResult {
-  const branch = db.organisations.find((o) => o.id === branchOrganisationId);
-  const submissionId = nextId();
+/**
+ * Adding a bank to a case (Milestone 10, ADR-036).
+ *
+ * Replaces the old "Send to Bank", which was one dropdown of branches and no
+ * recipients at all. A file goes to a BANK, at a BRANCH, addressed to
+ * BANKERS — usually more than one, because a file sent only to the
+ * relationship manager stalls the week they are on leave.
+ */
+export interface AddBankInput {
+  caseId: Id;
+  branchOrganisationId: Id;
+  /** How the file is intended to go out (master data). Records intent only —
+   * nothing in AOS sends anything. */
+  submissionModeId?: Id;
+  recipients: readonly RecipientDraft[];
+}
 
-  // Created in not_submitted: a bank, product and contact are chosen, but the
-  // file has not physically gone out. The case stage advances on dispatch.
+/**
+ * Capture what the bank and branch are called RIGHT NOW.
+ *
+ * Read once, at the moment the bank is added, and never refreshed. Master
+ * data is edited — branches get renamed, moved and closed — and an edit must
+ * never rewrite what a historical submission says it did (ADR-036).
+ */
+function snapshotOfBranch(branchOrganisationId: Id): {
+  institutionOrganisationId?: Id;
+  bankNameAtSubmission?: string;
+  branchNameAtSubmission?: string;
+  branchAddressAtSubmission?: string;
+  branchCityAtSubmission?: string;
+  snapshotTakenAt: string;
+} {
+  const branch = db.organisations.find((o) => o.id === branchOrganisationId);
+  const institution = db.organisations.find((o) => o.id === branch?.parentOrganisationId);
+  const extension = db.bankBranches.find((b) => b.organisationId === branchOrganisationId);
+  const city = db.cities.find((c) => c.id === extension?.cityId);
+
+  return {
+    ...(institution ? { institutionOrganisationId: institution.id } : {}),
+    ...(institution ? { bankNameAtSubmission: institution.canonicalName } : {}),
+    ...(branch ? { branchNameAtSubmission: branch.canonicalName } : {}),
+    ...(extension?.addressLine ? { branchAddressAtSubmission: extension.addressLine } : {}),
+    ...(city?.name ?? branch?.city
+      ? { branchCityAtSubmission: (city?.name ?? branch?.city) as string }
+      : {}),
+    snapshotTakenAt: new Date().toISOString(),
+  };
+}
+
+export function createSubmission(input: AddBankInput, actorUserId: Id): ActionResult {
+  const branch = db.organisations.find((o) => o.id === input.branchOrganisationId);
+  if (!branch) return { ok: false, message: "That branch no longer exists." };
+
+  // Validated in the domain layer, so the prototype and the server cannot
+  // disagree about what a usable recipient list is.
+  const validated = validateRecipients(input.recipients);
+  if (!validated.ok) return { ok: false, message: describeProblem(validated.problem) };
+
+  const submissionId = nextId();
+  const now = new Date().toISOString();
+  const snapshot = snapshotOfBranch(input.branchOrganisationId);
+
+  // Created in not_submitted: a bank, a branch and the bankers are chosen,
+  // but the file has not physically gone out. The case stage advances on
+  // dispatch, not on this.
   db.submissions = [
     ...db.submissions,
     {
       id: submissionId,
-      caseId,
-      branchOrganisationId,
+      caseId: input.caseId,
+      branchOrganisationId: input.branchOrganisationId,
+      ...(input.submissionModeId ? { submissionModeId: input.submissionModeId } : {}),
+      ...snapshot,
       status: "not_submitted",
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     },
+  ];
+
+  db.submissionRecipients = [
+    ...db.submissionRecipients,
+    ...validated.recipients.map((recipient): SubmissionRecipient => ({
+      id: nextId(),
+      submissionId,
+      ...(recipient.bankContactId ? { bankContactId: recipient.bankContactId } : {}),
+      email: recipient.email,
+      ...(recipient.name ? { contactName: recipient.name } : {}),
+      ...(recipient.designation ? { designation: recipient.designation } : {}),
+      isPrimary: recipient.isPrimary,
+      recipientKind: recipient.kind,
+      displayOrder: recipient.displayOrder,
+      createdAt: now,
+    })),
   ];
 
   record({
     actorUserId,
-    caseId,
+    caseId: input.caseId,
     entityType: "submission",
     entityId: submissionId,
     eventType: "submission.created",
-    summary: `Prepared for ${branch?.canonicalName ?? "bank"} — not yet dispatched`,
+    summary:
+      `${snapshot.branchNameAtSubmission ?? branch.canonicalName} added — ` +
+      `${describeRecipientCount(validated.recipients.length)}, not yet dispatched`,
   });
 
   commit();
   return { ok: true };
+}
+
+/** The bankers one submission was addressed to, in the order they were entered. */
+export function recipientsOf(submissionId: Id, source: Database = db): SubmissionRecipient[] {
+  return source.submissionRecipients
+    .filter((recipient) => recipient.submissionId === submissionId)
+    .slice()
+    .sort((a, b) => a.displayOrder - b.displayOrder);
+}
+
+/**
+ * How a submission's counterparty reads, from the SNAPSHOT rather than the
+ * live master data.
+ *
+ * Falls back to the current branch name only for rows that predate the
+ * snapshot — which in this prototype is the seed, and in the database is
+ * anything before Database/migrations/0024.
+ */
+export function counterpartyOf(submission: Submission, source: Database = db): string {
+  const bankName = submission.bankNameAtSubmission;
+  const branchName =
+    submission.branchNameAtSubmission ??
+    source.organisations.find((o) => o.id === submission.branchOrganisationId)?.canonicalName;
+  if (branchName === undefined) return "Unknown branch";
+  if (bankName === undefined) return branchName;
+  return describeCounterparty({ bankName, branchName, takenAt: submission.createdAt });
 }
 
 export function updateSubmissionStatus(
@@ -1556,7 +1674,10 @@ export function updateSubmissionStatus(
       : s,
   );
 
-  const branch = db.organisations.find((o) => o.id === submission.branchOrganisationId);
+  // The snapshot, not the live branch name: what this file was sent to is a
+  // fact about the past, and an event describing it must not change when
+  // somebody renames a branch next year (ADR-036).
+  const counterparty = counterpartyOf(submission);
   const reason = db.rejectionReasons.find((r) => r.id === extra?.rejectionReasonId);
 
   record({
@@ -1567,14 +1688,11 @@ export function updateSubmissionStatus(
     eventType: `submission.${status}`,
     summary:
       status === "rejected"
-        ? `${branch?.canonicalName ?? "Bank"} rejected: ${reason?.name ?? "reason recorded"}`
-        : `${branch?.canonicalName ?? "Bank"} → ${status.replace(/_/g, " ")}`,
+        ? `${counterparty} rejected: ${reason?.name ?? "reason recorded"}`
+        : `${counterparty} → ${status.replace(/_/g, " ")}`,
   });
 
-  autoAdvance(
-    submission.caseId,
-    `${branch?.canonicalName ?? "Bank"} ${status.replace(/_/g, " ")}`,
-  );
+  autoAdvance(submission.caseId, `${counterparty} ${status.replace(/_/g, " ")}`);
   commit();
   return { ok: true };
 }
@@ -2633,61 +2751,123 @@ export function updateBranch(organisationId: Id, input: BranchInput, actorUserId
 // ---------------------------------------------------------------------------
 
 export interface RelationshipManagerInput {
-  fullName: string;
+  /**
+   * Optional since Milestone 10 (ADR-036). Many of the addresses a file goes
+   * to are desks — "homeloans.cbe@bank.com" is an address, not a person — and
+   * demanding a name for one only ever produces a made-up name.
+   */
+  fullName?: string;
   institutionOrganisationId: Id;
-  /** Optional â€” a regional manager belongs to no single branch, and that is
+  /** Optional — a regional manager belongs to no single branch, and that is
    * a complete record rather than a partial one. */
   branchOrganisationId?: Id;
   relationshipRoleId?: Id;
   designation?: string;
   workMobile?: string;
   workEmail?: string;
+  /** At most one per branch among the active contacts. */
+  isPrimaryContact?: boolean;
   notes?: string;
 }
 
 function contactFields(input: RelationshipManagerInput): Partial<BankContact> {
   return {
+    ...(trimmed(input.fullName) ? { contactName: trimmed(input.fullName) as string } : {}),
     ...(input.branchOrganisationId ? { branchOrganisationId: input.branchOrganisationId } : {}),
     ...(input.relationshipRoleId ? { relationshipRoleId: input.relationshipRoleId } : {}),
     ...(trimmed(input.designation) ? { designation: trimmed(input.designation) as string } : {}),
     ...(trimmed(input.workMobile) ? { workMobile: trimmed(input.workMobile) as string } : {}),
     ...(trimmed(input.workEmail) ? { workEmail: trimmed(input.workEmail) as string } : {}),
+    ...(input.isPrimaryContact ? { isPrimaryContact: true } : {}),
     ...(trimmed(input.notes) ? { notes: trimmed(input.notes) as string } : {}),
   };
+}
+
+/** The display name for a contact, whether it is a person or a desk. */
+export function contactLabel(contact: BankContact, source: Database = db): string {
+  return (
+    contact.contactName ??
+    source.people.find((person) => person.id === contact.personId)?.fullName ??
+    contact.workEmail ??
+    "Unnamed contact"
+  );
+}
+
+/**
+ * A contact must be reachable or nameable as something — all three of person,
+ * name and email blank is an empty row, not a permissive one. Mirrors the
+ * `bank_contact_is_identifiable` check (Database/migrations/0024).
+ */
+function contactIsIdentifiable(input: RelationshipManagerInput): boolean {
+  return trimmed(input.fullName) !== undefined || trimmed(input.workEmail) !== undefined;
+}
+
+/**
+ * At most one primary per branch, among contacts still current. A second
+ * primary is a data entry mistake, not a preference — and the Add Bank
+ * workflow reads this flag to decide who to address a file to first.
+ */
+function demotePrimaries(contacts: BankContact[], branchId: Id | undefined, keepId: Id): BankContact[] {
+  if (branchId === undefined) return contacts;
+  return contacts.map((contact) =>
+    contact.id !== keepId &&
+    contact.branchOrganisationId === branchId &&
+    contact.isPrimaryContact
+      ? { ...contact, isPrimaryContact: false }
+      : contact,
+  );
 }
 
 export function createRelationshipManager(
   input: RelationshipManagerInput,
   actorUserId: Id,
 ): ActionResult {
-  const name = input.fullName.trim();
-  if (!name) return { ok: false, message: "The manager's name is required." };
+  if (!contactIsIdentifiable(input)) {
+    return { ok: false, message: "Give the contact a name or an email address." };
+  }
+  if (trimmed(input.workEmail) && !isEmailShaped(input.workEmail as string)) {
+    return { ok: false, message: `"${input.workEmail}" does not look like an email address.` };
+  }
   const institution = db.organisations.find((org) => org.id === input.institutionOrganisationId);
   if (!institution) return { ok: false, message: "That lender no longer exists." };
 
-  // The person row is created here rather than searched for: a bank manager
-  // is almost never already in the system, and the search-first picker
-  // belongs on a case. When identity resolution runs over this screen it
-  // replaces these two lines and nothing else.
-  const personId = nextId();
-  const person: Person = { id: personId, fullName: name, aliases: [], identifiers: [] };
+  const name = trimmed(input.fullName);
+  const contactId = nextId();
+
+  // A `person` row is created only when there is a person: a named manager
+  // who moves to another bank next year is one new contact against the same
+  // person, which is the whole point of ADR-006 and ADR-014. A shared mailbox
+  // is nobody, and inventing a person to hold it would put fictional people
+  // into an operational contact list (ADR-036).
+  const person: Person | undefined =
+    name === undefined
+      ? undefined
+      : { id: nextId(), fullName: name, aliases: [], identifiers: [] };
 
   const contact: BankContact = {
-    id: nextId(),
-    personId,
+    id: contactId,
+    ...(person ? { personId: person.id } : {}),
     institutionOrganisationId: institution.id,
     isActive: true,
     ...contactFields(input),
   };
 
-  db = { ...db, people: [...db.people, person], bankContacts: [...db.bankContacts, contact] };
+  db = {
+    ...db,
+    ...(person ? { people: [...db.people, person] } : {}),
+    bankContacts: demotePrimaries(
+      [...db.bankContacts, contact],
+      input.isPrimaryContact ? input.branchOrganisationId : undefined,
+      contactId,
+    ),
+  };
 
   record({
     actorUserId,
     entityType: "bank_contact",
-    entityId: contact.id,
+    entityId: contactId,
     eventType: "master_data.created",
-    summary: `Contact added at ${institution.canonicalName}: ${name}`,
+    summary: `Contact added at ${institution.canonicalName}: ${contactLabel(contact)}`,
   });
   commit();
   return { ok: true };
@@ -2700,27 +2880,39 @@ export function updateRelationshipManager(
 ): ActionResult {
   const existing = db.bankContacts.find((contact) => contact.id === contactId);
   if (!existing) return { ok: false, message: "Contact not found." };
-  const name = input.fullName.trim();
-  if (!name) return { ok: false, message: "The manager's name is required." };
+  if (!contactIsIdentifiable(input)) {
+    return { ok: false, message: "Give the contact a name or an email address." };
+  }
+  if (trimmed(input.workEmail) && !isEmailShaped(input.workEmail as string)) {
+    return { ok: false, message: `"${input.workEmail}" does not look like an email address.` };
+  }
   if (!db.organisations.some((org) => org.id === input.institutionOrganisationId)) {
     return { ok: false, message: "That lender no longer exists." };
   }
 
+  const name = trimmed(input.fullName);
+
   db = {
     ...db,
     people: db.people.map((person) =>
-      person.id === existing.personId ? { ...person, fullName: name } : person,
+      existing.personId !== undefined && person.id === existing.personId && name !== undefined
+        ? { ...person, fullName: name }
+        : person,
     ),
-    bankContacts: db.bankContacts.map((contact) =>
-      contact.id === contactId
-        ? {
-            id: contact.id,
-            personId: contact.personId,
-            institutionOrganisationId: input.institutionOrganisationId,
-            isActive: contact.isActive,
-            ...contactFields(input),
-          }
-        : contact,
+    bankContacts: demotePrimaries(
+      db.bankContacts.map((contact) =>
+        contact.id === contactId
+          ? {
+              id: contact.id,
+              ...(contact.personId ? { personId: contact.personId } : {}),
+              institutionOrganisationId: input.institutionOrganisationId,
+              isActive: contact.isActive,
+              ...contactFields(input),
+            }
+          : contact,
+      ),
+      input.isPrimaryContact ? input.branchOrganisationId : undefined,
+      contactId,
     ),
   };
 
@@ -2729,7 +2921,7 @@ export function updateRelationshipManager(
     entityType: "bank_contact",
     entityId: contactId,
     eventType: "master_data.updated",
-    summary: `Contact updated: ${name}`,
+    summary: `Contact updated: ${name ?? trimmed(input.workEmail) ?? "contact"}`,
   });
   commit();
   return { ok: true };
@@ -2744,7 +2936,7 @@ export function setRelationshipManagerActive(
 ): ActionResult {
   const existing = db.bankContacts.find((contact) => contact.id === contactId);
   if (!existing) return { ok: false, message: "Contact not found." };
-  const person = db.people.find((p) => p.id === existing.personId);
+  const label = contactLabel(existing);
 
   db = {
     ...db,
@@ -2758,7 +2950,7 @@ export function setRelationshipManagerActive(
     entityType: "bank_contact",
     entityId: contactId,
     eventType: isActive ? "master_data.activated" : "master_data.deactivated",
-    summary: `Contact ${isActive ? "reactivated" : "marked as moved on"}: ${person?.fullName ?? "Unknown"}`,
+    summary: `Contact ${isActive ? "reactivated" : "marked as moved on"}: ${label}`,
   });
   commit();
   return { ok: true };

@@ -35,7 +35,16 @@ installLocalStoragePolyfill();
 // imported below.
 vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
 
-const { createCase, getDb, resetDatabase, uploadDocument } = await import("./store.js");
+const {
+  counterpartyOf,
+  createCase,
+  createSubmission,
+  getDb,
+  recipientsOf,
+  resetDatabase,
+  updateBranch,
+  uploadDocument,
+} = await import("./store.js");
 const { storageAdapter } = await import("./storage.js");
 
 // ---------------------------------------------------------------------------
@@ -245,5 +254,147 @@ describe("uploadDocument — automatic organisation (Issue #13)", () => {
     expect([...firstBytes]).toEqual([1, 1, 1]);
     const secondBytes = await storageAdapter.get(secondDocument.filePath);
     expect([...secondBytes]).toEqual([2, 2, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adding a bank to a case (Milestone 10, ADR-036).
+//
+// The guarantee worth testing is not that a submission gets created — it is
+// that editing master data afterwards CANNOT change what a historical
+// submission says it did. Everything else in this milestone is a form; that
+// is the promise.
+// ---------------------------------------------------------------------------
+
+describe("adding a bank to a case", () => {
+  const firstCase = () => {
+    const db = getDb();
+    const loanCase = db.cases[0];
+    if (!loanCase) throw new Error("the seed has no cases");
+    return loanCase;
+  };
+
+  /** A seeded Coimbatore branch and the bank it hangs off. */
+  const someBranch = () => {
+    const db = getDb();
+    const branch = db.organisations.find(
+      (org) => org.roles.includes("branch") && org.parentOrganisationId !== undefined,
+    );
+    if (!branch) throw new Error("the seed has no branches");
+    const institution = db.organisations.find((o) => o.id === branch.parentOrganisationId);
+    if (!institution) throw new Error("a branch hangs off nothing");
+    return { branch, institution };
+  };
+
+  it("records the bankers it was addressed to, in order, with one primary", () => {
+    resetDatabase();
+    const { branch } = someBranch();
+    const result = createSubmission(
+      {
+        caseId: firstCase().id,
+        branchOrganisationId: branch.id,
+        recipients: [
+          { email: "homeloans.cbe@bank.com", kind: "cc" },
+          { email: "Manager@Bank.com", name: "Suresh K", designation: "Branch Manager", isPrimary: true },
+        ],
+      },
+      "usr_1",
+    );
+    expect(result.ok).toBe(true);
+
+    const submission = getDb().submissions.at(-1);
+    if (!submission) throw new Error("no submission was created");
+    const recipients = recipientsOf(submission.id);
+
+    expect(recipients.map((r) => r.email)).toEqual([
+      "homeloans.cbe@bank.com",
+      "manager@bank.com",
+    ]);
+    expect(recipients[0]?.recipientKind).toBe("cc");
+    expect(recipients[1]?.isPrimary).toBe(true);
+    expect(recipients[0]?.isPrimary).toBe(false);
+    // A shared mailbox has no name, and that is a complete record.
+    expect(recipients[0]?.contactName).toBeUndefined();
+    expect(recipients[1]?.contactName).toBe("Suresh K");
+  });
+
+  it("refuses a bank with nobody to send it to", () => {
+    resetDatabase();
+    const { branch } = someBranch();
+    const before = getDb().submissions.length;
+    const result = createSubmission(
+      { caseId: firstCase().id, branchOrganisationId: branch.id, recipients: [] },
+      "usr_1",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("at least one");
+    // And wrote nothing — a rejected action must not leave a half-made row.
+    expect(getDb().submissions).toHaveLength(before);
+  });
+
+  it("refuses a malformed address rather than storing it", () => {
+    resetDatabase();
+    const { branch } = someBranch();
+    const result = createSubmission(
+      {
+        caseId: firstCase().id,
+        branchOrganisationId: branch.id,
+        recipients: [{ email: "Suresh Kumar" }],
+      },
+      "usr_1",
+    );
+    expect(result.ok).toBe(false);
+    expect(getDb().submissionRecipients).toEqual([]);
+  });
+
+  // THE point of the milestone's snapshot. A branch renamed in Master Data
+  // next year must not rewrite a file lodged today — a rejection recorded
+  // against a branch is evidence (ADR-028), and evidence that changes
+  // underneath you is not evidence.
+  it("does not let a later branch rename rewrite what a submission says it did", () => {
+    resetDatabase();
+    const { branch, institution } = someBranch();
+    createSubmission(
+      {
+        caseId: firstCase().id,
+        branchOrganisationId: branch.id,
+        recipients: [{ email: "rm@bank.com" }],
+      },
+      "usr_1",
+    );
+
+    const submission = getDb().submissions.at(-1);
+    if (!submission) throw new Error("no submission was created");
+    const asRecorded = counterpartyOf(submission);
+    expect(submission.branchNameAtSubmission).toBe(branch.canonicalName);
+    expect(submission.bankNameAtSubmission).toBe(institution.canonicalName);
+    expect(submission.snapshotTakenAt).toBeDefined();
+
+    const renamed = updateBranch(
+      branch.id,
+      { institutionOrganisationId: institution.id, name: "Somewhere Else Entirely", operationalStatus: "operational" },
+      "usr_1",
+    );
+    expect(renamed.ok).toBe(true);
+
+    // The live branch moved on; the submission did not.
+    expect(getDb().organisations.find((o) => o.id === branch.id)?.canonicalName).toBe(
+      "Somewhere Else Entirely",
+    );
+    const after = getDb().submissions.find((s) => s.id === submission.id);
+    if (!after) throw new Error("the submission vanished");
+    expect(after.branchNameAtSubmission).toBe(branch.canonicalName);
+    expect(counterpartyOf(after)).toBe(asRecorded);
+  });
+
+  // A seeded submission predates the workflow that captures a snapshot, so
+  // its snapshot is a RECONSTRUCTION. `snapshotTakenAt` is what tells the two
+  // apart, and anything reporting on historical accuracy needs that.
+  it("marks a reconstructed snapshot as one, by leaving the timestamp off", () => {
+    resetDatabase();
+    const seeded = getDb().submissions[0];
+    if (!seeded) throw new Error("the seed has no submissions");
+    expect(seeded.branchNameAtSubmission).toBeDefined();
+    expect(seeded.snapshotTakenAt).toBeUndefined();
   });
 });

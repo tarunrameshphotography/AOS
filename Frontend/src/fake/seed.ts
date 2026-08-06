@@ -572,7 +572,127 @@ export function buildSeed(): Database {
     ["pnb_hfl", "PNB Housing Finance", "housing_finance_company", "hfc", "New Delhi", "Pan-India", "https://pnbhousing.com", ["PNB HFL"], undefined, true],
     ["aavas", "Aavas Financiers", "housing_finance_company", "hfc", "Jaipur", "Pan-India, semi-urban and rural focus", "https://aavas.in", [], undefined, true],
     ["aptus", "Aptus Value Housing Finance India", "housing_finance_company", "hfc", "Chennai", "South India, semi-urban and rural", "https://aptusindia.com", ["Aptus"], undefined, true],
+    // Milestone 10 (Database/migrations/0025) — the institutions the
+    // Coimbatore market has and Milestone 8 did not catalogue. Small finance
+    // banks and co-operative banks were both named in the brief and both
+    // genuinely absent; neither is a rounding error here. An SFB is often the
+    // only lender that will look at a small trader with two patchy years of
+    // banking, and the district central co-operative bank is a real
+    // counterparty for agricultural and small business files in this belt.
+    ["bank_of_india", "Bank of India", "public_sector_bank", "bank", "Mumbai", "Pan-India", "https://bankofindia.co.in", ["BOI"], undefined, true],
+    ["central_bank", "Central Bank of India", "public_sector_bank", "bank", "Mumbai", "Pan-India", "https://centralbankofindia.co.in", ["CBI"], undefined, true],
+    ["indusind_bank", "IndusInd Bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://indusind.com", [], undefined, true],
+    ["idfc_first", "IDFC FIRST Bank", "private_sector_bank", "bank", "Mumbai", "Pan-India", "https://idfcfirstbank.com", ["IDFC"], undefined, true],
+    ["karnataka_bank", "Karnataka Bank", "private_sector_bank", "bank", "Mangaluru", "Karnataka and Tamil Nadu", "https://karnatakabank.com", [], undefined, true],
+    ["equitas_sfb", "Equitas Small Finance Bank", "small_finance_bank", "bank", "Chennai", "Tamil Nadu and South India", "https://equitasbank.com", ["Equitas"], "Converted from Equitas Micro Finance. Strong in small-ticket business and used commercial vehicle lending across western Tamil Nadu.", true],
+    ["ujjivan_sfb", "Ujjivan Small Finance Bank", "small_finance_bank", "bank", "Bengaluru", "Pan-India, South India focus", "https://ujjivansfb.in", ["Ujjivan"], undefined, true],
+    ["esaf_sfb", "ESAF Small Finance Bank", "small_finance_bank", "bank", "Thrissur", "Kerala and Tamil Nadu", "https://esafbank.com", ["ESAF"], undefined, true],
+    ["au_sfb", "AU Small Finance Bank", "small_finance_bank", "bank", "Jaipur", "Pan-India", "https://aubank.in", ["AU Bank"], undefined, true],
+    ["jana_sfb", "Jana Small Finance Bank", "small_finance_bank", "bank", "Bengaluru", "Pan-India, South India focus", "https://janabank.com", ["Jana Bank"], undefined, true],
+    ["cdcc_bank", "Coimbatore District Central Co-operative Bank", "cooperative_bank", "bank", "Coimbatore", "Coimbatore district", undefined, ["CDCC Bank"], "The district central co-operative bank for Coimbatore. Agricultural, jewel and small business lending, and for many rural files in the district the first counterparty rather than an afterthought.", true],
+    ["cccb", "Coimbatore City Co-operative Bank", "cooperative_bank", "bank", "Coimbatore", "Coimbatore city", undefined, [], undefined, true],
+    ["muthoot_finance", "Muthoot Finance", "nbfc", "nbfc", "Kochi", "Pan-India", "https://muthootfinance.com", ["Muthoot"], "Predominantly gold loans. In this market that is a mainstream short-term funding route, not a fringe one — which is why it is catalogued rather than left out.", true],
+    ["manappuram", "Manappuram Finance", "nbfc", "nbfc", "Thrissur", "Pan-India, South India focus", "https://manappuram.com", ["Manappuram"], undefined, true],
+    ["hinduja_leyland", "Hinduja Leyland Finance", "nbfc", "nbfc", "Chennai", "Pan-India, South India focus", "https://hindujaleylandfinance.com", ["HLF"], "Commercial vehicle and construction equipment finance. Relevant here because Coimbatore's transport and engineering trade is a recurring source of files.", true],
+    ["repco", "Repco Home Finance", "housing_finance_company", "hfc", "Chennai", "Tamil Nadu and South India", "https://repcohome.com", ["Repco"], "Tamil Nadu focused, and long-established with self-employed and semi-formal-income borrowers — the profile most often turned away by a bank.", true],
+    ["can_fin", "Can Fin Homes", "housing_finance_company", "hfc", "Bengaluru", "South India", "https://canfinhomes.com", ["CanFin"], undefined, true],
+    ["sundaram_home", "Sundaram Home Finance", "housing_finance_company", "hfc", "Chennai", "South India", "https://sundaramhome.in", [], "The housing arm of the Sundaram Finance group. A separate regulated entity from Sundaram Finance, which is already catalogued — two institutions, not one with two names.", true],
+    ["home_first", "Home First Finance Company India", "housing_finance_company", "hfc", "Mumbai", "Pan-India, affordable housing", "https://homefirstindia.com", ["Home First"], undefined, true],
+    ["india_shelter", "India Shelter Finance Corporation", "housing_finance_company", "hfc", "Gurugram", "Pan-India, affordable housing", "https://indiashelter.in", ["India Shelter"], undefined, true],
+    ["bajaj_housing", "Bajaj Housing Finance", "housing_finance_company", "hfc", "Pune", "Pan-India", "https://bajajhousingfinance.in", ["Bajaj HFL"], "A separate housing finance company within the Bajaj group. Bajaj Finance, already catalogued, is the NBFC — they are different lenders with different files.", true],
   ];
+
+  /**
+   * Which Coimbatore localities each lender is present in (Milestone 10,
+   * Database/migrations/0025).
+   *
+   * Milestone 8 gave every lender one placeholder branch called
+   * "<Bank> — Coimbatore". That was honest for a milestone with no
+   * branch-level brief, and useless to somebody choosing where to lodge a
+   * file: the branch IS the counterparty (ADR-015).
+   *
+   * WHAT THIS CLAIMS: that a lender has a presence in a locality. These are
+   * the city's actual banking areas, and networks of the size these
+   * institutions operate cover them. A starting list for the office to
+   * correct, not a survey.
+   *
+   * WHAT IT STILL REFUSES, exactly where Milestone 8 drew the line: street
+   * addresses, IFSC codes, phone numbers, branch email addresses, and every
+   * named human being. A blank field is a prompt; a plausible wrong one is a
+   * trap, because nobody checks the value that looks right.
+   */
+  const COIMBATORE_BRANCHES: Record<string, string[]> = {
+    // Public sector. Large networks — these are the localities a file is
+    // realistically lodged at, not the whole branch list.
+    sbi: ["RS Puram", "Gandhipuram", "Race Course", "Peelamedu", "Saibaba Colony", "Singanallur", "Town Hall"],
+    indian_bank: ["RS Puram", "Gandhipuram", "Town Hall", "Peelamedu", "Saibaba Colony", "Ukkadam", "Saravanampatti"],
+    canara_bank: ["RS Puram", "Gandhipuram", "Peelamedu", "Saibaba Colony", "Singanallur", "Thudiyalur"],
+    bank_of_baroda: ["RS Puram", "Gandhipuram", "Peelamedu", "Singanallur"],
+    union_bank: ["RS Puram", "Gandhipuram", "Town Hall", "Peelamedu"],
+    pnb: ["Gandhipuram", "RS Puram", "Peelamedu"],
+    iob: ["RS Puram", "Gandhipuram", "Town Hall", "Ukkadam", "Peelamedu", "Saibaba Colony"],
+    bank_of_india: ["Gandhipuram", "RS Puram", "Peelamedu"],
+    central_bank: ["Gandhipuram", "RS Puram"],
+    // Private sector. Concentrated in the commercial and IT belts — Race
+    // Course for corporate, Peelamedu and Saravanampatti for the Avinashi
+    // Road corridor.
+    hdfc_bank: ["RS Puram", "Race Course", "Peelamedu", "Saravanampatti", "Gandhipuram", "Saibaba Colony"],
+    icici_bank: ["RS Puram", "Race Course", "Peelamedu", "Saravanampatti", "Gandhipuram"],
+    axis_bank: ["RS Puram", "Race Course", "Peelamedu", "Saravanampatti"],
+    kotak_bank: ["RS Puram", "Race Course", "Peelamedu"],
+    indusind_bank: ["RS Puram", "Race Course", "Peelamedu"],
+    idfc_first: ["RS Puram", "Race Course"],
+    federal_bank: ["RS Puram", "Gandhipuram", "Peelamedu", "Saibaba Colony"],
+    south_indian_bank: ["RS Puram", "Gandhipuram", "Peelamedu"],
+    csb_bank: ["RS Puram", "Gandhipuram", "Town Hall"],
+    tmb: ["RS Puram", "Gandhipuram", "Town Hall", "Ukkadam", "Peelamedu"],
+    kvb: ["RS Puram", "Gandhipuram", "Town Hall", "Peelamedu", "Saibaba Colony"],
+    city_union_bank: ["RS Puram", "Gandhipuram", "Town Hall", "Ukkadam"],
+    karnataka_bank: ["RS Puram", "Gandhipuram"],
+    // Small finance banks. Weighted towards the trading and industrial areas
+    // — Ukkadam, Town Hall, Singanallur — which is where their borrowers are.
+    equitas_sfb: ["Gandhipuram", "RS Puram", "Ukkadam", "Singanallur", "Peelamedu"],
+    ujjivan_sfb: ["Gandhipuram", "Ukkadam", "Singanallur"],
+    esaf_sfb: ["Gandhipuram", "Ukkadam"],
+    au_sfb: ["RS Puram", "Peelamedu", "Gandhipuram"],
+    jana_sfb: ["Gandhipuram", "Ukkadam"],
+    // Co-operative banks. Old city and market areas.
+    cdcc_bank: ["Town Hall", "Gandhipuram", "Ukkadam"],
+    cccb: ["Town Hall", "Ukkadam"],
+    // NBFCs. Race Course for the corporate offices; the gold loan lenders
+    // spread wide across residential and market localities, because that is
+    // what a gold loan branch network is.
+    bajaj_finance: ["Race Course", "Peelamedu", "Gandhipuram"],
+    tata_capital: ["Race Course", "Peelamedu"],
+    aditya_birla_finance: ["Race Course", "Peelamedu"],
+    chola: ["Race Course", "Gandhipuram", "Singanallur"],
+    shriram_finance: ["Gandhipuram", "Singanallur", "Ukkadam", "Peelamedu"],
+    sundaram_finance: ["Race Course", "Gandhipuram", "Peelamedu"],
+    lt_finance: ["Race Course", "Peelamedu"],
+    poonawalla_fincorp: ["Race Course"],
+    muthoot_finance: ["Gandhipuram", "Town Hall", "Ukkadam", "RS Puram", "Saibaba Colony", "Singanallur", "Thudiyalur"],
+    manappuram: ["Gandhipuram", "Town Hall", "Ukkadam", "RS Puram", "Singanallur"],
+    hinduja_leyland: ["Race Course", "Singanallur"],
+    // Housing finance. The affordable-housing lenders sit in the growth
+    // localities — Kuniyamuthur, Thudiyalur, Saravanampatti — which is where
+    // the self-construction and plot-purchase files come from.
+    lic_hfl: ["Race Course", "RS Puram", "Peelamedu"],
+    pnb_hfl: ["Race Course", "Peelamedu"],
+    iifl_home_finance: ["Gandhipuram", "Peelamedu"],
+    aavas: ["Gandhipuram", "Thudiyalur", "Kuniyamuthur"],
+    aptus: ["Gandhipuram", "Kuniyamuthur", "Thudiyalur", "Singanallur"],
+    repco: ["RS Puram", "Gandhipuram", "Peelamedu", "Kuniyamuthur"],
+    can_fin: ["RS Puram", "Peelamedu", "Saravanampatti"],
+    sundaram_home: ["Race Course", "RS Puram", "Peelamedu"],
+    home_first: ["Gandhipuram", "Kuniyamuthur", "Saravanampatti"],
+    india_shelter: ["Gandhipuram", "Thudiyalur"],
+    bajaj_housing: ["Race Course", "Peelamedu"],
+  };
+
+  const BRANCH_SEED_NOTE =
+    "Locality recorded from the Coimbatore catalogue. The street address, " +
+    "phone, email and IFSC are deliberately not seeded — fill them in from " +
+    "the branch you actually deal with.";
 
   const lenderProfiles: Database["lenderProfiles"] = [];
   const bankBranches: Database["bankBranches"] = [];
@@ -620,6 +740,51 @@ export function buildSeed(): Database {
     bankBranches.push({ organisationId: branchId, operationalStatus: "operational", displayOrder: 10 });
   }
 
+  // One running counter across every institution's branches: a lender has as
+  // many as it has, and the old one-per-lender id arithmetic could not
+  // express that.
+  let branchSeq = 0;
+
+  /**
+   * The Coimbatore branches of one institution (Milestone 10).
+   *
+   * Localities, not one placeholder. The branch is the counterparty a file
+   * physically goes to (ADR-015), so "— Coimbatore" is not an address anybody
+   * can lodge at. The locality is claimed; the street, the phone and the
+   * email are not, and stay empty until the office fills them in.
+   */
+  const addCoimbatoreBranches = (orgId: string, name: string, code: string): void => {
+    for (const locality of COIMBATORE_BRANCHES[code] ?? ["Coimbatore"]) {
+      const branchId = id("org", 200 + branchSeq++);
+      organisations.push({
+        id: branchId,
+        canonicalName: `${name} — ${locality}`,
+        roles: ["branch"],
+        industry: "Banking and Finance",
+        city: "Coimbatore",
+        parentOrganisationId: orgId,
+        aliases: [],
+      });
+      bankBranches.push({
+        organisationId: branchId,
+        cityId: idOf(cities, "coimbatore"),
+        districtId: idOf(districts, "coimbatore"),
+        operationalStatus: "operational",
+        displayOrder: bankBranches.length * 10,
+        notes: BRANCH_SEED_NOTE,
+      });
+    }
+  };
+
+  // The four lenders that were already here for the Madurai cases get their
+  // Coimbatore branches too. Easy to miss, and the omission would be
+  // invisible: HDFC Bank would simply have no Coimbatore branch to lodge at,
+  // on the screen whose entire purpose is choosing one.
+  addCoimbatoreBranches(id("org", 1), "HDFC Bank", "hdfc_bank");
+  addCoimbatoreBranches(id("org", 3), "IIFL Home Finance", "iifl_home_finance");
+  addCoimbatoreBranches(id("org", 5), "LIC Housing Finance", "lic_hfl");
+  addCoimbatoreBranches(id("org", 7), "Sundaram Finance", "sundaram_finance");
+
   institutionRows.forEach((row, index) => {
     const [code, name, typeCode, legacy, headOffice, region, website, aliases, notes, isActive] = row;
     const orgId = id("org", 100 + index);
@@ -647,28 +812,10 @@ export function buildSeed(): Database {
       ...(notes ? { notes } : {}),
     });
 
-    // Geography only. That each of these lenders has a Coimbatore presence
-    // is not a guess; which branch on which street is, so the address, the
-    // phone and the email stay empty until the office fills them in.
+    // An institution that no longer exists gets no branch to lodge at, which
+    // is the point of carrying it at all (Lakshmi Vilas Bank, ADR-034).
     if (!isActive) return;
-    const branchId = id("org", 200 + index);
-    organisations.push({
-      id: branchId,
-      canonicalName: `${name} — Coimbatore`,
-      roles: ["branch"],
-      industry: "Banking and Finance",
-      city: "Coimbatore",
-      parentOrganisationId: orgId,
-      aliases: [],
-    });
-    bankBranches.push({
-      organisationId: branchId,
-      cityId: idOf(cities, "coimbatore"),
-      districtId: idOf(districts, "coimbatore"),
-      operationalStatus: "operational",
-      displayOrder: 10,
-      notes: "Seeded as this lender's Coimbatore presence, with geography only. Rename it to the actual branch and fill in the address, phone and email.",
-    });
+    addCoimbatoreBranches(orgId, name, code);
   });
 
   /**
@@ -689,8 +836,15 @@ export function buildSeed(): Database {
   let bankProductSeq = 0;
   for (const profile of lenderProfiles) {
     const typeCode = lenderTypes.find((t) => t.id === profile.lenderTypeId)?.code;
+    // A small finance bank and a co-operative bank are universal banks for
+    // this purpose — narrower in appetite, not in licence — so they get the
+    // bank set. An NBFC's book varies far too much to assert anything, so
+    // nothing is asserted for one.
     const productCodes =
-      typeCode === "public_sector_bank" || typeCode === "private_sector_bank"
+      typeCode === "public_sector_bank" ||
+      typeCode === "private_sector_bank" ||
+      typeCode === "small_finance_bank" ||
+      typeCode === "cooperative_bank"
         ? BANK_PRODUCT_CODES
         : typeCode === "housing_finance_company"
           ? HFC_PRODUCT_CODES
@@ -808,18 +962,50 @@ export function buildSeed(): Database {
     { id: id("doc", 8), documentTypeId: id("dty", 1), ownerKind: "person", personId: id("per", 5), filePath: seedPath({ kind: "person", id: id("per", 5) }, "pan_card", "arun-pan.jpg"), version: 1, fileName: "arun-pan.jpg", fileSizeBytes: 88064, uploadedAt: daysAgo(2), uploadedBy: id("usr", 1) },
   ];
 
+  /**
+   * The snapshot every submission carries (Milestone 10, ADR-036).
+   *
+   * These six predate the workflow that captures one, so they are
+   * RECONSTRUCTED from the branch as it stands — which is exactly what
+   * Database/migrations/0024's backfill does to the real rows, and why
+   * `snapshotTakenAt` is deliberately left off them. A reconstruction is not
+   * a record, and anything reporting on historical accuracy has to be able to
+   * tell the two apart.
+   */
+  const reconstructed = (branchOrganisationId: string) => {
+    const branch = organisations.find((org) => org.id === branchOrganisationId);
+    const institution = organisations.find((org) => org.id === branch?.parentOrganisationId);
+    return {
+      branchOrganisationId,
+      ...(institution ? { institutionOrganisationId: institution.id } : {}),
+      ...(institution ? { bankNameAtSubmission: institution.canonicalName } : {}),
+      ...(branch ? { branchNameAtSubmission: branch.canonicalName } : {}),
+      ...(branch?.city ? { branchCityAtSubmission: branch.city } : {}),
+    };
+  };
+
   const submissions: Database["submissions"] = [
     // Case 1: sanctioned at one bank, rejected at another. Both true at once.
-    { id: id("sub", 1), caseId: id("cas", 1), branchOrganisationId: id("org", 2), status: "sanctioned", submittedAt: daysAgo(38), loginFeeAmount: 5900, bankReferenceNumber: "HDFC/MDU/2026/8841", createdAt: daysAgo(40) },
-    { id: id("sub", 2), caseId: id("cas", 1), branchOrganisationId: id("org", 4), status: "rejected", submittedAt: daysAgo(37), rejectionReasonId: id("rej", 3), bankReasonText: "FOIR exceeds 55% post proposed EMI", createdAt: daysAgo(39) },
-    { id: id("sub", 3), caseId: id("cas", 1), branchOrganisationId: id("org", 6), status: "under_process", submittedAt: daysAgo(20), createdAt: daysAgo(21) },
+    { id: id("sub", 1), caseId: id("cas", 1), ...reconstructed(id("org", 2)), status: "sanctioned", submittedAt: daysAgo(38), loginFeeAmount: 5900, bankReferenceNumber: "HDFC/MDU/2026/8841", createdAt: daysAgo(40) },
+    { id: id("sub", 2), caseId: id("cas", 1), ...reconstructed(id("org", 4)), status: "rejected", submittedAt: daysAgo(37), rejectionReasonId: id("rej", 3), bankReasonText: "FOIR exceeds 55% post proposed EMI", createdAt: daysAgo(39) },
+    { id: id("sub", 3), caseId: id("cas", 1), ...reconstructed(id("org", 6)), status: "under_process", submittedAt: daysAgo(20), createdAt: daysAgo(21) },
     // Case 3
-    { id: id("sub", 4), caseId: id("cas", 3), branchOrganisationId: id("org", 8), status: "query_raised", submittedAt: daysAgo(14), createdAt: daysAgo(15) },
+    { id: id("sub", 4), caseId: id("cas", 3), ...reconstructed(id("org", 8)), status: "query_raised", submittedAt: daysAgo(14), createdAt: daysAgo(15) },
     // Case 8 — disbursed
-    { id: id("sub", 5), caseId: id("cas", 8), branchOrganisationId: id("org", 2), status: "disbursed", submittedAt: daysAgo(120), loginFeeAmount: 5900, createdAt: daysAgo(122) },
+    { id: id("sub", 5), caseId: id("cas", 8), ...reconstructed(id("org", 2)), status: "disbursed", submittedAt: daysAgo(120), loginFeeAmount: 5900, createdAt: daysAgo(122) },
     // Case 6 — lost after sanction
-    { id: id("sub", 6), caseId: id("cas", 6), branchOrganisationId: id("org", 2), status: "sanctioned", submittedAt: daysAgo(80), createdAt: daysAgo(82) },
+    { id: id("sub", 6), caseId: id("cas", 6), ...reconstructed(id("org", 2)), status: "sanctioned", submittedAt: daysAgo(80), createdAt: daysAgo(82) },
   ];
+
+  /**
+   * Empty, on the same principle that keeps `bankContacts` empty.
+   *
+   * A recipient is a real banker's real email address. Seeding one would put
+   * a fabricated address in front of a user at the exact moment they are
+   * about to send a customer's file to it — which is worse than an invented
+   * phone number, because the file goes.
+   */
+  const submissionRecipients: Database["submissionRecipients"] = [];
 
   const offers: Database["offers"] = [
     { id: id("off", 1), submissionId: id("sub", 1), sanctionedAmount: 3400000, interestRate: 8.95, tenureMonths: 240, processingFee: 11800, validUntil: daysAhead(12), isAccepted: false },
@@ -872,7 +1058,7 @@ export function buildSeed(): Database {
     lenderSubmissionRules, lenderInsights,
     cases, caseParties, caseProperties, documents,
     requirements: [], documentRequirementRules,
-    submissions, offers, communications, notes, tasks, events,
+    submissions, submissionRecipients, offers, communications, notes, tasks, events,
     caseNumberSequence: { [year]: 47 },
   };
 }

@@ -31,8 +31,11 @@ import {
   addNote,
   addParty,
   changeLoanProduct,
+  contactLabel,
+  counterpartyOf,
   createSubmission,
   logCommunication,
+  recipientsOf,
   moveStage,
   progressFor,
   reevaluateRequirements,
@@ -1911,12 +1914,10 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
   const session = useSession();
   const toast = useToast();
   const [addOpen, setAddOpen] = useState(false);
-  const [branchId, setBranchId] = useState("");
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [sanctioning, setSanctioning] = useState<string | null>(null);
 
   const submissions = db.submissions.filter((s) => s.caseId === caseId);
-  const branches = db.organisations.filter((o) => o.roles.includes("branch"));
 
   if (!session.can("submission.read", "own")) {
     return <Card title="Not visible to this user" />;
@@ -1929,27 +1930,30 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
         subtitle="Each bank moves independently. A case can be sanctioned at one and rejected at another — both are true."
         actions={
           session.can("submission.create", "own") && (
-            <Button onClick={() => setAddOpen(true)}>Send to a bank</Button>
+            <Button variant="primary" onClick={() => setAddOpen(true)}>
+              Add Bank
+            </Button>
           )
         }
       >
         {submissions.length === 0 ? (
-          <Empty>Not sent to any bank yet.</Empty>
+          <Empty>No bank added to this file yet.</Empty>
         ) : (
           <ul className="divide-y divide-ink-100">
             {submissions.map((submission) => {
-              const branch = db.organisations.find(
-                (o) => o.id === submission.branchOrganisationId,
-              );
               const offers = db.offers.filter((o) => o.submissionId === submission.id);
               const reason = db.rejectionReasons.find(
                 (r) => r.id === submission.rejectionReasonId,
               );
+              const recipients = recipientsOf(submission.id, db);
 
               return (
                 <li key={submission.id} className="py-3 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium">{branch?.canonicalName}</span>
+                    {/* The snapshot, not the live branch name: renaming a
+                        branch in Master Data must not rewrite what this file
+                        says it did (ADR-036). */}
+                    <span className="text-sm font-medium">{counterpartyOf(submission, db)}</span>
                     <Badge
                       tone={
                         submission.status === "rejected"
@@ -1972,6 +1976,24 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
                       {submission.submittedAt ? `Sent ${when(submission.submittedAt)}` : "Not sent"}
                     </span>
                   </div>
+
+                  {recipients.length > 0 && (
+                    <p className="mt-1 text-xs text-ink-500">
+                      {recipients.map((recipient, index) => (
+                        <span key={recipient.id}>
+                          {index > 0 && " · "}
+                          <span className={recipient.isPrimary ? "font-medium text-ink-700" : ""}>
+                            {recipient.contactName
+                              ? `${recipient.contactName} — ${recipient.email}`
+                              : recipient.email}
+                          </span>
+                          {recipient.recipientKind === "cc" && (
+                            <span className="text-ink-400"> (cc)</span>
+                          )}
+                        </span>
+                      ))}
+                    </p>
+                  )}
 
                   {reason && (
                     <div className="mt-1.5 rounded bg-red-50 px-3 py-2">
@@ -2058,42 +2080,7 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
         )}
       </Card>
 
-      <Modal open={addOpen} title="Send this file to a bank" onClose={() => setAddOpen(false)}>
-        <div className="space-y-3">
-          <p className="text-sm text-ink-700">
-            The branch is the counterparty, not the bank: a file goes to a specific place and a
-            specific relationship manager works it.
-          </p>
-          <Field label="Branch">
-            <Select value={branchId} onChange={(event) => setBranchId(event.target.value)}>
-              <option value="">Choose…</option>
-              {branches.map((branch) => (
-                <option key={branch.id} value={branch.id}>
-                  {branch.canonicalName}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <p className="text-xs text-ink-500">
-            It is created as <em>Not Submitted</em>: chosen, but not yet gone out.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button
-              variant="primary"
-              disabled={!branchId}
-              onClick={() => {
-                createSubmission(caseId, branchId, session.user.id);
-                setBranchId("");
-                setAddOpen(false);
-                toast.show("Prepared. Mark it Submitted when the file physically goes out.");
-              }}
-            >
-              Prepare
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      {addOpen && <AddBankDialog caseId={caseId} onClose={() => setAddOpen(false)} />}
 
       <RejectDialog
         submissionId={rejecting}
@@ -2101,6 +2088,319 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
       />
       <SanctionDialog submissionId={sanctioning} onClose={() => setSanctioning(null)} />
     </div>
+  );
+}
+
+/**
+ * Add a bank to this case (Milestone 10, ADR-036).
+ *
+ * Replaces "Send to a bank", which was one flat dropdown of every branch in
+ * the system and no recipients at all. The workflow the office actually
+ * follows is:
+ *
+ *   Bank → Branch → primary banker → + Add Banker → …
+ *
+ * Two things about it are deliberate and easy to get wrong later.
+ *
+ * The bank is chosen BEFORE the branch, not derived after it. A flat branch
+ * list is unusable once the catalogue has real depth — there are dozens of
+ * Coimbatore branches and the user knows which bank they are talking to
+ * before they know which branch.
+ *
+ * Recipients are a LIST with no fixed length. Multiple bankers are the norm:
+ * the relationship manager, the credit manager who raises the query, and the
+ * branch's shared mailbox so the file does not die when one person is on
+ * leave. Catalogued contacts fill a row in one click; a typed-in address is
+ * equally valid, because a workflow that only accepts catalogued addresses is
+ * one people work around by keeping their own list.
+ *
+ * NOTHING HERE SENDS ANYTHING. This records who the file is addressed to.
+ */
+interface RecipientRow {
+  key: string;
+  email: string;
+  name: string;
+  designation: string;
+  bankContactId?: string;
+  kind: "to" | "cc";
+}
+
+let recipientKeySeq = 0;
+const blankRecipient = (): RecipientRow => ({
+  key: `r${++recipientKeySeq}`,
+  email: "",
+  name: "",
+  designation: "",
+  kind: "to",
+});
+
+function AddBankDialog({ caseId, onClose }: { caseId: string; onClose: () => void }): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+
+  const [institutionId, setInstitutionId] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [submissionModeId, setSubmissionModeId] = useState("");
+  const [primaryIndex, setPrimaryIndex] = useState(0);
+  const [rows, setRows] = useState<RecipientRow[]>([blankRecipient()]);
+
+  // On-panel lenders that still exist. A lender Amaze has stopped using is a
+  // different fact from one that no longer exists (ADR-034), and neither
+  // belongs in a picker for a file going out today.
+  const institutions = db.organisations
+    .filter((org) => org.roles.includes("lender") && org.isActive !== false)
+    .filter((org) =>
+      db.lenderProfiles.some(
+        (profile) => profile.organisationId === org.id && profile.isOnPanel,
+      ),
+    )
+    .slice()
+    .sort((a, b) => a.canonicalName.localeCompare(b.canonicalName));
+
+  const branches = db.organisations
+    .filter((org) => org.roles.includes("branch") && org.parentOrganisationId === institutionId)
+    .map((org) => ({
+      org,
+      extension: db.bankBranches.find((b) => b.organisationId === org.id),
+    }))
+    // A branch that is shut this month cannot take a file this month, so it
+    // is not offered — the three-state detail stays on the branch itself for
+    // whoever is reading the catalogue (@domain/lenders' isLodgeable).
+    .filter(({ extension }) => extension?.operationalStatus === "operational")
+    .sort((a, b) => a.org.canonicalName.localeCompare(b.org.canonicalName));
+
+  // Contacts recorded against the chosen branch, plus the lender's contacts
+  // who belong to no single branch — a regional manager is a legitimate
+  // recipient and excluding them would send people back to their own list.
+  const suggestions = db.bankContacts.filter(
+    (contact) =>
+      contact.isActive &&
+      contact.workEmail !== undefined &&
+      contact.institutionOrganisationId === institutionId &&
+      (contact.branchOrganisationId === branchId || contact.branchOrganisationId === undefined),
+  );
+
+  const update = (index: number, patch: Partial<RecipientRow>): void =>
+    setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  const useContact = (index: number, contactId: string): void => {
+    const contact = db.bankContacts.find((c) => c.id === contactId);
+    if (!contact) {
+      update(index, { bankContactId: undefined as unknown as string });
+      return;
+    }
+    update(index, {
+      bankContactId: contact.id,
+      email: contact.workEmail ?? "",
+      name: contactLabel(contact, db),
+      designation:
+        contact.designation ??
+        db.lenderRelationshipRoles.find((role) => role.id === contact.relationshipRoleId)?.name ??
+        "",
+    });
+  };
+
+  return (
+    <Modal open title="Add a bank to this file" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-ink-700">
+          The branch is the counterparty, not the bank: a file physically goes to a specific place.
+          The bankers below are who it is addressed to — the details are copied as they stand today,
+          so editing the catalogue later will not rewrite this record.
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Bank">
+            <Select
+              value={institutionId}
+              onChange={(event) => {
+                setInstitutionId(event.target.value);
+                setBranchId("");
+              }}
+            >
+              <option value="">Choose…</option>
+              {institutions.map((institution) => (
+                <option key={institution.id} value={institution.id}>
+                  {institution.canonicalName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label="Branch"
+            hint={
+              institutionId === ""
+                ? "Choose a bank first."
+                : branches.length === 0
+                  ? "No open branch recorded. Add one under Lenders."
+                  : undefined
+            }
+          >
+            <Select
+              value={branchId}
+              disabled={institutionId === ""}
+              onChange={(event) => setBranchId(event.target.value)}
+            >
+              <option value="">Choose…</option>
+              {branches.map(({ org }) => (
+                <option key={org.id} value={org.id}>
+                  {org.canonicalName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Bankers this file goes to</p>
+          {rows.map((row, index) => (
+            <div key={row.key} className="rounded-md bg-ink-50 p-2.5 ring-1 ring-ink-200">
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-ink-600">
+                  <input
+                    type="radio"
+                    name="primary-banker"
+                    checked={primaryIndex === index}
+                    onChange={() => setPrimaryIndex(index)}
+                  />
+                  Primary
+                </label>
+                <Select
+                  className="ml-auto"
+                  value={row.kind}
+                  onChange={(event) =>
+                    update(index, { kind: event.target.value as "to" | "cc" })
+                  }
+                >
+                  <option value="to">To</option>
+                  <option value="cc">Copied</option>
+                </Select>
+                {rows.length > 1 && (
+                  <Button
+                    onClick={() => {
+                      setRows((current) => current.filter((_, i) => i !== index));
+                      setPrimaryIndex((current) =>
+                        current >= index && current > 0 ? current - 1 : current,
+                      );
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+
+              {suggestions.length > 0 && (
+                <Field label="From the catalogue" hint="Or type an address below.">
+                  <Select
+                    value={row.bankContactId ?? ""}
+                    onChange={(event) => useContact(index, event.target.value)}
+                  >
+                    <option value="">— Type it in —</option>
+                    {suggestions.map((contact) => (
+                      <option key={contact.id} value={contact.id}>
+                        {contactLabel(contact, db)}
+                        {contact.isPrimaryContact ? " (primary)" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
+
+              <Field label="Email">
+                <Input
+                  value={row.email}
+                  placeholder="manager.rspuram@bank.com"
+                  onChange={(event) =>
+                    update(index, {
+                      email: event.target.value,
+                      bankContactId: undefined as unknown as string,
+                    })
+                  }
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Name" hint="Optional — a shared mailbox has none.">
+                  <Input
+                    value={row.name}
+                    onChange={(event) => update(index, { name: event.target.value })}
+                  />
+                </Field>
+                <Field label="Designation" hint="Optional.">
+                  <Input
+                    value={row.designation}
+                    onChange={(event) => update(index, { designation: event.target.value })}
+                  />
+                </Field>
+              </div>
+            </div>
+          ))}
+
+          <Button onClick={() => setRows((current) => [...current, blankRecipient()])}>
+            + Add Banker
+          </Button>
+        </div>
+
+        <Field
+          label="How it goes out"
+          hint="Records intent only — AOS sends nothing. Managed under Master Data."
+        >
+          <Select
+            value={submissionModeId}
+            onChange={(event) => setSubmissionModeId(event.target.value)}
+          >
+            <option value="">— Not stated —</option>
+            {db.submissionModes
+              .filter((mode) => mode.isActive)
+              .sort((a, b) => a.displayOrder - b.displayOrder)
+              .map((mode) => (
+                <option key={mode.id} value={mode.id}>
+                  {mode.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+
+        <p className="text-xs text-ink-500">
+          It is created as <em>Not Submitted</em>: chosen, but not yet gone out. The case stage
+          moves when you mark it Submitted.
+        </p>
+
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!branchId}
+            onClick={() => {
+              const result = createSubmission(
+                {
+                  caseId,
+                  branchOrganisationId: branchId,
+                  ...(submissionModeId ? { submissionModeId } : {}),
+                  recipients: rows.map((row, index) => ({
+                    email: row.email,
+                    ...(row.name.trim() ? { name: row.name } : {}),
+                    ...(row.designation.trim() ? { designation: row.designation } : {}),
+                    ...(row.bankContactId ? { bankContactId: row.bankContactId } : {}),
+                    kind: row.kind,
+                    isPrimary: index === primaryIndex,
+                  })),
+                },
+                session.user.id,
+              );
+              if (result.ok) {
+                onClose();
+                toast.show("Bank added. Mark it Submitted when the file physically goes out.");
+                return;
+              }
+              toast.show(result.message ?? "Could not add the bank.", "bad");
+            }}
+          >
+            Add Bank
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

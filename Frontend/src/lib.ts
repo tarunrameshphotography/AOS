@@ -188,17 +188,27 @@ export function search(db: Database, query: string): SearchHit[] {
     const properties = db.caseProperties
       .filter((cp) => cp.caseId === loanCase.id)
       .map((cp) => db.properties.find((p) => p.id === cp.propertyId));
+    // Both what the branch is called NOW and what the submission recorded at
+    // the time (ADR-036). Searching only the live name loses a case lodged
+    // with a bank that has since been renamed or merged; searching only the
+    // snapshot loses one whose branch was renamed for a good reason and whose
+    // new name is the one the user knows. Both are how somebody might ask.
     const banks = db.submissions
       .filter((s) => s.caseId === loanCase.id)
-      .map((s) => db.organisations.find((o) => o.id === s.branchOrganisationId));
+      .flatMap((s) => [
+        db.organisations.find((o) => o.id === s.branchOrganisationId)?.canonicalName,
+        s.branchNameAtSubmission,
+        s.bankNameAtSubmission,
+      ])
+      .filter((name): name is string => name !== undefined);
 
     let matchedOn: string | null = null;
     if (matches(loanCase.caseNumber)) matchedOn = "Case number";
     else if (matches(applicant?.fullName)) matchedOn = `Applicant — ${applicant?.fullName}`;
     else if (properties.some((p) => matches(p?.locality) || matches(p?.buildingName)))
       matchedOn = `Property — ${properties[0]?.locality ?? properties[0]?.buildingName}`;
-    else if (banks.some((b) => matches(b?.canonicalName)))
-      matchedOn = `Bank — ${banks.find((b) => matches(b?.canonicalName))?.canonicalName}`;
+    else if (banks.some((name) => matches(name)))
+      matchedOn = `Bank — ${banks.find((name) => matches(name))}`;
     else if (matches(productLabel(db, loanCase))) matchedOn = "Loan type";
     else if (loanCase.tags.some((t) => matches(t))) matchedOn = "Tag";
     else if (terms.length > 1 && terms.every((term) =>

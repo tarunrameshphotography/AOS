@@ -1371,3 +1371,127 @@ and a blank checklist is worse than an imperfect one.
 on is a small, deliberate code change. What stays hard, on purpose: getting AOS
 to decide whether a customer qualifies. That remains ADR-016's territory, and
 nothing here moves the line.
+
+---
+
+## ADR-036 — A submission is addressed to people, and remembers where it went
+
+Date: 2026-08-06
+Status: Accepted
+
+**Schema.** `Database/migrations/0024`, `0025`.
+**Code.** `src/domain/submissions/recipients.ts`.
+
+**The problem.** "Send to Bank" was one dropdown listing every branch in the
+system, and it recorded a branch id. Three things were wrong with that, and
+only the first is cosmetic.
+
+A flat branch list stops working the moment the catalogue has real depth.
+After Milestone 8 there were twenty-eight lenders with one placeholder branch
+each, called "HDFC Bank — Coimbatore" — which is not an address anybody can
+lodge a file at, on the screen whose entire purpose is choosing one.
+
+A submission had nowhere to record **who** it went to. A file goes to bankers,
+plural: the relationship manager, the credit manager who will actually raise
+the query, and the branch's shared mailbox so it does not die when one person
+is on leave. `submission.bank_contact_id` (0006) held exactly one, so in
+practice the other two were typed into a note, outside search and reporting.
+
+And a submission's counterparty was **read live from master data**. A branch
+renamed next year would silently rewrite what a file lodged today says it did.
+
+**Decision, in three parts.**
+
+**1. Bank → Branch → Contacts, and a contact is not always a person.**
+`bank_contact` gains `contact_name` and `is_primary_contact`, and `person_id`
+becomes nullable.
+
+The nullable `person_id` is the non-obvious part. ADR-034 established that a
+work mobile and a bank email belong to the *posting*, not the human — which is
+why they sit on `bank_contact` and not on `person_identifier`. This carries
+that one step further to a conclusion ADR-034 did not need: for many of the
+addresses a file is actually sent to, **there is no human being to model**.
+`homeloans.cbe@bank.com` is a desk. Under the old shape, recording one meant
+inventing a `person` row with a fabricated name — precisely the "fictional
+people in an operational contact list" Milestone 8 refused to seed.
+
+The link to `person` is kept, not replaced. A named manager who moves to
+another bank next year is one new `bank_contact` against the same person, and
+that is the whole point of ADR-006 and ADR-014.
+
+**2. A submission snapshots its counterparty.** `submission` gains
+`institution_organisation_id`, four `*_at_submission` text columns and
+`snapshot_taken_at`; `submission_recipient` snapshots name, designation and
+email per recipient.
+
+The live foreign keys stay — they are how you reach the branch as it is *now* —
+and beside them sit plain text columns recording what it was called **when the
+file went**. Both are true and neither is derivable from the other.
+
+This is deliberate denormalisation, and the justification is not convenience.
+A rejection recorded against a branch is evidence (ADR-028), and evidence that
+changes underneath you is not evidence. It is also not a breach of ADR-018's
+ban on duplicated personal data: an institution is not a person and a branch
+name is not personal data, so there is nothing here to redact.
+
+`snapshot_taken_at` exists because the backfill for pre-0024 rows is a
+*reconstruction* from master data as it stands today, not a record of what was
+true then. Nothing recorded what those branches were called last year. A
+reconstruction that cannot be told apart from a record is worse than an empty
+column, so the timestamp is left NULL for exactly those rows.
+
+**3. Recipients are a list, and typed-in addresses are first class.**
+`submission_recipient` is a new table rather than more columns, because the
+count is genuinely open — "multiple recipients" is the normal case, not the
+exception. `bank_contact_id` is nullable so an address that is not in the
+catalogue can still be used: a workflow that only accepts catalogued addresses
+is one people work around by keeping their own list, which is the failure that
+made this milestone necessary in the first place.
+
+**What the catalogue now claims, and what it still refuses.** 0025 adds the
+institutions the Coimbatore market has and Milestone 8 lacked — small finance
+banks and co-operative banks, both named in the brief and both genuinely
+absent, plus the Tamil Nadu housing financiers and gold-loan NBFCs whose
+absence was conspicuous for *this* city. Every lender's single placeholder
+branch is replaced by the localities it operates in: RS Puram, Gandhipuram,
+Race Course, Peelamedu, Saibaba Colony, Singanallur, Saravanampatti, Town
+Hall, Ukkadam, Kuniyamuthur, Thudiyalur.
+
+Milestone 8's line is kept exactly where it was. **No street addresses, no
+IFSC codes, no phone numbers, no branch emails, and not one named human
+being.** That refusal matters more here than it did in Milestone 8: the Add
+Bank workflow offers catalogued contacts as recipients at the exact moment
+somebody is about to send a real customer's file, so a seeded banker email
+would not merely look plausible — it would be sent to.
+`Frontend/src/fake/lenders.test.ts` asserts each of those absences, so a
+later plausible-looking address fails the build rather than becoming fact by
+repetition.
+
+**What was refused, and where it attaches later.** No `submission_package`
+table, no `submission_email` table, no draft state, no attachment manifest.
+Each was considered and declined on ADR-028's grounds: building the mapping
+table before there is anything to map produces an empty table plus a screen
+nobody fills. The seams already exist and each is one migration away —
+Gmail/Outlook drafts read `submission_recipient` and
+`submission.submission_mode_id`; a package is a junction between `document`
+and `submission`, both of which exist; submission history is already the
+event log (ADR-005); per-bank status tracking is already independent
+(ADR-004). Email size splitting and OCR are not modelled at all, and should
+not be until the milestone that needs them states what it needs.
+
+`recipient_kind` (to/cc) is the one exception, and it earns its place on a
+narrow argument: it is the only thing about a recipient that a future email
+integration **cannot infer** and the office genuinely knows — the manager is
+addressed, the branch mailbox is copied. Recording it now costs a text column;
+not recording it means asking the question again about files that have already
+gone.
+
+**Consequences.** Adding a bank, a branch or a contact is data entry on the
+Lender Catalogue screen, and adding a *kind* of lender, role or submission
+mode is a row in Master Data — neither needs a developer. Editing any of it is
+now safe in a way it was not: nothing an administrator does to the catalogue
+can change what a historical file says it did.
+
+What stays hard, on purpose: getting AOS to choose the bank. Routing and
+eligibility remain ADR-016's territory, and this milestone gives them a
+catalogue to read without moving that line an inch.

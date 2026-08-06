@@ -76,6 +76,7 @@ function baseDb(): Database {
     requirements: [],
     documentRequirementRules: RULES,
     submissions: [],
+    submissionRecipients: [],
     offers: [],
     communications: [],
     notes: [],

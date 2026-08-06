@@ -837,6 +837,25 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
       "answer are one exchange.",
   },
   {
+    table: "submission_recipient",
+    family: "case-derived",
+    purpose:
+      "The bankers one submission was addressed to, snapshotted as they stood " +
+      "when the bank was added to the case (Milestone 10). Multiple recipients " +
+      "are the norm — the relationship manager, the credit manager, and the " +
+      "branch's shared mailbox — and a model holding one of them pushes the " +
+      "rest into a free-text note where nothing can read them.",
+    select: permits("submission.read"),
+    insert: permits("submission.create"),
+    update: permits("submission.update_status"),
+    delete: NEVER_DELETED,
+    notes:
+      "Governed by its parent submission, which is what `case-derived` means " +
+      "here (ADR-027). NOTHING IN AOS SENDS EMAIL — these rows record who a " +
+      "file was addressed to, and a future Gmail or Outlook integration reads " +
+      "them rather than re-asking.",
+  },
+  {
     table: "offer",
     family: "case-derived",
     purpose:

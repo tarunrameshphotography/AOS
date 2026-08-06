@@ -48,6 +48,7 @@ import {
 import {
   addLenderInsight,
   addSupportedProduct,
+  contactLabel,
   createBranch,
   createInstitution,
   createRelationshipManager,
@@ -404,6 +405,23 @@ function activeSorted(list: readonly MasterDataRecord[]): MasterDataRecord[] {
     .sort((a, b) => a.displayOrder - b.displayOrder);
 }
 
+/**
+ * The name to put in the edit form's Name box — blank rather than a
+ * placeholder when the contact is a desk.
+ *
+ * `contactLabel` falls back to the email so that a list row always says
+ * something. Doing that here would pre-fill the Name field with an email
+ * address, and the first person to save the form would turn a nameless
+ * mailbox into one named after itself.
+ */
+function contactLabelOrBlank(contact: BankContact, db: Database): string {
+  return (
+    contact.contactName ??
+    db.people.find((person) => person.id === contact.personId)?.fullName ??
+    ""
+  );
+}
+
 const BRANCH_STATUS_LABELS: Record<BranchStatus, string> = {
   operational: "Open",
   temporarily_closed: "Temporarily closed",
@@ -755,25 +773,27 @@ function ContactsPanel({
     <div className="space-y-3">
       {contacts.length === 0 ? (
         <Empty>
-          Nobody recorded yet. Add the manager you actually deal with — the number and email here
-          belong to their posting, so if they move banks you add a new one rather than editing this.
+          Nobody recorded yet. Add the manager you actually deal with, and the branch's shared
+          mailbox alongside them — the number and email here belong to the posting, so if somebody
+          moves banks you add a new contact rather than editing this one. These are the addresses
+          the Add Bank workflow offers when a file goes out.
         </Empty>
       ) : (
         <ul className="space-y-2">
           {contacts.map((contact) => {
-            const person = db.people.find((p) => p.id === contact.personId);
             const branch = db.organisations.find((o) => o.id === contact.branchOrganisationId);
             return (
               <li key={contact.id} className="rounded-md bg-white p-2.5 ring-1 ring-ink-200">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                      {person?.fullName ?? "Unknown"}
+                      {contactLabel(contact, db)}
                       <Badge tone="info">
                         {nameOf(db.lenderRelationshipRoles, contact.relationshipRoleId) ??
                           contact.designation ??
                           "Contact"}
                       </Badge>
+                      {contact.isPrimaryContact && <Badge tone="good">Primary</Badge>}
                       {!contact.isActive && <Badge tone="neutral">Moved on</Badge>}
                     </p>
                     <p className="mt-0.5 text-xs text-ink-500">
@@ -1531,9 +1551,10 @@ function ContactForm({
 }): ReactNode {
   const session = useSession();
   const toast = useToast();
-  const person = db.people.find((p) => p.id === initial?.personId);
 
-  const [fullName, setFullName] = useState(person?.fullName ?? "");
+  const [fullName, setFullName] = useState(
+    initial ? contactLabelOrBlank(initial, db) : "",
+  );
   const [branchOrganisationId, setBranchOrganisationId] = useState(
     initial?.branchOrganisationId ?? "",
   );
@@ -1541,6 +1562,7 @@ function ContactForm({
   const [designation, setDesignation] = useState(initial?.designation ?? "");
   const [workMobile, setWorkMobile] = useState(initial?.workMobile ?? "");
   const [workEmail, setWorkEmail] = useState(initial?.workEmail ?? "");
+  const [isPrimaryContact, setIsPrimaryContact] = useState(initial?.isPrimaryContact ?? false);
   const [notes, setNotes] = useState(initial?.notes ?? "");
 
   const branches = db.organisations.filter(
@@ -1548,20 +1570,24 @@ function ContactForm({
   );
 
   const build = (): RelationshipManagerInput => ({
-    fullName,
+    ...(fullName ? { fullName } : {}),
     institutionOrganisationId,
     ...(branchOrganisationId ? { branchOrganisationId } : {}),
     ...(relationshipRoleId ? { relationshipRoleId } : {}),
     ...(designation ? { designation } : {}),
     ...(workMobile ? { workMobile } : {}),
     ...(workEmail ? { workEmail } : {}),
+    ...(isPrimaryContact ? { isPrimaryContact } : {}),
     ...(notes ? { notes } : {}),
   });
 
   return (
     <Modal open title={title} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="Name">
+        <Field
+          label="Name"
+          hint="Optional. A shared mailbox — homeloans.cbe@bank.com — has no name, and that is a complete record rather than a partial one."
+        >
           <Input value={fullName} onChange={(event) => setFullName(event.target.value)} />
         </Field>
 
@@ -1605,10 +1631,31 @@ function ContactForm({
           <Field label="Work mobile">
             <Input value={workMobile} onChange={(event) => setWorkMobile(event.target.value)} />
           </Field>
-          <Field label="Work email">
+          <Field
+            label="Work email"
+            hint="This is the address the Add Bank workflow offers when a file goes out."
+          >
             <Input value={workEmail} onChange={(event) => setWorkEmail(event.target.value)} />
           </Field>
         </div>
+
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={isPrimaryContact}
+            disabled={branchOrganisationId === ""}
+            onChange={(event) => setIsPrimaryContact(event.target.checked)}
+          />
+          <span>
+            Primary contact for this branch
+            <span className="block text-xs text-ink-500">
+              {branchOrganisationId === ""
+                ? "Needs a branch — a primary contact is a branch's standing arrangement."
+                : "Addressed first when a file goes to this branch. Setting this clears it from whoever holds it now."}
+            </span>
+          </span>
+        </label>
 
         <Field
           label="Notes"
@@ -1621,7 +1668,7 @@ function ContactForm({
           <Button onClick={onClose}>Cancel</Button>
           <Button
             variant="primary"
-            disabled={fullName.trim().length === 0}
+            disabled={fullName.trim().length === 0 && workEmail.trim().length === 0}
             onClick={() => {
               const result = initial
                 ? updateRelationshipManager(initial.id, build(), session.user.id)

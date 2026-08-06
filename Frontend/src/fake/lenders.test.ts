@@ -163,12 +163,128 @@ describe("the projection the screen filters through", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The Coimbatore catalogue (Milestone 10, ADR-036).
+//
+// Milestone 8 gave every lender one placeholder branch called
+// "<Bank> — Coimbatore". That is not an address anybody can lodge a file at,
+// and the branch IS the counterparty (ADR-015). These check that the
+// catalogue now has the shape the submission workflow needs — and that it
+// still refuses to invent what it cannot know.
+// ---------------------------------------------------------------------------
+
+describe("the Coimbatore catalogue", () => {
+  const branchNames = db.organisations
+    .filter((org) => org.roles.includes("branch"))
+    .map((org) => org.canonicalName);
+
+  it("covers every kind of lender the brief named", () => {
+    const typesInUse = new Set(
+      db.lenderProfiles
+        .map((profile) => db.lenderTypes.find((t) => t.id === profile.lenderTypeId)?.code)
+        .filter((code): code is string => code !== undefined),
+    );
+    for (const expected of [
+      "public_sector_bank",
+      "private_sector_bank",
+      "small_finance_bank",
+      "cooperative_bank",
+      "nbfc",
+      "housing_finance_company",
+    ]) {
+      expect(typesInUse, `no lender of type ${expected} is catalogued`).toContain(expected);
+    }
+  });
+
+  it("carries the local institutions a Coimbatore file actually goes to", () => {
+    const names = db.organisations
+      .filter((org) => org.roles.includes("lender"))
+      .map((org) => org.canonicalName);
+    for (const expected of [
+      // Small finance and co-operative — both named in the brief, both absent
+      // before this milestone.
+      "Equitas Small Finance Bank",
+      "Coimbatore District Central Co-operative Bank",
+      // Tamil Nadu housing financiers, which compete directly for the
+      // self-construction files Amaze arranges.
+      "Repco Home Finance",
+      "Sundaram Home Finance",
+      // Gold loans are a mainstream short-term route in this market.
+      "Muthoot Finance",
+    ]) {
+      expect(names, `${expected} is missing from the catalogue`).toContain(expected);
+    }
+  });
+
+  it("names branches by locality, not by city", () => {
+    for (const locality of [
+      "RS Puram",
+      "Race Course",
+      "Gandhipuram",
+      "Peelamedu",
+      "Saibaba Colony",
+      "Singanallur",
+      "Saravanampatti",
+      "Town Hall",
+      "Ukkadam",
+      "Kuniyamuthur",
+      "Thudiyalur",
+    ]) {
+      expect(
+        branchNames.some((name) => name.endsWith(`— ${locality}`)),
+        `no branch in ${locality}`,
+      ).toBe(true);
+    }
+  });
+
+  // The placeholder was the thing this milestone existed to remove: "HDFC
+  // Bank — Coimbatore" tells somebody choosing where to lodge a file nothing
+  // at all.
+  it("has retired the one-placeholder-per-lender branch", () => {
+    expect(branchNames.filter((name) => name.endsWith("— Coimbatore"))).toEqual([]);
+  });
+
+  it("gives the large networks more than one branch, because they have more than one", () => {
+    for (const code of ["sbi", "indian_bank", "hdfc_bank", "kvb"]) {
+      const institution = view.institutions.find((l) => l.code === code);
+      expect(institution, `${code} is missing`).toBeDefined();
+      expect(
+        branchesOf(institution!, view.branches).length,
+        `${code} has only one branch`,
+      ).toBeGreaterThan(2);
+    }
+  });
+
+  it("keeps every branch name unique within its bank", () => {
+    const byParent = new Map<string, string[]>();
+    for (const org of db.organisations.filter((o) => o.roles.includes("branch"))) {
+      const key = org.parentOrganisationId ?? "none";
+      byParent.set(key, [...(byParent.get(key) ?? []), org.canonicalName]);
+    }
+    for (const [parent, names] of byParent) {
+      expect(new Set(names).size, `${parent} has two branches with one name`).toBe(names.length);
+    }
+  });
+});
+
 describe("what the seed deliberately does not claim", () => {
   // Inventing the names of bank employees would put fictional people into an
   // operational contact list, and the first person to ring one would stop
   // trusting the whole catalogue.
   it("invents no relationship managers", () => {
     expect(db.bankContacts).toEqual([]);
+  });
+
+  // Milestone 10 raises the stakes on the rule above. The Add Bank workflow
+  // offers catalogued contacts as recipients at the exact moment somebody is
+  // about to send a real customer's file — so a seeded banker email would not
+  // merely look plausible, it would be sent to. Every address in this system
+  // is typed in by somebody at Amaze holding that person's card.
+  it("invents no banker email addresses, and no submission recipients", () => {
+    expect(db.submissionRecipients).toEqual([]);
+    for (const contact of db.bankContacts) {
+      expect(contact.workEmail, "a bank contact has an invented email").toBeUndefined();
+    }
   });
 
   // "Excellent for textile businesses" is only worth storing when it is

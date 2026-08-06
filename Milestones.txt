@@ -4,6 +4,7 @@ The sequence I'd follow
 ✅ Financial-Year Documents
 ✅ Automatic Storage
 ✅ Master Data Engine
+✅ Master Data Refinement
 Loan Product Catalogue
 Coimbatore Bank & NBFC Catalogue
 Document Requirement Engine

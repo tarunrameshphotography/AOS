@@ -85,8 +85,10 @@ export interface Property {
  * referral sources, districts and cities. One shape, learned once — the same
  * reasoning as the DB migration's header comment.
  *
- * `districtId` is meaningful only on `Database.cities`; every other
- * collection ignores it.
+ * `districtId` is meaningful only on `Database.cities`; `state` only on
+ * `Database.districts`. Every other collection ignores whichever does not
+ * apply to it — the same "one shared shape, most fields unused most of the
+ * time" trade-off `rejectionReasons` already made for `displayOrder`.
  */
 export interface MasterDataRecord {
   id: Id;
@@ -98,6 +100,7 @@ export interface MasterDataRecord {
   effectiveFrom?: string;
   notes?: string;
   districtId?: Id;
+  state?: string;
 }
 
 export type LoanCategory = MasterDataRecord;

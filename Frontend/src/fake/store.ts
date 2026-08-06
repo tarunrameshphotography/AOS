@@ -1195,6 +1195,8 @@ export interface MasterDataInput {
   notes?: string;
   /** Only meaningful for `cities`. */
   districtId?: Id;
+  /** Only meaningful for `districts`. */
+  state?: string;
 }
 
 function masterDataList(kind: MasterDataKind): readonly MasterDataRecord[] {
@@ -1230,6 +1232,7 @@ export function createMasterDataRecord(
     ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}),
     ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
     ...(kind === "cities" && input.districtId ? { districtId: input.districtId } : {}),
+    ...(kind === "districts" && input.state?.trim() ? { state: input.state.trim() } : {}),
   };
   setMasterDataList(kind, [...list, newRecord]);
 
@@ -1263,19 +1266,21 @@ export function updateMasterDataRecord(
     kind,
     masterDataList(kind).map((r) => {
       if (r.id !== id) return r;
-      const { description, notes, effectiveFrom, districtId, ...rest } = r;
+      const { description, notes, effectiveFrom, districtId, state, ...rest } = r;
       return {
         ...rest,
         ...(description !== undefined ? { description } : {}),
         ...(notes !== undefined ? { notes } : {}),
         ...(effectiveFrom !== undefined ? { effectiveFrom } : {}),
         ...(districtId !== undefined ? { districtId } : {}),
+        ...(state !== undefined ? { state } : {}),
         ...(name ? { name } : {}),
         ...(patch.displayOrder !== undefined ? { displayOrder: patch.displayOrder } : {}),
         ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
         ...(patch.effectiveFrom ? { effectiveFrom: patch.effectiveFrom } : {}),
         ...(patch.notes?.trim() ? { notes: patch.notes.trim() } : {}),
         ...(kind === "cities" && patch.districtId ? { districtId: patch.districtId } : {}),
+        ...(kind === "districts" && patch.state?.trim() ? { state: patch.state.trim() } : {}),
       };
     }),
   );

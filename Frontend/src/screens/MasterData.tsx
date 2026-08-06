@@ -1,5 +1,5 @@
 /**
- * Master Data administration (Milestone 5).
+ * Master Data administration (Milestone 5, refined in Milestone 6).
  *
  * One consistent experience for every controlled-vocabulary table in AOS —
  * searchable, fast, and built for office staff rather than engineers. Every
@@ -12,11 +12,31 @@
  * rejection_reason and document_type, so a value already used on a live
  * record never disappears out from under it.
  *
- * Deliberately absent: Banks / NBFCs / HFCs / Branches (already organisation
- * rows, ADR-014/015 — their own screen is the "Coimbatore Bank & NBFC
- * Catalogue" milestone) and the Loan Product / Bank Product catalogue itself
- * (the "Loan Product Catalogue" milestone). Loan *Category* — the taxonomy
- * those products will hang off — is managed here.
+ * Milestone 6 groups every section into three categories (ADR-031):
+ *
+ *   System      — rarely changes, administrator-level reference data.
+ *   Business    — business-controlled, defines Amaze's lending ecosystem.
+ *   Operational — frequently-changing entities: people and firms Amaze
+ *                 works with day to day. None are implemented as editable
+ *                 master data yet — they are richer entities than a
+ *                 code/name row (a Relationship Manager is a person with a
+ *                 branch relationship, not vocabulary), so each is either
+ *                 already modelled elsewhere or awaits its own milestone.
+ *                 Listed here so office staff can see where it will live.
+ *
+ * The category is a display grouping only, defined per section below — the
+ * same "documentation grouping, no behaviour" pattern
+ * src/domain/permissions/actions.ts uses for PERMISSION_GROUPS. It has no
+ * schema representation; introducing one would be exactly the kind of
+ * unrequested structural change this milestone's brief rules out.
+ *
+ * Deliberately absent as editable sections: Banks / NBFCs / HFCs / Branches
+ * (already organisation rows, ADR-014/015 — their own screen is the
+ * "Coimbatore Bank & NBFC Catalogue" milestone) and the Loan Product / Bank
+ * Product catalogue itself (the "Loan Product Catalogue" milestone). Loan
+ * *Category* — the taxonomy those products will hang off — is managed here.
+ * Both appear as planned Business Master Data below so the hierarchy is
+ * visible before the screens exist.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -50,44 +70,102 @@ import {
   useToast,
 } from "../ui/index.js";
 
+type MasterDataCategory = "system" | "business" | "operational";
+
+const CATEGORY_ORDER: readonly MasterDataCategory[] = ["system", "business", "operational"];
+
+const CATEGORY_LABELS: Record<MasterDataCategory, string> = {
+  system: "System Master Data",
+  business: "Business Master Data",
+  operational: "Operational Master Data",
+};
+
+const CATEGORY_HINTS: Record<MasterDataCategory, string> = {
+  system: "Rarely changes. Administrator-level reference data.",
+  business: "Business controlled. Defines Amaze's lending ecosystem. Changes occasionally.",
+  operational: "Frequently changing — the people and firms Amaze works with day to day.",
+};
+
 interface SimpleSection {
   kind: "simple";
   key: MasterDataKind;
   label: string;
   hint: string;
+  category: MasterDataCategory;
 }
 
 interface DocumentTypeSection {
   kind: "documentType";
   label: string;
   hint: string;
+  category: MasterDataCategory;
 }
 
 interface RejectionReasonSection {
   kind: "rejectionReason";
   label: string;
   hint: string;
+  category: MasterDataCategory;
 }
 
 type Section = SimpleSection | DocumentTypeSection | RejectionReasonSection;
 
 const SECTIONS: Section[] = [
-  { kind: "simple", key: "loanCategories", label: "Loan Categories", hint: "The commercial grouping loan products hang off — Home Loan, Business Loan, LAP." },
-  { kind: "simple", key: "employmentTypes", label: "Employment Types", hint: "A person's income-source classification. Drives which income documents a case asks for." },
-  { kind: "simple", key: "businessConstitutions", label: "Business Constitutions", hint: "How a borrowing firm is legally constituted — proprietorship, partnership, private limited." },
-  { kind: "simple", key: "propertyTypes", label: "Property Types", hint: "Apartment, independent house, plot, villa, commercial, agricultural." },
-  { kind: "simple", key: "propertyOwnershipTypes", label: "Property Ownership Types", hint: "How title is held — freehold, leasehold, ancestral, power of attorney." },
-  { kind: "simple", key: "referralSources", label: "Referral Sources", hint: "How a lead reached Amaze. Populates the Source field on case creation." },
-  { kind: "simple", key: "districts", label: "Districts", hint: "Districts Amaze operates in or lends against." },
-  { kind: "simple", key: "cities", label: "Cities", hint: "Cities Amaze operates in or lends against, each within a district." },
-  { kind: "documentType", label: "Document Types", hint: "The kinds of document AOS recognises. Requirement templates key off these." },
-  { kind: "rejectionReason", label: "Rejection Reasons", hint: "Amaze's standardised categories for why a bank declined a case (ADR-028)." },
+  // System — rarely changes, administrator-level reference data.
+  { kind: "documentType", label: "Document Types", hint: "The kinds of document AOS recognises. Requirement templates key off these.", category: "system" },
+  { kind: "simple", key: "employmentTypes", label: "Employment Types", hint: "A person's income-source classification. Drives which income documents a case asks for.", category: "system" },
+  { kind: "simple", key: "businessConstitutions", label: "Business Constitutions", hint: "How a borrowing firm is legally constituted — proprietorship, partnership, private limited.", category: "system" },
+  { kind: "simple", key: "propertyTypes", label: "Property Types", hint: "Apartment, independent house, plot, villa, commercial, agricultural.", category: "system" },
+  { kind: "simple", key: "propertyOwnershipTypes", label: "Property Ownership Types", hint: "How title is held — freehold, leasehold, ancestral, power of attorney.", category: "system" },
+  { kind: "rejectionReason", label: "Rejection Reasons", hint: "Amaze's standardised categories for why a bank declined a case (ADR-028).", category: "system" },
+  { kind: "simple", key: "districts", label: "Districts", hint: "Districts Amaze operates in or lends against.", category: "system" },
+  { kind: "simple", key: "cities", label: "Cities", hint: "Cities Amaze operates in or lends against, each within a district.", category: "system" },
+
+  // Business — business-controlled, defines Amaze's lending ecosystem.
+  { kind: "simple", key: "loanCategories", label: "Loan Categories", hint: "The commercial grouping loan products hang off — Home Loan, Business Loan, LAP.", category: "business" },
+  { kind: "simple", key: "referralSources", label: "Referral Sources", hint: "How a lead reached Amaze. Populates the Source field on case creation.", category: "business" },
 ];
+
+interface PlannedEntity {
+  name: string;
+  note: string;
+}
+
+/**
+ * Business and Operational Master Data whose vocabulary already has a home
+ * in the schema but no editable section on this screen yet — either because
+ * the screen is a later, named milestone, or because the entity is richer
+ * than a code/name row and needs its own design. Read-only, so the
+ * hierarchy is visible without building something nobody asked for yet.
+ */
+const PLANNED_BY_CATEGORY: Record<MasterDataCategory, PlannedEntity[]> = {
+  system: [],
+  business: [
+    { name: "Loan Products", note: "Modelled today (loan_product, ADR-016). Own catalogue screen: \"Loan Product Catalogue\" milestone." },
+    { name: "Banks", note: "Organisation rows holding the lender role (ADR-014). Own screen: \"Coimbatore Bank & NBFC Catalogue\" milestone." },
+    { name: "NBFCs", note: "Organisation rows, lender_profile.lender_type = 'nbfc'. Same upcoming screen as Banks." },
+    { name: "Housing Finance Companies", note: "Organisation rows, lender_profile.lender_type = 'hfc'. Same upcoming screen as Banks." },
+    { name: "Bank Branches", note: "Organisation rows holding the branch role (ADR-015). Same upcoming screen as Banks." },
+  ],
+  operational: [
+    { name: "Employees", note: "Modelled today as app_user + person." },
+    { name: "Relationship Managers", note: "Modelled today as person + bank_contact — a relationship, not vocabulary." },
+    { name: "Builders", note: "Modelled as organisation rows holding the builder role." },
+    { name: "Developers", note: "Modelled as organisation rows holding the developer role." },
+    { name: "Advocates", note: "Not yet modelled." },
+    { name: "Legal Firms", note: "Not yet modelled." },
+    { name: "Chartered Accountants", note: "Not yet modelled." },
+    { name: "Valuers", note: "Not yet modelled." },
+    { name: "DSAs", note: "Not yet modelled." },
+    { name: "Referral Partners", note: "Distinct from referral_source (a channel) — a specific person or firm being paid, to be designed." },
+  ],
+};
 
 export function MasterData(): ReactNode {
   const db = useDatabase();
   const session = useSession();
-  const [activeKey, setActiveKey] = useState<string>(SECTIONS[0]?.label ?? "");
+  const [categoryKey, setCategoryKey] = useState<MasterDataCategory>("system");
+  const [activeLabel, setActiveLabel] = useState<string>(SECTIONS[0]?.label ?? "");
 
   const canManage = session.can("master_data.manage", "all");
 
@@ -101,7 +179,9 @@ export function MasterData(): ReactNode {
     );
   }
 
-  const section = SECTIONS.find((s) => s.label === activeKey) ?? SECTIONS[0];
+  const sectionsInCategory = SECTIONS.filter((s) => s.category === categoryKey);
+  const section = sectionsInCategory.find((s) => s.label === activeLabel) ?? sectionsInCategory[0];
+  const planned = PLANNED_BY_CATEGORY[categoryKey];
 
   return (
     <div className="space-y-4">
@@ -114,22 +194,63 @@ export function MasterData(): ReactNode {
         </p>
       </div>
 
+      <div className="flex gap-1 border-b border-ink-200">
+        {CATEGORY_ORDER.map((category) => (
+          <button
+            key={category}
+            onClick={() => {
+              setCategoryKey(category);
+              const first = SECTIONS.find((s) => s.category === category);
+              setActiveLabel(first?.label ?? "");
+            }}
+            className={cx(
+              "border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+              category === categoryKey
+                ? "border-brand-600 text-ink-900"
+                : "border-transparent text-ink-500 hover:text-ink-700",
+            )}
+          >
+            {CATEGORY_LABELS[category]}
+          </button>
+        ))}
+      </div>
+      <p className="-mt-2 text-xs text-ink-500">{CATEGORY_HINTS[categoryKey]}</p>
+
       <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-        <nav className="space-y-0.5">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.label}
-              onClick={() => setActiveKey(s.label)}
-              className={cx(
-                "block w-full rounded-md px-3 py-1.5 text-left text-sm font-medium",
-                s.label === section?.label
-                  ? "bg-brand-100 text-brand-900"
-                  : "text-ink-700 hover:bg-ink-50",
-              )}
-            >
-              {s.label}
-            </button>
-          ))}
+        <nav className="space-y-3">
+          {sectionsInCategory.length > 0 && (
+            <div className="space-y-0.5">
+              {sectionsInCategory.map((s) => (
+                <button
+                  key={s.label}
+                  onClick={() => setActiveLabel(s.label)}
+                  className={cx(
+                    "block w-full rounded-md px-3 py-1.5 text-left text-sm font-medium",
+                    s.label === section?.label
+                      ? "bg-brand-100 text-brand-900"
+                      : "text-ink-700 hover:bg-ink-50",
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {planned.length > 0 && (
+            <div className="rounded-md bg-ink-50 p-3">
+              <p className="text-xs font-medium text-ink-700">
+                Also {CATEGORY_LABELS[categoryKey].toLowerCase()}, not yet editable here:
+              </p>
+              <ul className="mt-1.5 space-y-1.5">
+                {planned.map((p) => (
+                  <li key={p.name} className="text-xs text-ink-500">
+                    <span className="font-medium text-ink-700">{p.name}</span> — {p.note}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </nav>
 
         {section?.kind === "simple" && (
@@ -140,6 +261,14 @@ export function MasterData(): ReactNode {
         )}
         {section?.kind === "rejectionReason" && (
           <RejectionReasonSectionView section={section} db={db} canManage={canManage} />
+        )}
+        {!section && (
+          <Card title={CATEGORY_LABELS[categoryKey]} subtitle={CATEGORY_HINTS[categoryKey]}>
+            <p className="text-sm text-ink-700">
+              Nothing in this category is editable here yet — see the list on the left for where
+              each one already lives, and which milestone gives it its own screen.
+            </p>
+          </Card>
         )}
       </div>
     </div>
@@ -191,6 +320,7 @@ function SimpleMasterDataSection({
   const [query, setQuery, filtered] = useSearch(records);
 
   const districtOptions = section.key === "cities" ? db.districts : undefined;
+  const showState = section.key === "districts";
 
   return (
     <Card
@@ -219,6 +349,9 @@ function SimpleMasterDataSection({
                       <span className="text-xs font-normal text-ink-500">
                         {db.districts.find((d) => d.id === record.districtId)?.name}
                       </span>
+                    )}
+                    {showState && record.state && (
+                      <span className="text-xs font-normal text-ink-500">{record.state}</span>
                     )}
                   </p>
                   <p className="tnum text-xs text-ink-500">
@@ -260,6 +393,7 @@ function SimpleMasterDataSection({
         <MasterDataForm
           title={`Add ${MASTER_DATA_LABELS[section.key]}`}
           districtOptions={districtOptions}
+          showState={showState}
           onClose={() => setAddOpen(false)}
           onSubmit={(input) => {
             const result = createMasterDataRecord(section.key, input, session.user.id);
@@ -277,6 +411,7 @@ function SimpleMasterDataSection({
           title={`Edit ${MASTER_DATA_LABELS[section.key]}`}
           initial={editing}
           districtOptions={districtOptions}
+          showState={showState}
           onClose={() => setEditing(null)}
           onSubmit={(input) => {
             const result = updateMasterDataRecord(section.key, editing.id, input, session.user.id);
@@ -296,12 +431,14 @@ function MasterDataForm({
   title,
   initial,
   districtOptions,
+  showState = false,
   onClose,
   onSubmit,
 }: {
   title: string;
   initial?: MasterDataRecord;
   districtOptions?: readonly MasterDataRecord[] | undefined;
+  showState?: boolean;
   onClose: () => void;
   onSubmit: (input: MasterDataInput) => void;
 }): ReactNode {
@@ -312,6 +449,7 @@ function MasterDataForm({
   const [effectiveFrom, setEffectiveFrom] = useState(initial?.effectiveFrom ?? "");
   const [displayOrder, setDisplayOrder] = useState(String(initial?.displayOrder ?? ""));
   const [districtId, setDistrictId] = useState(initial?.districtId ?? "");
+  const [state, setState] = useState(initial?.state ?? "");
 
   const ready = code.trim().length > 0 && name.trim().length > 0;
 
@@ -344,6 +482,12 @@ function MasterDataForm({
                   </option>
                 ))}
             </Select>
+          </Field>
+        )}
+
+        {showState && (
+          <Field label="State" hint="Optional. Lets AOS group districts by state as coverage expands.">
+            <Input value={state} onChange={(event) => setState(event.target.value)} placeholder="e.g. Tamil Nadu" />
           </Field>
         )}
 
@@ -386,6 +530,7 @@ function MasterDataForm({
                 ...(effectiveFrom ? { effectiveFrom } : {}),
                 ...(displayOrder ? { displayOrder: Number(displayOrder) } : {}),
                 ...(districtId ? { districtId: districtId as Id } : {}),
+                ...(state ? { state } : {}),
               })
             }
           >

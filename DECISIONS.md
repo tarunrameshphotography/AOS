@@ -919,3 +919,72 @@ other reference table in the schema. Every new table is bound in
 `src/domain/permissions/tables.ts` and enabled for RLS in its own migration,
 so the `schema-coverage.test.ts` contract (ADR-027) holds without editing
 `0010_security_defaults.sql`.
+
+---
+
+## ADR-031 — Master data has three display categories; geography starts at Coimbatore
+Date: 2026-08-06
+Status: Accepted
+
+**Decision, part one — geography.** The demo geography seeded in 0013
+(Madurai, Chennai, Mumbai) is deactivated, not deleted, and replaced with
+Amaze's actual footprint: Coimbatore, Tiruppur and Erode districts, and ten
+named towns (Database/migrations/0014). No schema change was needed —
+`city.district_id` and `district.state` (free text, added in 0012) already
+give a three-level hierarchy with no ceiling on how many states it can hold.
+Covering Kerala, Karnataka or the rest of India later is purely more `insert`
+statements, which is the property this milestone asked for and confirms
+ADR-030's design already had.
+
+**Decision, part two — hierarchy.** Every master-data section in the admin
+screen is grouped into one of three categories, each with a stated character:
+
+- **System Master Data** — rarely changes, administrator-level reference
+  data. Document Types, Employment Types, Business Constitutions, Property
+  Types, Property Ownership Types, Rejection Reasons, Districts, Cities.
+- **Business Master Data** — business-controlled, defines Amaze's lending
+  ecosystem, changes occasionally. Loan Categories and Referral Sources are
+  editable here today; Loan Products, Banks, NBFCs, Housing Finance
+  Companies and Bank Branches already exist in the schema (`loan_product`,
+  `organisation` + `lender_profile`, ADR-014/015/016) and are listed as
+  planned, read-only entries pointing at the milestone that will give them a
+  screen.
+- **Operational Master Data** — frequently-changing business entities:
+  Employees, Relationship Managers, Builders, Developers, Advocates, Legal
+  Firms, Chartered Accountants, Valuers, DSAs, Referral Partners. None are
+  editable master data yet, listed for the same reason as above.
+
+**Why geography sits under System, not its own category.** The milestone
+brief's three category lists do not mention geography at all. System Master
+Data's own description — "rarely changes, administrator-level reference
+data" — fits city and district exactly: nobody at Amaze expects a new town to
+appear often, and adding one is an administrator's job, not a lending
+decision the way a new loan category or referral channel is.
+
+**Why the category is a display grouping, not a schema concept.** The same
+reasoning as `PERMISSION_GROUPS` in `src/domain/permissions/actions.ts`
+("documentation grouping only, carries no behaviour"): a `category` column on
+every master-data table would be a structural change the brief explicitly
+ruled out, for a fact that is true of the *table*, not of any individual
+*row*. The category is declared once per section in `MasterData.tsx` and nets
+out to a UI grouping, not a data model.
+
+**Why Operational entities are listed but not built.** Milestone 5 already
+established that a person or organisation playing a role (referrer, bank
+contact, builder) is a *relationship*, not a code/name vocabulary row — a
+Relationship Manager is a person with a branch relationship (ADR-006,
+ADR-014), and forcing it into the MasterDataRecord shape would misrepresent
+what it is. Building dedicated operational-entity tables for the ones with no
+home yet (Advocates, Legal Firms, Chartered Accountants, Valuers, DSAs,
+Referral Partners) is new schema work belonging to its own milestone, which
+this one's brief explicitly asked to avoid ("design their place in the
+hierarchy without implementing unnecessary complexity").
+
+**Consequences:** The admin screen gains a top-level System / Business /
+Operational tab bar; each tab's left-hand nav lists only the sections
+implemented for that category, with a read-only panel underneath naming what
+else belongs there and why it isn't editable yet. Office staff seeing an
+empty Operational tab are told where that data already lives (`app_user`,
+`bank_contact`, `organisation` roles) rather than shown nothing. No new
+permission, no new table, no new domain module — same conclusion Milestone 5
+reached for master data generally, now extended to its own presentation.

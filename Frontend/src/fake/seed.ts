@@ -256,16 +256,41 @@ export function buildSeed(): Database {
     { id: id("rfs", 7), code: "social_media", name: "Social Media", isActive: true, displayOrder: 70 },
   ];
 
+  // Amaze's actual operating footprint (Milestone 6, Part 1) — Coimbatore,
+  // Tiruppur and Erode districts, and the towns Amaze works cases in day to
+  // day. Extending into Kerala, Karnataka or the rest of India later is
+  // purely more rows here, never a structural change (Database/migrations/
+  // 0014): city already carries district_id, district already carries a free
+  // -text `state`, and a state gains its first row the same way a district
+  // does — by naming it on a district, not by adding a table.
+  //
+  // The earlier demo geography (Madurai, Chennai, Mumbai) is kept, inactive,
+  // matching the never-delete convention Database/migrations/0014 uses on
+  // the real schema — and giving the admin screen something real to show
+  // under "Reactivate".
   const districts: Database["districts"] = [
-    { id: id("dst", 1), code: "madurai", name: "Madurai", isActive: true, displayOrder: 10 },
-    { id: id("dst", 2), code: "chennai", name: "Chennai", isActive: true, displayOrder: 20 },
-    { id: id("dst", 3), code: "mumbai_mmr", name: "Mumbai", isActive: true, displayOrder: 30 },
+    { id: id("dst", 1), code: "madurai", name: "Madurai", state: "Tamil Nadu", isActive: false, displayOrder: 10 },
+    { id: id("dst", 2), code: "chennai", name: "Chennai", state: "Tamil Nadu", isActive: false, displayOrder: 20 },
+    { id: id("dst", 3), code: "mumbai_mmr", name: "Mumbai", state: "Maharashtra", isActive: false, displayOrder: 30 },
+    { id: id("dst", 4), code: "coimbatore", name: "Coimbatore", state: "Tamil Nadu", isActive: true, displayOrder: 40 },
+    { id: id("dst", 5), code: "tiruppur", name: "Tiruppur", state: "Tamil Nadu", isActive: true, displayOrder: 50 },
+    { id: id("dst", 6), code: "erode", name: "Erode", state: "Tamil Nadu", isActive: true, displayOrder: 60 },
   ];
 
   const cities: Database["cities"] = [
-    { id: id("cty", 1), code: "madurai", name: "Madurai", districtId: id("dst", 1), isActive: true, displayOrder: 10 },
-    { id: id("cty", 2), code: "chennai", name: "Chennai", districtId: id("dst", 2), isActive: true, displayOrder: 20 },
-    { id: id("cty", 3), code: "mumbai", name: "Mumbai", districtId: id("dst", 3), isActive: true, displayOrder: 30 },
+    { id: id("cty", 1), code: "madurai", name: "Madurai", districtId: id("dst", 1), isActive: false, displayOrder: 10 },
+    { id: id("cty", 2), code: "chennai", name: "Chennai", districtId: id("dst", 2), isActive: false, displayOrder: 20 },
+    { id: id("cty", 3), code: "mumbai", name: "Mumbai", districtId: id("dst", 3), isActive: false, displayOrder: 30 },
+    { id: id("cty", 4), code: "coimbatore", name: "Coimbatore", districtId: id("dst", 4), isActive: true, displayOrder: 40 },
+    { id: id("cty", 5), code: "tiruppur", name: "Tiruppur", districtId: id("dst", 5), isActive: true, displayOrder: 50 },
+    { id: id("cty", 6), code: "erode", name: "Erode", districtId: id("dst", 6), isActive: true, displayOrder: 60 },
+    { id: id("cty", 7), code: "pollachi", name: "Pollachi", districtId: id("dst", 4), isActive: true, displayOrder: 70 },
+    { id: id("cty", 8), code: "mettupalayam", name: "Mettupalayam", districtId: id("dst", 4), isActive: true, displayOrder: 80 },
+    { id: id("cty", 9), code: "palladam", name: "Palladam", districtId: id("dst", 5), isActive: true, displayOrder: 90 },
+    { id: id("cty", 10), code: "udumalpet", name: "Udumalpet", districtId: id("dst", 5), isActive: true, displayOrder: 100 },
+    { id: id("cty", 11), code: "kinathukadavu", name: "Kinathukadavu", districtId: id("dst", 4), isActive: true, displayOrder: 110 },
+    { id: id("cty", 12), code: "sulur", name: "Sulur", districtId: id("dst", 4), isActive: true, displayOrder: 120 },
+    { id: id("cty", 13), code: "annur", name: "Annur", districtId: id("dst", 4), isActive: true, displayOrder: 130 },
   ];
 
   const year = new Date().getFullYear();

@@ -35,8 +35,135 @@ installLocalStoragePolyfill();
 // imported below.
 vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
 
-const { getDb, resetDatabase, uploadDocument } = await import("./store.js");
+const { createCase, getDb, resetDatabase, uploadDocument } = await import("./store.js");
 const { storageAdapter } = await import("./storage.js");
+
+// ---------------------------------------------------------------------------
+// Case identity — the P0 "creating a new case opens an existing case" bug.
+//
+// The mechanism: `nextId` used to be a module-scope counter starting at 1000,
+// reset on every page load, while `db` persisted in localStorage. A second
+// session therefore reissued ids the first had already used, `createCase`
+// appended a case whose id collided with an older one, and `find()` — which
+// every read in store.ts uses — returned the OLDER row. Navigation was
+// correct; the lookup was not.
+//
+// These tests do not reach for the URL or the router. The bug was never in
+// either: it was that two cases could share an identity, so that is what is
+// asserted here.
+// ---------------------------------------------------------------------------
+
+describe("createCase — every case gets an identity of its own", () => {
+  function anyProductId(): string {
+    const productId = getDb().loanProducts[0]?.id;
+    if (!productId) throw new Error("test setup: expected a seeded lending product");
+    return productId;
+  }
+
+  function anyUserId(): string {
+    const userId = getDb().users[0]?.id;
+    if (!userId) throw new Error("test setup: expected a seeded user");
+    return userId;
+  }
+
+  it("never issues an id that any existing row already holds", () => {
+    resetDatabase();
+    const productId = anyProductId();
+    const actorUserId = anyUserId();
+
+    const created: string[] = [];
+    for (let n = 0; n < 25; n += 1) {
+      created.push(
+        createCase({ newApplicantName: `Applicant ${n}`, loanProductId: productId }, actorUserId),
+      );
+    }
+
+    expect(new Set(created).size).toBe(created.length);
+
+    const allCaseIds = getDb().cases.map((loanCase) => loanCase.id);
+    expect(new Set(allCaseIds).size).toBe(allCaseIds.length);
+  });
+
+  it("resolves each returned id to the case that was just created, and to no other", () => {
+    resetDatabase();
+    const productId = anyProductId();
+    const actorUserId = anyUserId();
+
+    const firstId = createCase(
+      { newApplicantName: "Meena Ravi", loanProductId: productId },
+      actorUserId,
+    );
+    const secondId = createCase(
+      { newApplicantName: "Karthik S", loanProductId: productId },
+      actorUserId,
+    );
+
+    expect(firstId).not.toBe(secondId);
+
+    // The exact lookup CaseDetail performs. Before the fix this could return
+    // an older case — with an older stage, which is how the bug was reported.
+    const matches = getDb().cases.filter((loanCase) => loanCase.id === secondId);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.stage).toBe("new");
+
+    const applicantOf = (caseId: string): string | undefined => {
+      const db = getDb();
+      const party = db.caseParties.find((p) => p.caseId === caseId && p.role === "applicant");
+      return db.people.find((person) => person.id === party?.personId)?.fullName;
+    };
+
+    expect(applicantOf(firstId)).toBe("Meena Ravi");
+    expect(applicantOf(secondId)).toBe("Karthik S");
+  });
+
+  it("keeps identity stable across a reload, which is what a browser refresh is", async () => {
+    resetDatabase();
+    const caseId = createCase(
+      { newApplicantName: "Refresh Test", loanProductId: anyProductId() },
+      anyUserId(),
+    );
+
+    // Re-import with a cleared module registry: a fresh module instance
+    // reading the SAME localStorage. This is precisely the situation the old
+    // counter could not survive, because its state lived in the module and
+    // the data did not.
+    vi.resetModules();
+    vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+    const reloaded = await import("./store.js");
+
+    const afterReload = reloaded.getDb().cases.filter((c) => c.id === caseId);
+    expect(afterReload).toHaveLength(1);
+
+    // And a case created by the reloaded module must not collide with
+    // anything the previous one wrote — the original failure, exactly.
+    const newId = reloaded.createCase(
+      { newApplicantName: "After Reload", loanProductId: anyProductId() },
+      anyUserId(),
+    );
+    expect(newId).not.toBe(caseId);
+    expect(reloaded.getDb().cases.filter((c) => c.id === newId)).toHaveLength(1);
+
+    const ids = reloaded.getDb().cases.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("allocates a distinct, sequential case number to each case", () => {
+    resetDatabase();
+    const productId = anyProductId();
+    const actorUserId = anyUserId();
+
+    const ids = [1, 2, 3].map((n) =>
+      createCase({ newApplicantName: `Numbered ${n}`, loanProductId: productId }, actorUserId),
+    );
+
+    const numbers = ids.map(
+      (id) => getDb().cases.find((loanCase) => loanCase.id === id)?.caseNumber,
+    );
+
+    expect(numbers.every((number) => number !== undefined)).toBe(true);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+});
 
 describe("uploadDocument — automatic organisation (Issue #13)", () => {
   it("stores a first upload at version 1, under a path derived from ownership and type", async () => {

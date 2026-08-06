@@ -244,28 +244,92 @@ and a rolling six to twelve months of banking.
 available to a registered MSME, so Udyam registration is mandatory there and
 optional elsewhere.
 
+### Corrections from the Milestone 9.1 audit
+
+Live testing found the first pack asking for the wrong set on real files. All
+five findings were the same shape: a rule waiting on a fact nobody had recorded
+yet, or a rule scoped to a party that was not on the file. All five were fixed
+as rule rows; no application code branches on any of it.
+
+**GST is asked for on two independent grounds, not one.** The first pack keyed
+every GST rule off "is this borrower GST-registered?" — a case fact that starts
+unrecorded, so a business loan created this morning generated no GST rows at
+all. But the product catalogue already declares `gst_requirement: mandatory` on
+the eight business products and Commercial LAP (ADR-032). The pack now reads
+both: the product's own declaration, *and* the borrower's registration. A
+business loan asks for the GST certificate and returns out of the box; a home
+loan asks only once someone records that the applicant is registered. Where
+both grounds fire, the engine's merge produces one row, not two.
+
+**A proprietor's business is underwritten like a firm's.** Balance sheet, P&L
+and business banking were scoped to `borrower_firm`, so the ordinary MSME file
+here — a proprietor borrowing in their own name, with no separate entity on the
+file — was asked for a personal ITR and nothing else. Lenders ask a proprietor
+for the same two years of CA-certified accounts they ask a company for; the
+difference is whose name is on them, not whether they exist. Restricted to
+business, LAP and home loan: an unsecured personal loan is assessed on ITR and
+banking, and asking its customer for a balance sheet is over-asking of exactly
+the kind the gold-loan exclusion exists to prevent.
+
+**Form 26AS / AIS was missing entirely.** It is read against the ITR on every
+self-employed file in this market, because it is the one income document the
+borrower cannot author — a mismatch between the two is the commonest reason a
+file stalls in credit. Mandatory for self-employed over the same two-year
+window as the ITR; optional for salaried, where Form 16 already carries the
+employer's TDS.
+
+**Own contribution / margin money proof.** Margin runs 10–25% by ticket size
+and no lender disburses without evidence the borrower has paid theirs — the
+builder's receipt (OCR), or the transfer that funded it. Due from
+`ready_for_submission`, because there is usually nothing to show until a
+property and a price exist.
+
+**Gold loans were being over-asked.** Credit bureau consent, guarantor
+documents and existing-loan statements all fired on gold, which is sanctioned
+at the counter on the ornaments and assesses no FOIR at all. The
+asset-only exclusion now covers those three as well as income proof.
+
+Also: practice proof is mandatory rather than optional on the professional
+loan, where vintage is part of the pricing rather than a supporting document;
+and an LLP is now asked for the resolution authorising it to borrow, having
+previously been asked for its agreement but never for the authority to sign. A
+partnership is deliberately still not asked — its deed names the authorised
+partners itself.
+
 ---
 
 ## Worked examples
 
 **Salaried home loan, one applicant, property on file.** KYC ×6, salary slips,
-Form 16 ×2 years, bank statement, employment certificate (optional),
-appointment letter (optional), then per property: sale deed, parent document,
-patta/chitta, EC, property tax receipt, approved plan, sale agreement; and from
-`ready_for_submission`: legal opinion, valuation, login form, NACH mandate.
+Form 16 ×2 years, bank statement, Form 26AS (optional), employment certificate
+(optional), appointment letter (optional), then per property: sale deed, parent
+document, patta/chitta, EC, property tax receipt, approved plan, sale
+agreement; and from `ready_for_submission`: own contribution proof, legal
+opinion, valuation, login form, NACH mandate.
+
+**Self-employed home loan.** The same property set, but the income half
+becomes ITR ×2, Form 26AS ×2, balance sheet ×2, P&L ×2 and twelve months'
+banking — and no payslips or Form 16 anywhere.
+
+**Business loan, proprietor, nothing yet recorded about them.** KYC, ITR ×2,
+Form 26AS ×2, balance sheet ×2, P&L ×2, twelve months' banking, business proof,
+GST certificate, GST returns — the GST rows because the *product* requires GST,
+before anyone has been asked whether the borrower is registered. This is the
+case the audit fixed.
 
 **Working capital, GST-registered partnership.** The individual's KYC and ITR,
 plus for the firm: business PAN, address proof, business registration, twelve
 months' current account, two years' business ITR, balance sheet ×2, P&L ×2, GST
 certificate, GST returns, partnership deed, director list, stock statement,
-debtors/creditors statement.
+debtors/creditors statement. The firm's GST rows, not the individual's: once a
+firm is on the file the proprietor rules stand down, so the checklist names one
+subject for each document rather than two.
 
-**Gold loan.** PAN, Aadhaar, address proof, photograph, credit bureau consent,
-appraisal note, application form. Seven rows. No income proof at all.
-
-**The same case with GST answered "no".** The GST certificate and GST returns
-rows do not appear — they were never generated, so there is nothing to explain
-away.
+**Gold loan.** PAN, Aadhaar, address proof, photograph, signature proof
+(optional), appraisal note, application form, and the lender's login form from
+`ready_for_submission`. Eight rows. No income proof, no bureau consent, no
+obligations, no NACH mandate — and if a guarantor is on the file, KYC for them
+and nothing more.
 
 ---
 

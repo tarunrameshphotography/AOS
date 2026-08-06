@@ -84,11 +84,56 @@ import type {
  * no `documentRequirementRules` at all, which would generate ZERO
  * requirements on every case — a checklist that is empty rather than obviously
  * broken, which is the worst way for stale data to fail.
+ *
+ * v5 for the identity fix below. A store written by v4 can contain DUPLICATE
+ * row ids — that is the bug, not a shape change — and there is no honest way
+ * to repair one: once two cases share an id, which of them the user meant is
+ * unrecoverable. Discarding it is the only outcome that cannot silently show
+ * somebody the wrong case.
  */
-const STORAGE_KEY = "aos.prototype.v4";
+const STORAGE_KEY = "aos.prototype.v5";
 
-let counter = 1000;
-const nextId = (): string => `gen_${++counter}`;
+/**
+ * Row identity.
+ *
+ * WHY THIS IS NOT A COUNTER ANY MORE — the root cause of the P0 "creating a
+ * new case opens an existing case" bug.
+ *
+ * The previous implementation was `let counter = 1000; () => \`gen_${++counter}\``.
+ * `counter` lives in MODULE scope and is re-initialised to 1000 on every page
+ * load. `db` does not: it is persisted to localStorage and survives the
+ * reload. So the second time anyone opened the prototype, `nextId()` began
+ * handing back `gen_1001`, `gen_1002`, … — ids the previous session had
+ * already assigned to real rows.
+ *
+ * `createCase` then appended a second case carrying an id an older case
+ * already had, and every read in this file is a `find()`, which returns the
+ * FIRST match. `navigate('/cases/' + caseId)` was therefore correct and still
+ * opened the older case — with the older case's stage, which is exactly how
+ * the bug was reported ("opens an existing case with an incorrect status").
+ * Refreshing could not help: the URL was right and the lookup was wrong.
+ *
+ * Persisting the counter would close this instance and leave the class of bug
+ * open (two tabs, a failed write, a restored backup). Identity is generated
+ * instead — which is what the real schema uses for a primary key anyway
+ * (ADR-024: the case's identity is its UUID; the case NUMBER is the human
+ * handle, and that one is still allocated from a sequence, correctly, because
+ * `caseNumberSequence` lives in `db` and is persisted with it).
+ */
+let fallbackCounter = 0;
+
+const nextId = (): string => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) {
+    return `gen_${uuid}`;
+  }
+  // No Web Crypto — an older browser, or a bare test runner. Wall clock plus
+  // randomness plus a monotonic tail is unique across reloads without relying
+  // on anything surviving one, which is the property that failed above.
+  fallbackCounter += 1;
+  const random = Math.random().toString(36).slice(2, 10);
+  return `gen_${Date.now().toString(36)}${fallbackCounter.toString(36)}${random}`;
+};
 
 // ---------------------------------------------------------------------------
 // Store plumbing
@@ -446,6 +491,17 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
   const referralSource = db.referralSources.find((r) => r.id === input.referralSourceId);
 
   const caseId = nextId();
+  // The invariant the P0 bug violated, asserted rather than assumed. If
+  // identity generation ever regresses, this fails loudly at the point of
+  // creation instead of silently navigating the user into somebody else's
+  // case — which is the failure mode that made the original bug so hard to
+  // see, because nothing anywhere reported that anything had gone wrong.
+  if (db.cases.some((existing) => existing.id === caseId)) {
+    throw new Error(
+      `Case id collision on ${caseId}. Row identity is not unique — see nextId() in fake/store.ts.`,
+    );
+  }
+
   const loanCase: LoanCase = {
     id: caseId,
     caseNumber: formatCaseNumber({ year, sequence }),

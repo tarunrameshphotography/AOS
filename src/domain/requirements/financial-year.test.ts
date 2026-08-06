@@ -62,13 +62,14 @@ describe("recentFinancialYears", () => {
 });
 
 describe("FINANCIAL_YEAR_DOCUMENT_TYPES / isFinancialYearScoped", () => {
-  it("covers GST returns, ITR, financials and bank statements (person and organisation variants), plus Form 16 and the audit report added with the rule engine", () => {
+  it("covers GST returns, ITR, financials and bank statements (person and organisation variants), plus Form 16, the audit report added with the rule engine, and Form 26AS added by the Milestone 9.1 audit", () => {
     expect(Object.keys(FINANCIAL_YEAR_DOCUMENT_TYPES).sort()).toEqual(
       [
         "audit_report",
         "balance_sheet",
         "bank_statement",
         "form_16",
+        "form_26as",
         "gst_returns",
         "itr",
         "org_bank_statement",

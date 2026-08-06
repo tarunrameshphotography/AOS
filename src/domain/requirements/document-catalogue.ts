@@ -118,6 +118,12 @@ export const ENGINE_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
   { code: "application_form", name: "Application Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Amaze's own signed application. Distinct from the lender's login form.", displayOrder: 780 },
   { code: "nach_mandate", name: "NACH Mandate / Security Cheques", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Repayment mandate and any security cheques the lender takes.", displayOrder: 790 },
   { code: "tenant_kyc", name: "Tenant KYC", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "For lease rental discounting, which is underwritten on the tenant's covenant.", displayOrder: 800 },
+
+  // --- Added by the Milestone 9.1 audit ------------------------------------
+  // Two documents the first pass missed that every lender in this market
+  // actually asks for. See the audit note in default-rules.ts.
+  { code: "form_26as", name: "Form 26AS / AIS", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "The tax department's own record of income and TDS. Lenders read it against the ITR, because it is the one income document the borrower cannot author.", displayOrder: 810 },
+  { code: "own_contribution_proof", name: "Own Contribution / Margin Money Proof", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Evidence the borrower has paid their own share — builder's receipt (OCR), or the bank transfer that funded it. No sanction disburses without it.", displayOrder: 820 },
 ];
 
 /** Document type codes that existed before the rule engine (0009, 0011). */

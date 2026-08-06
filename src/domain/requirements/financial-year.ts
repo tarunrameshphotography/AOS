@@ -104,6 +104,9 @@ export const FINANCIAL_YEAR_DOCUMENT_TYPES: Readonly<Record<string, number>> = {
   // the reason ITR did.
   form_16: 2,
   audit_report: 2,
+  // Added by the Milestone 9.1 audit. Read alongside the ITR, so it recurs
+  // over the same window: a 26AS for one year cannot evidence another.
+  form_26as: 2,
 };
 
 export function isFinancialYearScoped(documentTypeCode: string): boolean {

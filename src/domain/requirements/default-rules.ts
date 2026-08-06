@@ -44,6 +44,37 @@
  *    two years of ITR and financials, one year of GST returns, and a rolling
  *    6–12 months of banking. Those counts are the trailing-year defaults here.
  *
+ * WHAT THE MILESTONE 9.1 AUDIT CHANGED, AND WHY
+ *
+ * Live testing found the pack asking for the wrong set on real files. Five
+ * findings, all of them the same shape — a rule that waited for a fact nobody
+ * had recorded, or a rule scoped to a party that was not on the file:
+ *
+ *  1. GST NEVER APPEARED ON A BUSINESS LOAN. Every GST rule keyed off "is GST
+ *     registered", which starts undefined. But the catalogue already declares
+ *     `gstRequirement: mandatory` on eight business products and Commercial
+ *     LAP, and `case.gst_requirement` was a resolvable fact that no rule read.
+ *     It is now read. A Business Loan asks for GST out of the box.
+ *  2. A REGISTERED PROPRIETOR WAS ASKED FOR THE CERTIFICATE AND NEVER FOR THE
+ *     RETURNS. The individual certificate rule had no returns counterpart.
+ *  3. BUSINESS FINANCIALS ONLY EXISTED FOR A SEPARATE FIRM. Balance sheet,
+ *     P&L and business banking were all scoped to `borrower_firm`, so the
+ *     ordinary MSME file — a proprietor borrowing in their own name — was
+ *     asked for a personal ITR and nothing else. Lenders ask a proprietor for
+ *     the same two years of CA-certified accounts they ask a company for.
+ *  4. FORM 26AS / AIS WAS MISSING ENTIRELY. It is read against the ITR on
+ *     every self-employed file in this market; a mismatch between the two is
+ *     the commonest reason a file stalls in credit.
+ *  5. OVER-ASKING ON ASSET-BACKED PRODUCTS. Bureau consent, guarantor
+ *     documents and existing-loan statements all fired on gold loans, which
+ *     are sanctioned at the counter on the ornaments and assess no FOIR.
+ *
+ * Also: own contribution / margin money proof on purchase products, practice
+ * proof raised to mandatory on the professional loan, and an LLP now asked
+ * for the resolution authorising it to borrow.
+ *
+ * Every one of those is a rule row. No application code branches on any of it.
+ *
  * HOW TO ADD A RULE: see Docs/Document Requirement Engine.md. Short version —
  * add a row here (or in the admin screen), name the document type, choose the
  * scope, and write the conditions. No other file changes.
@@ -77,6 +108,14 @@ const employmentIn = (...codes: string[]): RuleCondition =>
 const constitutionIn = (...codes: string[]): RuleCondition =>
   fact("party.business_constitution", "in", ...codes);
 const isTrue = (path: FactPath): RuleCondition => fact(path, "is_true");
+/**
+ * The product itself says GST is non-negotiable (ADR-032). Distinct from
+ * anyone having ticked "GST registered" on the case, which is a fact about
+ * the borrower rather than about the product, and which nobody has answered
+ * on a case created five minutes ago.
+ */
+const gstRequiredByProduct = (): RuleCondition =>
+  fact("case.gst_requirement", "equals", "mandatory");
 
 // ---------------------------------------------------------------------------
 // Product groupings, named once. A rule that lists eleven product codes inline
@@ -111,6 +150,17 @@ const TAKEOVER_PRODUCTS = ["hl_balance_transfer", "hl_top_up", "lap_balance_tran
  * income. A gold loan asks for KYC and the ornaments; nothing else.
  */
 const ASSET_ONLY_PRODUCTS = ["gold_loan", "loan_against_securities"];
+
+/**
+ * Customer products where a self-employed borrower's business is underwritten
+ * properly rather than glanced at — so CA-certified financials are asked for
+ * even when no firm is a party to the case.
+ *
+ * A ₹5 lakh unsecured personal loan is deliberately absent: it is assessed on
+ * ITR and banking, and asking its customer for an audited balance sheet is
+ * the same species of over-ask as asking a gold-loan customer for Form 16.
+ */
+const FINANCIALS_PRODUCTS = ["business_loan", "lap", "home_loan"];
 
 /** Where a rule sits in the checklist. Blocks of 100 leave room to insert. */
 const ORDER = {
@@ -241,8 +291,12 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: SIGNING_ROLES,
     partyKind: "person",
+    conditions: [customerProductNotIn("gold_loan")],
     order: ORDER.kyc,
-    notes: "A bureau pull without written consent is not a shortcut, it is a breach.",
+    notes:
+      "A bureau pull without written consent is not a shortcut, it is a breach. " +
+      "Excluded on gold, which is underwritten on the ornaments and is routinely " +
+      "sanctioned at the counter without a bureau pull at all.",
   }),
 
   // -------------------------------------------------------------------------
@@ -390,6 +444,82 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     order: ORDER.income,
     notes: "Twelve months, since there is no salary credit to read instead.",
   }),
+  /**
+   * Form 26AS / AIS. Added by the Milestone 9.1 audit — the first pack asked
+   * for the ITR and stopped, and every lender in this market reads the two
+   * together, because 26AS is the one income document the borrower cannot
+   * author. Same trailing window as the ITR it is checked against.
+   */
+  rule({
+    code: "income_form_26as",
+    name: "Form 26AS / AIS — self-employed",
+    documentTypeCode: "form_26as",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [
+      employmentIn("self_employed", "business_owner"),
+      customerProductNotIn(...ASSET_ONLY_PRODUCTS),
+    ],
+    order: ORDER.income,
+    notes: "Cross-checked against the ITR. A mismatch is the commonest reason a file stalls.",
+  }),
+  rule({
+    code: "income_form_26as_salaried",
+    name: "Form 26AS / AIS — salaried",
+    documentTypeCode: "form_26as",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    applicability: "optional",
+    financialYears: 1,
+    conditions: [employmentIn("salaried"), customerProductNotIn(...ASSET_ONLY_PRODUCTS)],
+    order: ORDER.income,
+    notes: "Supporting, not primary — Form 16 already carries the employer's TDS.",
+  }),
+
+  /**
+   * Business financials for a borrower with NO firm on the file.
+   *
+   * The audit's second finding. The balance sheet, P&L and business banking
+   * rules were all scoped to `borrower_firm`, so a proprietor borrowing in
+   * their own name — the ordinary shape of an MSME file in this market — was
+   * asked for a personal ITR and nothing else. Lenders ask a proprietor for
+   * exactly the same two years of CA-certified accounts they ask a company
+   * for; the difference is whose name is on them, not whether they exist.
+   */
+  rule({
+    code: "income_balance_sheet_individual",
+    name: "Balance sheet — business borrower without a firm on the file",
+    documentTypeCode: "balance_sheet",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [
+      employmentIn("self_employed", "business_owner"),
+      fact("case.has_borrower_firm", "is_false"),
+      customerProductIn(...FINANCIALS_PRODUCTS),
+    ],
+    order: ORDER.income,
+    notes: "CA-certified, two years. Where the firm IS on the file, the firm's own rule covers this.",
+  }),
+  rule({
+    code: "income_profit_and_loss_individual",
+    name: "Profit and loss — business borrower without a firm on the file",
+    documentTypeCode: "profit_and_loss",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [
+      employmentIn("self_employed", "business_owner"),
+      fact("case.has_borrower_firm", "is_false"),
+      customerProductIn(...FINANCIALS_PRODUCTS),
+    ],
+    order: ORDER.income,
+  }),
   rule({
     code: "income_qualification_proof",
     name: "Qualification certificate — professional",
@@ -412,6 +542,20 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     conditions: [employmentIn("self_employed"), customerProductNotIn(...ASSET_ONLY_PRODUCTS)],
     order: ORDER.income,
     notes: "Practice vintage — registration, clinic licence, professional body membership.",
+  }),
+  rule({
+    code: "income_practice_proof_professional",
+    name: "Professional practice proof — professional loan",
+    documentTypeCode: "professional_practice_proof",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    conditions: [productIn("pl_professional")],
+    order: ORDER.income,
+    notes:
+      "Mandatory here, unlike the general optional rule above: a professional loan " +
+      "is priced off qualification AND vintage, so practice proof is the product, " +
+      "not a supporting document. The engine merges the two to the stricter reading.",
   }),
   rule({
     code: "income_business_proof_individual",
@@ -443,6 +587,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     partyKind: "person",
     applicability: "optional",
     financialYears: 1,
+    conditions: [customerProductNotIn(...ASSET_ONLY_PRODUCTS)],
     order: ORDER.income,
   }),
   rule({
@@ -453,6 +598,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     partyRoles: ["guarantor"],
     partyKind: "person",
     applicability: "optional",
+    conditions: [customerProductNotIn(...ASSET_ONLY_PRODUCTS)],
     order: ORDER.income,
     notes: "A guarantee is worth what the guarantor is worth.",
   }),
@@ -467,9 +613,14 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     documentTypeCode: "existing_loan_statement",
     scope: "party",
     partyRoles: INCOME_ROLES,
-    conditions: [isTrue("party.has_existing_obligations")],
+    conditions: [
+      isTrue("party.has_existing_obligations"),
+      customerProductNotIn(...ASSET_ONLY_PRODUCTS),
+    ],
     order: ORDER.obligations,
-    notes: "Repayment track on every live facility — the obligations half of FOIR.",
+    notes:
+      "Repayment track on every live facility — the obligations half of FOIR. " +
+      "Gold and securities are not FOIR-assessed, so they do not ask.",
   }),
   rule({
     code: "takeover_loan_statement",
@@ -619,6 +770,99 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     order: ORDER.firm,
     notes: "A GST-registered proprietor borrowing in their own name.",
   }),
+  rule({
+    code: "gst_returns_individual",
+    name: "GST returns — GST-registered individual borrower",
+    documentTypeCode: "gst_returns",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 1,
+    conditions: [
+      isTrue("case.is_gst_registered"),
+      fact("case.has_borrower_firm", "is_false"),
+      employmentIn("self_employed", "business_owner"),
+    ],
+    order: ORDER.firm,
+    notes:
+      "The audit found the certificate rule above had no returns counterpart, so a " +
+      "registered proprietor was asked to prove registration and never asked for the " +
+      "turnover the registration produces.",
+  }),
+
+  // -------------------------------------------------------------------------
+  // GST, second source: the PRODUCT's own declaration.
+  //
+  // THE BUG THIS FIXES. Every rule above waits for somebody to tick "GST
+  // registered", which starts life undefined and stays that way until asked.
+  // So a Business Loan created this morning generated NO GST rows at all —
+  // the gap reported from live testing.
+  //
+  // Meanwhile the catalogue already carries the answer: eight business
+  // products and Commercial LAP declare `gstRequirement: mandatory`
+  // (ADR-032, Database/migrations/0016), and `case.gst_requirement` has been
+  // a resolvable fact since the engine shipped with nothing reading it. These
+  // rules read it.
+  //
+  // Deliberately SEPARATE rules rather than an extra `match: "any"` condition
+  // on the ones above, because those carry compound `all` conditions that
+  // `any` would wreck. The engine merges rules landing on the same document
+  // for the same subject to the stricter reading, so a registered firm on a
+  // GST-mandatory product gets one row, not two.
+  // -------------------------------------------------------------------------
+  rule({
+    code: "gst_certificate_firm_by_product",
+    name: "GST registration certificate — product requires GST",
+    documentTypeCode: "gst_certificate",
+    scope: "party",
+    partyRoles: ["borrower_firm"],
+    partyKind: "organisation",
+    conditions: [gstRequiredByProduct()],
+    order: ORDER.firm,
+    notes: "Asked because the product cannot be assessed without GST, not because anyone ticked a box.",
+  }),
+  rule({
+    code: "gst_returns_firm_by_product",
+    name: "GST returns — product requires GST",
+    documentTypeCode: "gst_returns",
+    scope: "party",
+    partyRoles: ["borrower_firm"],
+    partyKind: "organisation",
+    financialYears: 1,
+    conditions: [gstRequiredByProduct()],
+    order: ORDER.firm,
+    notes: "GSTR-3B and GSTR-1 for the last financial year — the turnover the NBFC prices off.",
+  }),
+  rule({
+    code: "gst_certificate_individual_by_product",
+    name: "GST registration certificate — product requires GST, no firm on the file",
+    documentTypeCode: "gst_certificate",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    conditions: [
+      gstRequiredByProduct(),
+      fact("case.has_borrower_firm", "is_false"),
+      employmentIn("self_employed", "business_owner"),
+    ],
+    order: ORDER.firm,
+    notes: "The proprietor case: the business is the person, and the product still needs GST.",
+  }),
+  rule({
+    code: "gst_returns_individual_by_product",
+    name: "GST returns — product requires GST, no firm on the file",
+    documentTypeCode: "gst_returns",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 1,
+    conditions: [
+      gstRequiredByProduct(),
+      fact("case.has_borrower_firm", "is_false"),
+      employmentIn("self_employed", "business_owner"),
+    ],
+    order: ORDER.firm,
+  }),
 
   // -------------------------------------------------------------------------
   // Constitution documents. Driven by what the entity IS, not by what it is
@@ -671,9 +915,14 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    conditions: [constitutionIn("private_limited", "public_limited", "trust_society")],
+    conditions: [constitutionIn("private_limited", "public_limited", "trust_society", "llp")],
     order: ORDER.constitution,
-    notes: "A company borrows by resolution. Without it nobody on the file has authority.",
+    notes:
+      "A company borrows by resolution. Without it nobody on the file has authority. " +
+      "The audit added LLP: designated partners resolve to borrow exactly as a board " +
+      "does, and the first pack asked an LLP for its agreement but never for the " +
+      "authority to sign. A partnership is deliberately absent — its deed names the " +
+      "authorised partners itself.",
   }),
   rule({
     code: "constitution_director_list",
@@ -895,6 +1144,20 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     applicability: "optional",
     conditions: [productIn("hl_purchase", "hl_affordable", "hl_balance_transfer")],
     order: ORDER.property,
+  }),
+  rule({
+    code: "property_own_contribution",
+    name: "Own contribution / margin money proof",
+    documentTypeCode: "own_contribution_proof",
+    scope: "case",
+    stage: "ready_for_submission",
+    conditions: [productIn(...PURCHASE_PRODUCTS)],
+    order: ORDER.property,
+    notes:
+      "The audit added this. Margin is 10–25% by ticket size and no lender disburses " +
+      "without evidence the borrower has paid theirs — a builder's receipt, or the " +
+      "transfer that funded it. Due at submission, not on day two, because there is " +
+      "usually nothing to show until a property and a price exist.",
   }),
   rule({
     code: "property_legal_opinion",

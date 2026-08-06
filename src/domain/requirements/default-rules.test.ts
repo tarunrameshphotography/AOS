@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { allDocumentTypeCodes, ENGINE_DOCUMENT_TYPES } from "./document-catalogue.js";
 import { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
+import { isFinancialYearScoped } from "./financial-year.js";
 import { evaluateRules, type CaseFacts, type PartyFacts } from "./rules.js";
 
 function individual(overrides: Partial<PartyFacts> = {}): PartyFacts {
@@ -326,6 +327,286 @@ describe("the default pack — existing obligations", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Milestone 9.1 audit — regressions.
+//
+// Each of these failed before the audit. They are written as the sentence the
+// office user said out loud when they found it.
+// ---------------------------------------------------------------------------
+
+describe("the audit — GST on a business loan, without anyone ticking a box", () => {
+  /**
+   * The reported P0-adjacent gap. `gstRequirement` is what the catalogue
+   * declares (Database/migrations/0016): mandatory on the business products
+   * and Commercial LAP, optional on home loans, not_applicable on gold.
+   */
+  it("asks a brand-new business loan for GST, with no facts recorded at all", () => {
+    const asked = evaluate({
+      productCode: "bl_unsecured",
+      customerProductCode: "business_loan",
+      gstRequirement: "mandatory",
+      parties: [individual({ employmentTypeCode: "business_owner" })],
+    });
+
+    expect(asked).toContain("gst_certificate");
+    expect(asked).toContain("gst_returns");
+  });
+
+  it("asks the firm rather than the proprietor once a firm is on the file", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "bl_working_capital",
+      customerProductCode: "business_loan",
+      gstRequirement: "mandatory",
+      parties: [individual({ employmentTypeCode: "business_owner" }), firm()],
+      properties: [],
+    });
+
+    const gst = rows.filter((row) => row.documentTypeCode === "gst_certificate");
+    expect(gst).toHaveLength(1);
+    expect(gst[0]?.casePartyId).toBe("cpt_firm");
+  });
+
+  it("does not ask a home loan for GST merely because the applicant is self-employed", () => {
+    const asked = evaluate({
+      productCode: "hl_purchase",
+      customerProductCode: "home_loan",
+      gstRequirement: "optional",
+      parties: [individual({ employmentTypeCode: "self_employed" })],
+    });
+
+    expect(asked).not.toContain("gst_certificate");
+    expect(asked).not.toContain("gst_returns");
+  });
+
+  it("still asks the moment somebody records that the borrower IS registered", () => {
+    const asked = evaluate({
+      productCode: "hl_purchase",
+      customerProductCode: "home_loan",
+      gstRequirement: "optional",
+      isGstRegistered: true,
+      parties: [individual({ employmentTypeCode: "self_employed" })],
+    });
+
+    expect(asked).toContain("gst_certificate");
+    expect(asked).toContain("gst_returns");
+  });
+});
+
+describe("the audit — a proprietor's business is underwritten like a firm's", () => {
+  it("asks a business-loan proprietor with no firm on the file for CA-certified accounts", () => {
+    const asked = evaluate({
+      productCode: "bl_term_loan",
+      customerProductCode: "business_loan",
+      parties: [individual({ employmentTypeCode: "business_owner" })],
+    });
+
+    expect(asked).toContain("balance_sheet");
+    expect(asked).toContain("profit_and_loss");
+    expect(asked).toContain("itr");
+    expect(asked).toContain("form_26as");
+  });
+
+  it("leaves the accounts to the firm's own rules once a firm is a party", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "bl_term_loan",
+      customerProductCode: "business_loan",
+      parties: [individual({ employmentTypeCode: "business_owner" }), firm()],
+      properties: [],
+    });
+
+    const balanceSheets = rows.filter((row) => row.documentTypeCode === "balance_sheet");
+    expect(balanceSheets).toHaveLength(1);
+    expect(balanceSheets[0]?.casePartyId).toBe("cpt_firm");
+  });
+
+  it("does not ask an unsecured personal loan for a balance sheet", () => {
+    const asked = evaluate({
+      productCode: "pl_self_employed",
+      customerProductCode: "personal_loan",
+      parties: [individual({ employmentTypeCode: "self_employed" })],
+    });
+
+    expect(asked).toContain("itr");
+    expect(asked).not.toContain("balance_sheet");
+    expect(asked).not.toContain("profit_and_loss");
+  });
+});
+
+describe("the audit — a gold loan asks for the ornaments and very little else", () => {
+  it("does not pull a bureau report, chase obligations, or underwrite a guarantor", () => {
+    const asked = evaluate({
+      productCode: "gl_gold",
+      customerProductCode: "gold_loan",
+      hasExistingObligations: true,
+      parties: [
+        individual({ employmentTypeCode: "business_owner", hasExistingObligations: true }),
+        individual({ casePartyId: "cpt_g", role: "guarantor" }),
+      ],
+    });
+
+    expect(asked).toContain("gold_appraisal_note");
+    expect(asked).toContain("pan_card");
+    expect(asked).not.toContain("credit_bureau_consent");
+    expect(asked).not.toContain("existing_loan_statement");
+    expect(asked).not.toContain("net_worth_statement");
+    expect(asked).not.toContain("balance_sheet");
+    expect(asked).not.toContain("form_26as");
+  });
+});
+
+describe("the audit — the whole validation matrix generates something sensible", () => {
+  /**
+   * The combinations named in the milestone brief. Asserted as shape rather
+   * than as an exact list: an exact list would have to be rewritten every
+   * time a business user edits a rule, which is precisely what the pack is
+   * designed to let them do.
+   */
+  const property = (typeCode: string, role = "purchase"): CaseFacts["properties"] => [
+    { casePropertyId: "cpr_1", role, propertyTypeCode: typeCode },
+  ];
+
+  const combinations: Array<{
+    label: string;
+    facts: Partial<CaseFacts> & Pick<CaseFacts, "productCode">;
+    expects: string[];
+    forbids: string[];
+  }> = [
+    {
+      label: "Salaried Home Loan",
+      facts: {
+        productCode: "hl_purchase",
+        customerProductCode: "home_loan",
+        gstRequirement: "optional",
+        parties: [individual({ employmentTypeCode: "salaried" })],
+        properties: property("apartment"),
+      },
+      expects: ["pan_card", "salary_slip", "form_16", "sale_deed", "own_contribution_proof"],
+      forbids: ["itr", "balance_sheet", "gst_returns", "patta_chitta", "construction_estimate"],
+    },
+    {
+      label: "Self-employed Home Loan",
+      facts: {
+        productCode: "hl_purchase",
+        customerProductCode: "home_loan",
+        gstRequirement: "optional",
+        parties: [individual({ employmentTypeCode: "self_employed" })],
+        properties: property("independent_house"),
+      },
+      expects: ["itr", "form_26as", "balance_sheet", "profit_and_loss", "patta_chitta"],
+      forbids: ["salary_slip", "form_16", "gst_returns"],
+    },
+    {
+      label: "Business Loan",
+      facts: {
+        productCode: "bl_working_capital",
+        customerProductCode: "business_loan",
+        gstRequirement: "mandatory",
+        securityTypeCode: "stock_book_debts",
+        parties: [individual({ employmentTypeCode: "business_owner" })],
+      },
+      expects: ["gst_certificate", "gst_returns", "itr", "balance_sheet", "stock_statement"],
+      forbids: ["salary_slip", "sale_deed", "gold_appraisal_note"],
+    },
+    {
+      label: "LAP",
+      facts: {
+        productCode: "lap",
+        customerProductCode: "lap",
+        gstRequirement: "optional",
+        parties: [individual({ employmentTypeCode: "business_owner" })],
+        properties: property("independent_house", "collateral"),
+      },
+      expects: ["sale_deed", "encumbrance_cert", "patta_chitta", "valuation_report", "itr"],
+      forbids: ["sale_agreement", "own_contribution_proof", "construction_estimate"],
+    },
+    {
+      label: "Plot Purchase",
+      facts: {
+        productCode: "hl_plot_purchase",
+        customerProductCode: "home_loan",
+        gstRequirement: "optional",
+        parties: [individual({ employmentTypeCode: "salaried" })],
+        properties: property("plot"),
+      },
+      expects: ["layout_approval", "patta_chitta", "sale_agreement", "own_contribution_proof"],
+      forbids: ["construction_estimate", "approved_plan", "occupancy_certificate"],
+    },
+    {
+      label: "Construction Loan",
+      facts: {
+        productCode: "hl_self_construct",
+        customerProductCode: "home_loan",
+        gstRequirement: "optional",
+        constructionStage: "plinth",
+        parties: [individual({ employmentTypeCode: "salaried" })],
+        properties: property("plot", "collateral"),
+      },
+      expects: [
+        "construction_estimate",
+        "construction_progress_report",
+        "approved_plan",
+        "patta_chitta",
+      ],
+      forbids: ["sale_agreement", "layout_approval"],
+    },
+    {
+      label: "Professional Loan",
+      facts: {
+        productCode: "pl_professional",
+        customerProductCode: "personal_loan",
+        gstRequirement: "optional",
+        parties: [individual({ employmentTypeCode: "self_employed" })],
+      },
+      expects: ["qualification_proof", "professional_practice_proof", "itr", "form_26as"],
+      forbids: ["balance_sheet", "sale_deed", "gst_returns", "salary_slip"],
+    },
+  ];
+
+  for (const { label, facts, expects, forbids } of combinations) {
+    it(`generates a sensible checklist for: ${label}`, () => {
+      const asked = evaluate(facts);
+
+      for (const code of expects) {
+        expect(asked, `${label} should ask for ${code}`).toContain(code);
+      }
+      for (const code of forbids) {
+        expect(asked, `${label} should NOT ask for ${code}`).not.toContain(code);
+      }
+      // Never a universal checklist: the case's own composition decides
+      // (BR-033). Every generated row must name a document type only once
+      // per subject, which `evaluateRules` guarantees by merging.
+      expect(asked.length).toBeGreaterThan(5);
+    });
+  }
+
+  it("raises practice proof to mandatory on the professional loan, not merely optional", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "pl_professional",
+      customerProductCode: "personal_loan",
+      parties: [individual({ employmentTypeCode: "self_employed" })],
+      properties: [],
+    });
+
+    expect(
+      rows.find((row) => row.documentTypeCode === "professional_practice_proof")?.applicability,
+    ).toBe("mandatory");
+  });
+
+  it("asks an LLP for the resolution authorising it to borrow", () => {
+    const asked = evaluate({
+      productCode: "bl_term_loan",
+      customerProductCode: "business_loan",
+      parties: [
+        individual({ employmentTypeCode: "business_owner" }),
+        firm({ businessConstitutionCode: "llp" }),
+      ],
+    });
+
+    expect(asked).toContain("llp_agreement");
+    expect(asked).toContain("board_resolution");
+  });
+});
+
 describe("the default pack — integrity", () => {
   it("has no duplicate rule codes", () => {
     const codes = DEFAULT_REQUIREMENT_RULES.map((rule) => rule.code);
@@ -337,22 +618,14 @@ describe("the default pack — integrity", () => {
     expect(new Set(orders).size).toBe(orders.length);
   });
 
+  // Read from FINANCIAL_YEAR_DOCUMENT_TYPES rather than from a second list
+  // written out here. A hand-kept copy drifts, and the drift is silent: a
+  // rule asking for years of a type the expander does not know recurs loses
+  // its period and collapses to one undated row.
   it("only asks for financial years on document types that recur", () => {
-    const recurring = new Set([
-      "itr",
-      "org_itr",
-      "gst_returns",
-      "balance_sheet",
-      "profit_and_loss",
-      "bank_statement",
-      "org_bank_statement",
-      "form_16",
-      "audit_report",
-    ]);
-
     for (const rule of DEFAULT_REQUIREMENT_RULES) {
       if (rule.financialYears !== undefined) {
-        expect(recurring.has(rule.documentTypeCode)).toBe(true);
+        expect(isFinancialYearScoped(rule.documentTypeCode)).toBe(true);
       }
     }
   });

@@ -26,11 +26,15 @@ export function NewCase(): ReactNode {
   const navigate = useNavigate();
   const toast = useToast();
 
+  const activeReferralSources = db.referralSources
+    .filter((r) => r.isActive)
+    .sort((a, b) => a.displayOrder - b.displayOrder);
+
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [productId, setProductId] = useState(db.loanProducts[0]?.id ?? "");
   const [amount, setAmount] = useState("");
-  const [source, setSource] = useState("Phone enquiry");
+  const [referralSourceId, setReferralSourceId] = useState(activeReferralSources[0]?.id ?? "");
   const [chosenPersonId, setChosenPersonId] = useState<string | null>(null);
 
   if (!session.can("case.create", "all")) {
@@ -50,7 +54,7 @@ export function NewCase(): ReactNode {
         ...(chosenPersonId ? {} : { newApplicantName: name.trim(), newApplicantPhone: phone.trim() }),
         loanProductId: productId,
         ...(amount ? { requestedAmount: Number(amount) } : {}),
-        source,
+        ...(referralSourceId ? { referralSourceId } : {}),
       },
       session.user.id,
     );
@@ -105,12 +109,16 @@ export function NewCase(): ReactNode {
                 placeholder="3500000"
               />
             </Field>
-            <Field label="Source">
-              <Select value={source} onChange={(event) => setSource(event.target.value)}>
-                <option>Phone enquiry</option>
-                <option>Walk-in</option>
-                <option>Referral</option>
-                <option>Repeat customer</option>
+            <Field label="Source" hint="Configurable in Master Data — Administration workspace.">
+              <Select
+                value={referralSourceId}
+                onChange={(event) => setReferralSourceId(event.target.value)}
+              >
+                {activeReferralSources.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                  </option>
+                ))}
               </Select>
             </Field>
           </div>

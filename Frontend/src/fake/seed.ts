@@ -161,43 +161,111 @@ export function buildSeed(): Database {
   ];
 
   const documentTypes: Database["documentTypes"] = [
-    { id: id("dty", 1), code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false },
-    { id: id("dty", 2), code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false },
-    { id: id("dty", 3), code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false },
-    { id: id("dty", 4), code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false },
-    { id: id("dty", 5), code: "salary_slip", name: "Salary Slip", ownerKind: "person", requiresPeriod: true },
-    { id: id("dty", 6), code: "form_16", name: "Form 16", ownerKind: "person", requiresPeriod: true },
-    { id: id("dty", 7), code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true },
-    { id: id("dty", 8), code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true },
-    { id: id("dty", 9), code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false },
+    { id: id("dty", 1), code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 10 },
+    { id: id("dty", 2), code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 20 },
+    { id: id("dty", 3), code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 30 },
+    { id: id("dty", 4), code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 40 },
+    { id: id("dty", 5), code: "salary_slip", name: "Salary Slip", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 50 },
+    { id: id("dty", 6), code: "form_16", name: "Form 16", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 60 },
+    { id: id("dty", 7), code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 70 },
+    { id: id("dty", 8), code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 80 },
+    { id: id("dty", 9), code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false, isActive: true, displayOrder: 90 },
     // financial_statements is retained (not deleted, per BR-027's pattern) but
     // no longer generated — superseded by the two split-out, financial-year-
     // scoped types below (Database/migrations/0011).
-    { id: id("dty", 10), code: "financial_statements", name: "Financial Statements", ownerKind: "organisation", requiresPeriod: true },
-    { id: id("dty", 17), code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true },
-    { id: id("dty", 18), code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true },
-    { id: id("dty", 19), code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true },
-    { id: id("dty", 11), code: "sale_deed", name: "Sale Deed", ownerKind: "property", requiresPeriod: false },
-    { id: id("dty", 12), code: "encumbrance_cert", name: "Encumbrance Certificate", ownerKind: "property", requiresPeriod: true },
-    { id: id("dty", 13), code: "approved_plan", name: "Approved Building Plan", ownerKind: "property", requiresPeriod: false },
-    { id: id("dty", 14), code: "valuation_report", name: "Valuation Report", ownerKind: "property", requiresPeriod: false },
-    { id: id("dty", 15), code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false },
-    { id: id("dty", 16), code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false },
+    { id: id("dty", 10), code: "financial_statements", name: "Financial Statements", ownerKind: "organisation", requiresPeriod: true, isActive: false, displayOrder: 100 },
+    { id: id("dty", 17), code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 110 },
+    { id: id("dty", 18), code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 120 },
+    { id: id("dty", 19), code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 130 },
+    { id: id("dty", 11), code: "sale_deed", name: "Sale Deed", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 140 },
+    { id: id("dty", 12), code: "encumbrance_cert", name: "Encumbrance Certificate", ownerKind: "property", requiresPeriod: true, isActive: true, displayOrder: 150 },
+    { id: id("dty", 13), code: "approved_plan", name: "Approved Building Plan", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 160 },
+    { id: id("dty", 14), code: "valuation_report", name: "Valuation Report", ownerKind: "property", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 170 },
+    { id: id("dty", 15), code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false, isActive: true, displayOrder: 180 },
+    { id: id("dty", 16), code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 190 },
   ];
 
   const rejectionReasons: Database["rejectionReasons"] = [
-    { id: id("rej", 1), code: "credit_history", name: "Credit history", displayOrder: 10 },
-    { id: id("rej", 2), code: "income_insufficient", name: "Income insufficient", displayOrder: 20 },
-    { id: id("rej", 3), code: "obligations_too_high", name: "Existing obligations too high", displayOrder: 30 },
-    { id: id("rej", 4), code: "vintage_insufficient", name: "Employment or business vintage insufficient", displayOrder: 40 },
-    { id: id("rej", 5), code: "documents_incomplete", name: "Documents incomplete", displayOrder: 50 },
-    { id: id("rej", 6), code: "document_discrepancy", name: "Document discrepancy", displayOrder: 60 },
-    { id: id("rej", 7), code: "banking_unsatisfactory", name: "Banking conduct unsatisfactory", displayOrder: 70 },
-    { id: id("rej", 8), code: "property_legal", name: "Property — legal or title issue", displayOrder: 80 },
-    { id: id("rej", 9), code: "property_technical", name: "Property — technical or valuation issue", displayOrder: 90 },
-    { id: id("rej", 10), code: "age_tenure_mismatch", name: "Age or tenure mismatch", displayOrder: 100 },
-    { id: id("rej", 11), code: "profile_or_area_policy", name: "Profile or area policy", displayOrder: 110 },
-    { id: id("rej", 12), code: "product_not_offered", name: "Product not offered", displayOrder: 120 },
+    { id: id("rej", 1), code: "credit_history", name: "Credit history", displayOrder: 10, isActive: true },
+    { id: id("rej", 2), code: "income_insufficient", name: "Income insufficient", displayOrder: 20, isActive: true },
+    { id: id("rej", 3), code: "obligations_too_high", name: "Existing obligations too high", displayOrder: 30, isActive: true },
+    { id: id("rej", 4), code: "vintage_insufficient", name: "Employment or business vintage insufficient", displayOrder: 40, isActive: true },
+    { id: id("rej", 5), code: "documents_incomplete", name: "Documents incomplete", displayOrder: 50, isActive: true },
+    { id: id("rej", 6), code: "document_discrepancy", name: "Document discrepancy", displayOrder: 60, isActive: true },
+    { id: id("rej", 7), code: "banking_unsatisfactory", name: "Banking conduct unsatisfactory", displayOrder: 70, isActive: true },
+    { id: id("rej", 8), code: "property_legal", name: "Property — legal or title issue", displayOrder: 80, isActive: true },
+    { id: id("rej", 9), code: "property_technical", name: "Property — technical or valuation issue", displayOrder: 90, isActive: true },
+    { id: id("rej", 10), code: "age_tenure_mismatch", name: "Age or tenure mismatch", displayOrder: 100, isActive: true },
+    { id: id("rej", 11), code: "profile_or_area_policy", name: "Profile or area policy", displayOrder: 110, isActive: true },
+    { id: id("rej", 12), code: "product_not_offered", name: "Product not offered", displayOrder: 120, isActive: true },
+  ];
+
+  // ---------------------------------------------------------------------
+  // Master Data Engine (Milestone 5) — Database/migrations/0012, 0013.
+  // Mirrors the DB seed exactly, so the prototype and the schema agree on
+  // what "the starting master data" means.
+  // ---------------------------------------------------------------------
+
+  const loanCategories: Database["loanCategories"] = [
+    { id: id("lct", 1), code: "home_loan", name: "Home Loan", isActive: true, displayOrder: 10 },
+    { id: id("lct", 2), code: "business_loan", name: "Business Loan", isActive: true, displayOrder: 20 },
+    { id: id("lct", 3), code: "lap", name: "Loan Against Property", isActive: true, displayOrder: 30 },
+    { id: id("lct", 4), code: "personal_loan", name: "Personal Loan", isActive: true, displayOrder: 40 },
+  ];
+
+  const employmentTypes: Database["employmentTypes"] = [
+    { id: id("emt", 1), code: "salaried", name: "Salaried", description: "Draws a fixed salary from an employer. Payslips and Form 16 are the usual income evidence.", isActive: true, displayOrder: 10 },
+    { id: id("emt", 2), code: "self_employed", name: "Self-Employed", description: "Runs a profession or business in their own name. ITR and bank statements substitute for payslips.", isActive: true, displayOrder: 20 },
+    { id: id("emt", 3), code: "business_owner", name: "Business Owner", description: "Owns or is a partner in a firm, which may itself be a case party.", isActive: true, displayOrder: 30 },
+  ];
+
+  const businessConstitutions: Database["businessConstitutions"] = [
+    { id: id("bct", 1), code: "proprietorship", name: "Sole Proprietorship", description: "One individual owns the business; no separate legal entity.", isActive: true, displayOrder: 10 },
+    { id: id("bct", 2), code: "partnership", name: "Partnership", description: "Governed by a partnership deed; two or more partners.", isActive: true, displayOrder: 20 },
+    { id: id("bct", 3), code: "llp", name: "Limited Liability Partnership", description: "Registered LLP — partners with limited liability.", isActive: true, displayOrder: 30 },
+    { id: id("bct", 4), code: "private_limited", name: "Private Limited Company", description: "Registered under the Companies Act, shares not publicly traded.", isActive: true, displayOrder: 40 },
+    { id: id("bct", 5), code: "public_limited", name: "Public Limited Company", description: "Registered under the Companies Act, shares publicly traded.", isActive: true, displayOrder: 50 },
+    { id: id("bct", 6), code: "huf", name: "Hindu Undivided Family", description: "A HUF as recognised for tax and lending purposes.", isActive: true, displayOrder: 60 },
+    { id: id("bct", 7), code: "trust_society", name: "Trust / Society", description: "A registered trust or society rather than a commercial entity.", isActive: true, displayOrder: 70 },
+  ];
+
+  const propertyTypes: Database["propertyTypes"] = [
+    { id: id("pty", 1), code: "apartment", name: "Apartment", isActive: true, displayOrder: 10 },
+    { id: id("pty", 2), code: "independent_house", name: "Independent House", isActive: true, displayOrder: 20 },
+    { id: id("pty", 3), code: "villa", name: "Villa", isActive: true, displayOrder: 30 },
+    { id: id("pty", 4), code: "plot", name: "Plot", isActive: true, displayOrder: 40 },
+    { id: id("pty", 5), code: "commercial", name: "Commercial", isActive: true, displayOrder: 50 },
+    { id: id("pty", 6), code: "agricultural_land", name: "Agricultural Land", isActive: true, displayOrder: 60 },
+  ];
+
+  const propertyOwnershipTypes: Database["propertyOwnershipTypes"] = [
+    { id: id("pot", 1), code: "freehold", name: "Freehold", description: "Outright ownership, no lease term.", isActive: true, displayOrder: 10 },
+    { id: id("pot", 2), code: "leasehold", name: "Leasehold", description: "Held under a lease for a fixed term.", isActive: true, displayOrder: 20 },
+    { id: id("pot", 3), code: "ancestral", name: "Ancestral", description: "Inherited, typically undivided among family members.", isActive: true, displayOrder: 30 },
+    { id: id("pot", 4), code: "power_of_attorney", name: "Power of Attorney", description: "Held or transacted through a registered power of attorney.", isActive: true, displayOrder: 40 },
+    { id: id("pot", 5), code: "joint_ownership", name: "Joint Ownership", description: "Title held jointly by two or more named owners.", isActive: true, displayOrder: 50 },
+  ];
+
+  const referralSources: Database["referralSources"] = [
+    { id: id("rfs", 1), code: "phone_enquiry", name: "Phone Enquiry", isActive: true, displayOrder: 10 },
+    { id: id("rfs", 2), code: "walk_in", name: "Walk-in", isActive: true, displayOrder: 20 },
+    { id: id("rfs", 3), code: "referral", name: "Referral", isActive: true, displayOrder: 30 },
+    { id: id("rfs", 4), code: "repeat_customer", name: "Repeat Customer", isActive: true, displayOrder: 40 },
+    { id: id("rfs", 5), code: "builder_tie_up", name: "Builder Tie-up", isActive: true, displayOrder: 50 },
+    { id: id("rfs", 6), code: "website", name: "Website", isActive: true, displayOrder: 60 },
+    { id: id("rfs", 7), code: "social_media", name: "Social Media", isActive: true, displayOrder: 70 },
+  ];
+
+  const districts: Database["districts"] = [
+    { id: id("dst", 1), code: "madurai", name: "Madurai", isActive: true, displayOrder: 10 },
+    { id: id("dst", 2), code: "chennai", name: "Chennai", isActive: true, displayOrder: 20 },
+    { id: id("dst", 3), code: "mumbai_mmr", name: "Mumbai", isActive: true, displayOrder: 30 },
+  ];
+
+  const cities: Database["cities"] = [
+    { id: id("cty", 1), code: "madurai", name: "Madurai", districtId: id("dst", 1), isActive: true, displayOrder: 10 },
+    { id: id("cty", 2), code: "chennai", name: "Chennai", districtId: id("dst", 2), isActive: true, displayOrder: 20 },
+    { id: id("cty", 3), code: "mumbai", name: "Mumbai", districtId: id("dst", 3), isActive: true, displayOrder: 30 },
   ];
 
   const year = new Date().getFullYear();
@@ -345,7 +413,10 @@ export function buildSeed(): Database {
 
   return {
     people, organisations, employments, properties, users, loanProducts, documentTypes,
-    rejectionReasons, cases, caseParties, caseProperties, documents,
+    rejectionReasons,
+    loanCategories, employmentTypes, businessConstitutions, propertyTypes,
+    propertyOwnershipTypes, referralSources, districts, cities,
+    cases, caseParties, caseProperties, documents,
     requirements: [], submissions, offers, communications, notes, tasks, events,
     caseNumberSequence: { [year]: 47 },
   };

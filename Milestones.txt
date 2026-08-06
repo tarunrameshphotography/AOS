@@ -1,0 +1,13 @@
+The sequence I'd follow
+✅ Architecture
+✅ Entity Management
+✅ Financial-Year Documents
+✅ Automatic Storage
+✅ Master Data Engine
+Loan Product Catalogue
+Coimbatore Bank & NBFC Catalogue
+Document Requirement Engine
+Workflow Polish
+OCR & AI
+Email / WhatsApp Integration
+Management Dashboards

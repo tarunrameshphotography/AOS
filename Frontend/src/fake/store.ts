@@ -41,6 +41,7 @@ import type {
   Database,
   Id,
   LoanCase,
+  MasterDataRecord,
   SubmissionStatus,
 } from "./types.js";
 
@@ -353,7 +354,10 @@ export interface NewCaseInput {
   newApplicantPhone?: string;
   loanProductId: Id;
   requestedAmount?: number;
-  source?: string;
+  /** The referral source's master-data id (Milestone 5). `source` is
+   * derived from it for backward compatibility with anything still reading
+   * the free-text field. */
+  referralSourceId?: Id;
 }
 
 export function createCase(input: NewCaseInput, actorUserId: Id): Id {
@@ -395,6 +399,8 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
   const sequence = (db.caseNumberSequence[year] ?? 0) + 1;
   db.caseNumberSequence = { ...db.caseNumberSequence, [year]: sequence };
 
+  const referralSource = db.referralSources.find((r) => r.id === input.referralSourceId);
+
   const caseId = nextId();
   const loanCase: LoanCase = {
     id: caseId,
@@ -403,7 +409,10 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
     ...(input.requestedAmount ? { requestedAmount: input.requestedAmount } : {}),
     stage: "new",
     ownerUserId: actorUserId,
-    ...(input.source ? { source: input.source } : {}),
+    // `source` is derived from the master-data pick so anything still
+    // reading the free-text field (search, MIS exports) keeps working
+    // (Milestone 5 — the field itself is kept for backward compatibility).
+    ...(referralSource ? { source: referralSource.name, referralSourceId: referralSource.id } : {}),
     isOnHold: false,
     isInvoiceRaised: false,
     tags: [],
@@ -1135,6 +1144,274 @@ export function completeTask(taskId: Id, actorUserId: Id): ActionResult {
     entityId: taskId,
     eventType: "task.completed",
     summary: `Task completed: ${task?.title ?? ""}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Master Data Engine (Milestone 5)
+//
+// One generic CRUD surface over every table that shares MasterDataRecord's
+// shape (code, name, description, is_active, display_order, effective_from,
+// notes — Database/migrations/0012). Records are deactivated, never deleted,
+// matching every other reference table in this schema (rejection_reason,
+// document_type). Governed by master_data.manage, checked by the screen that
+// calls these, not here — the fake store mirrors the domain layer's own
+// stance that permission enforcement is the caller's job (BR-060).
+// ---------------------------------------------------------------------------
+
+/** The Database keys holding a MasterDataRecord[] collection. */
+export const MASTER_DATA_KINDS = [
+  "loanCategories",
+  "employmentTypes",
+  "businessConstitutions",
+  "propertyTypes",
+  "propertyOwnershipTypes",
+  "referralSources",
+  "districts",
+  "cities",
+] as const;
+
+export type MasterDataKind = (typeof MASTER_DATA_KINDS)[number];
+
+export const MASTER_DATA_LABELS: Record<MasterDataKind, string> = {
+  loanCategories: "Loan Category",
+  employmentTypes: "Employment Type",
+  businessConstitutions: "Business Constitution",
+  propertyTypes: "Property Type",
+  propertyOwnershipTypes: "Property Ownership Type",
+  referralSources: "Referral Source",
+  districts: "District",
+  cities: "City",
+};
+
+export interface MasterDataInput {
+  code: string;
+  name: string;
+  description?: string;
+  displayOrder?: number;
+  effectiveFrom?: string;
+  notes?: string;
+  /** Only meaningful for `cities`. */
+  districtId?: Id;
+}
+
+function masterDataList(kind: MasterDataKind): readonly MasterDataRecord[] {
+  return db[kind];
+}
+
+function setMasterDataList(kind: MasterDataKind, list: readonly MasterDataRecord[]): void {
+  db = { ...db, [kind]: list };
+}
+
+export function createMasterDataRecord(
+  kind: MasterDataKind,
+  input: MasterDataInput,
+  actorUserId: Id,
+): ActionResult {
+  const code = input.code.trim();
+  const name = input.name.trim();
+  if (!code || !name) {
+    return { ok: false, message: "Code and name are both required." };
+  }
+  if (masterDataList(kind).some((r) => r.code === code)) {
+    return { ok: false, message: `"${code}" is already in use — codes must be unique.` };
+  }
+
+  const list = masterDataList(kind);
+  const newRecord: MasterDataRecord = {
+    id: nextId(),
+    code,
+    name,
+    isActive: true,
+    displayOrder: input.displayOrder ?? (list.length + 1) * 10,
+    ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+    ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}),
+    ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+    ...(kind === "cities" && input.districtId ? { districtId: input.districtId } : {}),
+  };
+  setMasterDataList(kind, [...list, newRecord]);
+
+  record({
+    actorUserId,
+    entityType: kind,
+    entityId: newRecord.id,
+    eventType: "master_data.created",
+    summary: `${MASTER_DATA_LABELS[kind]} added: ${name}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+export function updateMasterDataRecord(
+  kind: MasterDataKind,
+  id: Id,
+  patch: Partial<MasterDataInput>,
+  actorUserId: Id,
+): ActionResult {
+  const existing = masterDataList(kind).find((r) => r.id === id);
+  if (!existing) return { ok: false, message: "Record not found." };
+
+  const name = patch.name?.trim();
+  if (patch.name !== undefined && !name) {
+    return { ok: false, message: "Name cannot be blank." };
+  }
+
+  setMasterDataList(
+    kind,
+    masterDataList(kind).map((r) => {
+      if (r.id !== id) return r;
+      const { description, notes, effectiveFrom, districtId, ...rest } = r;
+      return {
+        ...rest,
+        ...(description !== undefined ? { description } : {}),
+        ...(notes !== undefined ? { notes } : {}),
+        ...(effectiveFrom !== undefined ? { effectiveFrom } : {}),
+        ...(districtId !== undefined ? { districtId } : {}),
+        ...(name ? { name } : {}),
+        ...(patch.displayOrder !== undefined ? { displayOrder: patch.displayOrder } : {}),
+        ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
+        ...(patch.effectiveFrom ? { effectiveFrom: patch.effectiveFrom } : {}),
+        ...(patch.notes?.trim() ? { notes: patch.notes.trim() } : {}),
+        ...(kind === "cities" && patch.districtId ? { districtId: patch.districtId } : {}),
+      };
+    }),
+  );
+
+  record({
+    actorUserId,
+    entityType: kind,
+    entityId: id,
+    eventType: "master_data.updated",
+    summary: `${MASTER_DATA_LABELS[kind]} updated: ${name ?? existing.name}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+export function setMasterDataActive(
+  kind: MasterDataKind,
+  id: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const existing = masterDataList(kind).find((r) => r.id === id);
+  if (!existing) return { ok: false, message: "Record not found." };
+
+  setMasterDataList(
+    kind,
+    masterDataList(kind).map((r) => (r.id === id ? { ...r, isActive } : r)),
+  );
+
+  record({
+    actorUserId,
+    entityType: kind,
+    entityId: id,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `${MASTER_DATA_LABELS[kind]} ${isActive ? "reactivated" : "deactivated"}: ${existing.name}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Document types and rejection reasons — already master data before this
+// milestone (ADR-025, ADR-028), but with no admin screen. Their extra fields
+// (owner_kind / requires_period / requires_expiry) keep them out of the
+// generic MasterDataRecord functions above; these mirror those functions for
+// the two fields every master-data table shares: name/description and
+// is_active.
+// ---------------------------------------------------------------------------
+
+export function updateDocumentTypeDetails(
+  id: Id,
+  patch: { name?: string; description?: string },
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.documentTypes.find((t) => t.id === id);
+  if (!existing) return { ok: false, message: "Document type not found." };
+  const name = patch.name?.trim();
+  if (patch.name !== undefined && !name) return { ok: false, message: "Name cannot be blank." };
+
+  db.documentTypes = db.documentTypes.map((t) =>
+    t.id === id
+      ? {
+          ...t,
+          ...(name ? { name } : {}),
+          ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
+        }
+      : t,
+  );
+  record({
+    actorUserId,
+    entityType: "document_type",
+    entityId: id,
+    eventType: "master_data.updated",
+    summary: `Document Type updated: ${name ?? existing.name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setDocumentTypeActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
+  const existing = db.documentTypes.find((t) => t.id === id);
+  if (!existing) return { ok: false, message: "Document type not found." };
+  db.documentTypes = db.documentTypes.map((t) => (t.id === id ? { ...t, isActive } : t));
+  record({
+    actorUserId,
+    entityType: "document_type",
+    entityId: id,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Document Type ${isActive ? "reactivated" : "deactivated"}: ${existing.name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateRejectionReasonDetails(
+  id: Id,
+  patch: { name?: string; description?: string },
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.rejectionReasons.find((r) => r.id === id);
+  if (!existing) return { ok: false, message: "Rejection reason not found." };
+  const name = patch.name?.trim();
+  if (patch.name !== undefined && !name) return { ok: false, message: "Name cannot be blank." };
+
+  db.rejectionReasons = db.rejectionReasons.map((r) =>
+    r.id === id
+      ? {
+          ...r,
+          ...(name ? { name } : {}),
+          ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
+        }
+      : r,
+  );
+  record({
+    actorUserId,
+    entityType: "rejection_reason",
+    entityId: id,
+    eventType: "master_data.updated",
+    summary: `Rejection Reason updated: ${name ?? existing.name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setRejectionReasonActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
+  const existing = db.rejectionReasons.find((r) => r.id === id);
+  if (!existing) return { ok: false, message: "Rejection reason not found." };
+  db.rejectionReasons = db.rejectionReasons.map((r) => (r.id === id ? { ...r, isActive } : r));
+  record({
+    actorUserId,
+    entityType: "rejection_reason",
+    entityId: id,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Rejection Reason ${isActive ? "reactivated" : "deactivated"}: ${existing.name}`,
   });
   commit();
   return { ok: true };

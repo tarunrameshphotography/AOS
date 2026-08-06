@@ -838,3 +838,84 @@ the thing a customer would mind being read. Master data and the directory share
 one RLS shape for reads (`true` for any authenticated user) and differ only in
 their write policies, which is less policy code than three families would have
 been.
+
+---
+
+## ADR-030 — Master Data Engine: which vocabulary became a table, and which stayed an enum
+Date: 2026-08-06
+Status: Accepted
+
+**Decision:** Eight tables were added under the shared shape ADR-025 and
+ADR-028 established (`code`, `name`, `description`, `is_active`,
+`display_order`, `effective_from`, `notes`): `loan_category`,
+`employment_type`, `business_constitution`, `property_type`,
+`property_ownership_type`, `referral_source`, `district`, `city`
+(Database/migrations/0012, 0013). Every consuming table gained a nullable
+foreign key alongside its existing free-text or enum column — additive, never
+a rename or a drop.
+
+**What each conversion fixes, specifically:**
+
+- **`loan_category`** promotes `loan_product.category`, previously free text
+  with no controlled vocabulary, to a real taxonomy. `loan_product` keeps
+  `category` for now; the column's retirement and the product catalogue's own
+  management screen are the "Loan Product Catalogue" milestone, not this one.
+- **`employment_type`** converts `app.employment_type` from an enum (0001) to
+  a table. This is the one place 0001's own enum/table line — "table if
+  requirement templates key off it" — was drawn wrong: employment type drives
+  requirement generation exactly as `document_type` does, and a lender panel
+  adding "NRI" or "Pensioner" is a data change, not a code review. The enum
+  stays for backward compatibility.
+- **`business_constitution`** fills a gap: a borrowing firm (ADR-009) had no
+  field at all for how it is legally constituted, which a business loan or LAP
+  file needs.
+- **`property_type` / `property_ownership_type`** replace two `property`
+  columns that have been free text since 0003 with no structure whatsoever —
+  the exact duplicate-vocabulary risk ("Apartment" vs "Flat") master data
+  exists to prevent.
+- **`referral_source`** replaces a hardcoded `<option>` list literally written
+  into `Frontend/src/screens/NewCase.tsx` — the clearest instance in the
+  codebase of the pattern this milestone exists to remove, a business value
+  that could not be added without shipping code.
+- **`district` / `city`** give Amaze's operating footprint a controlled
+  vocabulary for the first time. Deliberately **not** wired into
+  `person.city` / `organisation.city` / `property.city`, which stay free text:
+  those three columns carry real data across the whole schema, and matching
+  it against a new master list is a migration and a UI decision in its own
+  right, not something to fold into the milestone that establishes the
+  pattern. The tables exist and are ready for that follow-up.
+
+**What deliberately did not convert, and why:**
+
+- **Banks, NBFCs, HFCs, branches** were already master data before this
+  migration, via `organisation` (roles, ADR-014) and `organisation.parent_
+  organisation_id` for branch → bank (ADR-015). `lender_type` (bank/nbfc/hfc)
+  stays an enum — three fixed regulatory categories, not a business list.
+  Their administration screen is the "Coimbatore Bank & NBFC Catalogue"
+  milestone; this one only confirms the underlying data was already correctly
+  shaped.
+- **`document_type` and `rejection_reason`** were already tables (ADR-025,
+  ADR-028) but had no admin UI at all — the frontend prototype hardcoded them
+  in seed data with no way to add or deactivate one. Milestone 5 gives both an
+  admin screen, and extends their frontend types with the `is_active` /
+  `display_order` / `description` fields the database already had.
+- **Case stage, submission status, requirement status, lost reason, case
+  party/property role, scope, role, identifier type, verification source,
+  alias source, document owner kind, communication channel/direction, event
+  actor kind/source** all stay enums. Every one of these is workflow or
+  structural vocabulary that Amaze owns and where a new value is a genuine
+  code-and-review decision — a new case stage changes the state machine in
+  `src/domain/case`, not a dropdown. This is exactly the line ADR-028 already
+  drew between `lost_reason` (enum, Amaze's own view) and `rejection_reason`
+  (table, must absorb the world's vocabulary).
+
+**Consequences:** A new admin screen, `Frontend/src/screens/MasterData.tsx`,
+gives office staff one consistent, searchable place to manage all ten tables
+(the eight new ones plus document types and rejection reasons), gated by the
+existing `master_data.read` / `master_data.manage` permissions — no new
+permission was needed, because ADR-027 already required every reference table
+to answer to those two. Records are deactivated, never deleted, matching every
+other reference table in the schema. Every new table is bound in
+`src/domain/permissions/tables.ts` and enabled for RLS in its own migration,
+so the `schema-coverage.test.ts` contract (ADR-027) holds without editing
+`0010_security_defaults.sql`.

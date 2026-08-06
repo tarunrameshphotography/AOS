@@ -481,6 +481,97 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     notes: "Retired reasons set `active = false`. Existing submissions keep pointing at them.",
   },
 
+  // ── Master Data Engine (Milestone 5) ─────────────────────────────────────
+  {
+    table: "loan_category",
+    family: "reference",
+    purpose:
+      "Amaze's commercial grouping of loan products — Home Loan, Business Loan, " +
+      "LAP, Personal. Promoted from loan_product.category free text (Database/" +
+      "migrations/0012).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "employment_type",
+    family: "reference",
+    purpose:
+      "A person's income-source classification. Converted from app.employment_type " +
+      "(an enum since 0001) to master data: it drives requirement generation exactly " +
+      "as document_type does, which is the ADR-025 test for table over enum.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "business_constitution",
+    family: "reference",
+    purpose:
+      "How a borrowing firm is legally constituted — proprietorship, partnership, " +
+      "private limited, and so on. Not modelled before Milestone 5.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "property_type",
+    family: "reference",
+    purpose:
+      "What kind of property — apartment, plot, villa, commercial. Was free text " +
+      "on property with no controlled vocabulary.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "property_ownership_type",
+    family: "reference",
+    purpose:
+      "How title is held — freehold, leasehold, ancestral, power of attorney, joint. " +
+      "Was free text on property with no controlled vocabulary.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "referral_source",
+    family: "reference",
+    purpose:
+      "How a lead reached Amaze. Replaces the hardcoded <option> list that used to " +
+      "live in the case-creation screen.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "district",
+    family: "reference",
+    purpose: "A district Amaze operates in or lends against, grouping cities.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "city",
+    family: "reference",
+    purpose:
+      "A city Amaze operates in or lends against. Not yet referenced by " +
+      "person.city / organisation.city / property.city, which remain free text " +
+      "pending their own migration (Database/migrations/0012).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+
   // ── Banking work ─────────────────────────────────────────────────────────
   {
     table: "submission",

@@ -9,17 +9,17 @@ let counter = 0;
 const nextId = (): string => `test_${++counter}`;
 
 const DOCUMENT_TYPES: DocumentType[] = [
-  { id: "dty_pan", code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false },
-  { id: "dty_aadhaar", code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false },
-  { id: "dty_address", code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false },
-  { id: "dty_photo", code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false },
-  { id: "dty_itr", code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true },
-  { id: "dty_bank_stmt", code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true },
-  { id: "dty_gst_cert", code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false },
-  { id: "dty_gst_returns", code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true },
-  { id: "dty_balance_sheet", code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true },
-  { id: "dty_pl", code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true },
-  { id: "dty_login_form", code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false },
+  { id: "dty_pan", code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 10 },
+  { id: "dty_aadhaar", code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 20 },
+  { id: "dty_address", code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 30 },
+  { id: "dty_photo", code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 40 },
+  { id: "dty_itr", code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 50 },
+  { id: "dty_bank_stmt", code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 60 },
+  { id: "dty_gst_cert", code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false, isActive: true, displayOrder: 70 },
+  { id: "dty_gst_returns", code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 80 },
+  { id: "dty_balance_sheet", code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 90 },
+  { id: "dty_pl", code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 100 },
+  { id: "dty_login_form", code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false, isActive: true, displayOrder: 110 },
 ];
 
 const LOAN_PRODUCTS: LoanProduct[] = [
@@ -38,6 +38,14 @@ function baseDb(): Database {
     loanProducts: LOAN_PRODUCTS,
     documentTypes: DOCUMENT_TYPES,
     rejectionReasons: [],
+    loanCategories: [],
+    employmentTypes: [],
+    businessConstitutions: [],
+    propertyTypes: [],
+    propertyOwnershipTypes: [],
+    referralSources: [],
+    districts: [],
+    cities: [],
     cases: [],
     caseParties: [],
     caseProperties: [],

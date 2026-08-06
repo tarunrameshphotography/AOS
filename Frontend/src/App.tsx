@@ -15,6 +15,7 @@ import { useDatabase } from "./fake/useDatabase.js";
 import { search } from "./lib.js";
 import { CaseDetail } from "./screens/CaseDetail.js";
 import { CaseList } from "./screens/CaseList.js";
+import { MasterData } from "./screens/MasterData.js";
 import { NewCase } from "./screens/NewCase.js";
 import { PersonProfile } from "./screens/PersonProfile.js";
 import { WorkspaceHome } from "./screens/WorkspaceHome.js";
@@ -38,6 +39,7 @@ export function App(): ReactNode {
           <Route path="/cases/new" element={<NewCase />} />
           <Route path="/cases/:caseId" element={<CaseDetail />} />
           <Route path="/people/:personId" element={<PersonProfile />} />
+          <Route path="/admin/master-data" element={<MasterData />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
@@ -77,6 +79,19 @@ function TopBar(): ReactNode {
           >
             Cases
           </NavLink>
+          {session.can("master_data.read", "all") && (
+            <NavLink
+              to="/admin/master-data"
+              className={({ isActive }) =>
+                cx(
+                  "rounded-md px-3 py-1.5 text-sm font-medium",
+                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
+                )
+              }
+            >
+              Master Data
+            </NavLink>
+          )}
           {session.can("case.create", "all") && (
             <Link to="/cases/new">
               <Button variant="primary">New case</Button>

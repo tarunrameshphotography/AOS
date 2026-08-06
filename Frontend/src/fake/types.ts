@@ -45,6 +45,9 @@ export interface Organisation {
   city?: string;
   parentOrganisationId?: Id;
   aliases: string[];
+  /** Meaningful only for organisations holding the `borrower` role
+   * (ADR-014). Master data — see MasterDataRecord below. */
+  businessConstitutionId?: Id;
 }
 
 export interface Employment {
@@ -54,6 +57,11 @@ export interface Employment {
   designation?: string;
   monthlyIncome?: number;
   employmentType: "salaried" | "self_employed" | "business_owner";
+  /** The master-data replacement for `employmentType` (Milestone 5,
+   * Database/migrations/0012). Both are kept: `employmentType` is what the
+   * requirement-generation domain logic branches on, `employmentTypeId` is
+   * what the admin screen and future new values point at. */
+  employmentTypeId?: Id;
   isCurrent: boolean;
 }
 
@@ -64,8 +72,42 @@ export interface Property {
   locality?: string;
   city?: string;
   propertyType?: string;
+  propertyTypeId?: Id;
+  ownershipStatus?: string;
+  propertyOwnershipTypeId?: Id;
   estimatedValue?: number;
 }
+
+/**
+ * Shared shape for the Master Data Engine's controlled-vocabulary tables
+ * (Milestone 5, Database/migrations/0012): loan categories, employment
+ * types, business constitutions, property types, property ownership types,
+ * referral sources, districts and cities. One shape, learned once — the same
+ * reasoning as the DB migration's header comment.
+ *
+ * `districtId` is meaningful only on `Database.cities`; every other
+ * collection ignores it.
+ */
+export interface MasterDataRecord {
+  id: Id;
+  code: string;
+  name: string;
+  description?: string;
+  isActive: boolean;
+  displayOrder: number;
+  effectiveFrom?: string;
+  notes?: string;
+  districtId?: Id;
+}
+
+export type LoanCategory = MasterDataRecord;
+export type EmploymentTypeRecord = MasterDataRecord;
+export type BusinessConstitution = MasterDataRecord;
+export type PropertyTypeRecord = MasterDataRecord;
+export type PropertyOwnershipTypeRecord = MasterDataRecord;
+export type ReferralSource = MasterDataRecord;
+export type District = MasterDataRecord;
+export type City = MasterDataRecord;
 
 export interface AppUser {
   id: Id;
@@ -80,20 +122,30 @@ export interface LoanProduct {
   code: string;
   category: string;
   variant: string;
+  /** Master-data replacement for `category` (Milestone 5). `category` is
+   * kept for backward compatibility until the Loan Product Catalogue
+   * milestone rebuilds this table's own management screen. */
+  loanCategoryId?: Id;
 }
 
 export interface DocumentType {
   id: Id;
   code: string;
   name: string;
+  description?: string;
   ownerKind: "person" | "property" | "organisation" | "case";
   requiresPeriod: boolean;
+  requiresExpiry?: boolean;
+  isActive: boolean;
+  displayOrder: number;
 }
 
 export interface RejectionReason {
   id: Id;
   code: string;
   name: string;
+  description?: string;
+  isActive: boolean;
   displayOrder: number;
 }
 
@@ -129,6 +181,9 @@ export interface LoanCase {
   stage: CaseStage;
   ownerUserId: Id;
   source?: string;
+  /** Master-data replacement for `source` (Milestone 5). `source` is kept
+   * for backward compatibility and for cases created before this milestone. */
+  referralSourceId?: Id;
   lostReason?: LostReason;
   lostNote?: string;
   stageBeforeLost?: CaseStage;
@@ -280,6 +335,15 @@ export interface Database {
   loanProducts: LoanProduct[];
   documentTypes: DocumentType[];
   rejectionReasons: RejectionReason[];
+  // Master Data Engine (Milestone 5) — Database/migrations/0012.
+  loanCategories: LoanCategory[];
+  employmentTypes: EmploymentTypeRecord[];
+  businessConstitutions: BusinessConstitution[];
+  propertyTypes: PropertyTypeRecord[];
+  propertyOwnershipTypes: PropertyOwnershipTypeRecord[];
+  referralSources: ReferralSource[];
+  districts: District[];
+  cities: City[];
   cases: LoanCase[];
   caseParties: CaseParty[];
   caseProperties: CaseProperty[];

@@ -445,6 +445,26 @@ export interface DocumentFile {
   uploadedBy: Id;
   verifiedAt?: string;
   verifiedBy?: Id;
+  /** Free-text left by the Login Executive in the verify/confirm dialog —
+   * e.g. "PAN readable" or "Uploaded Aadhaar is blurry". Becomes part of the
+   * document's history alongside the document.verified event. */
+  verificationNotes?: string;
+  /** Set (with a reason) when a reviewer rejects the upload in the
+   * verify/confirm dialog instead of confirming it. The document itself is
+   * never deleted — the next upload against the same requirement supersedes
+   * it, same as any other replacement (BR-031). */
+  rejectedAt?: string;
+  rejectedBy?: Id;
+  rejectionReason?: string;
+  /** What the document was expected/detected to be at upload time. Today
+   * this always equals `documentTypeId` — there is no OCR yet — but keeping
+   * it a separate field is what lets a future OCR suggestion and a human's
+   * confirmed type disagree without a schema change. */
+  suggestedDocumentTypeId?: Id;
+  /** What a human actually confirmed the document to be, set when the
+   * verify/confirm dialog's "Confirm & Verify" is used. Undefined until
+   * verified. */
+  confirmedDocumentTypeId?: Id;
   /** Documents are never overwritten (BR-031). 1 for a first upload;
    * incremented by @domain/storage's nextVersion for a replacement. */
   version: number;

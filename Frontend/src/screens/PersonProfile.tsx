@@ -7,7 +7,7 @@
  * that referenced it (ADR-007).
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { CASE_STAGE_LABELS } from "@domain/case/stages.js";
@@ -27,12 +27,14 @@ import {
   when,
 } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Card, Empty, StageBadge } from "../ui/index.js";
+import { Badge, Button, Card, Empty, StageBadge } from "../ui/index.js";
+import { StorageLocation } from "../ui/storage-location.js";
 
 export function PersonProfile(): ReactNode {
   const { personId = "" } = useParams();
   const db = useDatabase();
   const session = useSession();
+  const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null);
 
   const person = db.people.find((p) => p.id === personId);
   if (!person) return <Empty>Person not found.</Empty>;
@@ -184,17 +186,27 @@ export function PersonProfile(): ReactNode {
                 <ul className="space-y-2">
                   {documents.map((document) => {
                     const type = db.documentTypes.find((t) => t.id === document.documentTypeId);
+                    const expanded = expandedDocumentId === document.id;
                     return (
-                      <li key={document.id} className="flex items-start gap-2">
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm">{type?.name}</span>
-                          <span className="block truncate text-xs text-ink-500">
-                            {document.fileName} · {bytes(document.fileSizeBytes)}
+                      <li key={document.id} className="space-y-1.5">
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm">{type?.name}</span>
+                            <span className="block truncate text-xs text-ink-500">
+                              {document.fileName} · {bytes(document.fileSizeBytes)}
+                            </span>
                           </span>
-                        </span>
-                        <Badge tone={document.verifiedAt ? "good" : "info"}>
-                          {document.verifiedAt ? "Verified" : "Unverified"}
-                        </Badge>
+                          <Badge tone={document.verifiedAt ? "good" : "info"}>
+                            {document.verifiedAt ? "Verified" : "Unverified"}
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setExpandedDocumentId(expanded ? null : document.id)}
+                          >
+                            {expanded ? "Hide storage" : "Storage"}
+                          </Button>
+                        </div>
+                        {expanded && <StorageLocation filePath={document.filePath} />}
                       </li>
                     );
                   })}

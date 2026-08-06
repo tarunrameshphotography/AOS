@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "seed:permissions": "vitest run src/domain/permissions/seed.test.ts -u",
     "dev": "vite",
+    "storage-server": "node Backend/storage-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"
@@ -31,5 +32,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

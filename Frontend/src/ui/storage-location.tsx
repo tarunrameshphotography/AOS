@@ -1,0 +1,77 @@
+/**
+ * "Storage Location" + "Open Folder", shown on every document detail
+ * surface (the verify/confirm dialog, a person's documents list). Reads the
+ * configured storage root and checks the file is actually still on disk —
+ * both live facts from the local storage backend, not values baked into the
+ * document row, so they stay correct if the root is reconfigured later.
+ */
+
+import { useEffect, useState, type ReactNode } from "react";
+
+import { getStorageConfig, objectExists, openStorageFolder } from "../fake/storage.js";
+import { Badge, Button, useToast } from "./index.js";
+
+function toWindowsPath(root: string, filePath: string): string {
+  const separator = root.includes("/") && !root.includes("\\") ? "/" : "\\";
+  const relative = filePath.split("/").join(separator);
+  return `${root}${separator}Documents${separator}${relative}`;
+}
+
+export function StorageLocation({ filePath }: { filePath: string }): ReactNode {
+  const toast = useToast();
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "ready"; root: string; exists: boolean }
+    | { status: "unreachable" }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    Promise.all([getStorageConfig(), objectExists(filePath)])
+      .then(([config, exists]) => {
+        if (!cancelled) setState({ status: "ready", root: config.root, exists });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ status: "unreachable" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
+
+  if (state.status === "loading") {
+    return <p className="text-xs text-ink-500">Locating file…</p>;
+  }
+
+  if (state.status === "unreachable") {
+    return (
+      <p className="text-xs text-red-700">
+        Could not reach the local document storage backend. Run{" "}
+        <code className="rounded bg-ink-100 px-1 py-0.5">npm run storage-server</code> and try again.
+      </p>
+    );
+  }
+
+  const fullPath = toWindowsPath(state.root, filePath);
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 flex-1 truncate font-mono text-xs text-ink-700" title={fullPath}>
+          {fullPath}
+        </p>
+        {!state.exists && <Badge tone="bad">File missing on disk</Badge>}
+      </div>
+      <Button
+        onClick={() => {
+          void openStorageFolder(filePath).then((result) => {
+            if (!result.ok) toast.show(result.message ?? "Could not open the folder.", "bad");
+          });
+        }}
+      >
+        Open Folder
+      </Button>
+    </div>
+  );
+}

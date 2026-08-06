@@ -726,6 +726,12 @@ export async function uploadDocument(
       // document inherits it rather than asking again.
       ...(requirement.periodStart ? { periodStart: requirement.periodStart } : {}),
       ...(requirement.periodEnd ? { periodEnd: requirement.periodEnd } : {}),
+      // No OCR yet, so the "suggested" type is simply what the requirement
+      // already expected — but it is a distinct field from the start, so a
+      // future OCR pass can suggest a *different* type without a schema
+      // change, and the verify dialog can show "Suggested" next to
+      // "Confirmed" today even though the two always agree for now.
+      suggestedDocumentTypeId: requirement.documentTypeId,
       fileName: file.name,
       fileSizeBytes: file.size,
       uploadedAt: new Date().toISOString(),
@@ -752,17 +758,28 @@ export async function uploadDocument(
   return { ok: true };
 }
 
-export function verifyDocument(requirementId: Id, actorUserId: Id): ActionResult {
+export function verifyDocument(
+  requirementId: Id,
+  actorUserId: Id,
+  notes?: string,
+): ActionResult {
   const requirement = db.requirements.find((r) => r.id === requirementId);
   if (!requirement?.satisfiedByDocumentId) {
     return { ok: false, message: "Nothing has been uploaded against this requirement yet." };
   }
 
   const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+  const trimmedNotes = notes?.trim();
 
   db.documents = db.documents.map((d) =>
     d.id === requirement.satisfiedByDocumentId
-      ? { ...d, verifiedAt: new Date().toISOString(), verifiedBy: actorUserId }
+      ? {
+          ...d,
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: actorUserId,
+          confirmedDocumentTypeId: requirement.documentTypeId,
+          ...(trimmedNotes ? { verificationNotes: trimmedNotes } : {}),
+        }
       : d,
   );
   db.requirements = db.requirements.map((r) =>
@@ -775,10 +792,60 @@ export function verifyDocument(requirementId: Id, actorUserId: Id): ActionResult
     entityType: "document",
     entityId: requirement.satisfiedByDocumentId,
     eventType: "document.verified",
-    summary: `${documentType?.name ?? "Document"} verified`,
+    summary: trimmedNotes
+      ? `${documentType?.name ?? "Document"} verified: ${trimmedNotes}`
+      : `${documentType?.name ?? "Document"} verified`,
   });
 
   reconcileReadiness(requirement.caseId, "Last applicable requirement verified");
+  commit();
+  return { ok: true };
+}
+
+/**
+ * A document uploaded and then found wanting under View — blurry, wrong
+ * type, wrong year — is rejected rather than silently re-verified over.
+ * The requirement goes back to "pending" (it needs a fresh upload); the
+ * rejected document itself is kept exactly as BR-031 keeps every version,
+ * so the next upload supersedes it and the rejection stays visible in
+ * history rather than disappearing.
+ */
+export function rejectDocument(requirementId: Id, reason: string, actorUserId: Id): ActionResult {
+  if (!reason.trim()) {
+    return { ok: false, message: "A rejection needs a reason. It is a decision with a name on it." };
+  }
+
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  if (!requirement?.satisfiedByDocumentId) {
+    return { ok: false, message: "Nothing has been uploaded against this requirement yet." };
+  }
+
+  const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+  const rejectedDocumentId = requirement.satisfiedByDocumentId;
+
+  db.documents = db.documents.map((d) =>
+    d.id === rejectedDocumentId
+      ? {
+          ...d,
+          rejectedAt: new Date().toISOString(),
+          rejectedBy: actorUserId,
+          rejectionReason: reason.trim(),
+        }
+      : d,
+  );
+  db.requirements = db.requirements.map((r) =>
+    r.id === requirementId ? { ...r, status: "pending" as const } : r,
+  );
+
+  record({
+    actorUserId,
+    caseId: requirement.caseId,
+    entityType: "document",
+    entityId: rejectedDocumentId,
+    eventType: "document.rejected",
+    summary: `${documentType?.name ?? "Document"} rejected: ${reason.trim()}`,
+  });
+
   commit();
   return { ok: true };
 }

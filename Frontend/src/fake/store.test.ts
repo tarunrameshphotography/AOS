@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { InMemoryStorageAdapter } from "./storage.mock.js";
 
 /**
  * store.ts reads localStorage at module load (the prototype's persistence),
@@ -25,6 +27,13 @@ function installLocalStoragePolyfill(): void {
 }
 
 installLocalStoragePolyfill();
+
+// Real object storage means a real local backend (Backend/storage-server.mjs)
+// — not something this unit test should have to run. `store.ts`'s calls to
+// `storageAdapter.put`/`.get` are exercised against an in-memory fake instead,
+// via `vi.doMock` so it takes effect before `store.js` is dynamically
+// imported below.
+vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
 
 const { getDb, resetDatabase, uploadDocument } = await import("./store.js");
 const { storageAdapter } = await import("./storage.js");

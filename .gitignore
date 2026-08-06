@@ -10,3 +10,6 @@ Thumbs.db
 
 # Vite build output
 Frontend/dist/
+
+# Per-machine local document storage root override
+Backend/storage.config.json

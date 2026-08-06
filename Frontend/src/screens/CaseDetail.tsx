@@ -10,7 +10,7 @@
  * outstanding" is more useful than a disabled button.
  */
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import {
@@ -32,6 +32,7 @@ import {
   logCommunication,
   moveStage,
   progressFor,
+  rejectDocument,
   selectableFinancialYears,
   setHold,
   snapshotOf,
@@ -40,6 +41,7 @@ import {
   verifyDocument,
   waiveRequirement,
 } from "../fake/store.js";
+import { storageAdapter } from "../fake/storage.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import type { CasePartyRole, Id, SubmissionStatus } from "../fake/types.js";
 import type { FyGroup } from "./document-financial-years.js";
@@ -76,6 +78,7 @@ import {
   useToast,
 } from "../ui/index.js";
 import { OrganisationSearchField, PersonSearchField } from "../ui/pickers.js";
+import { StorageLocation } from "../ui/storage-location.js";
 
 type Tab = "overview" | "documents" | "banks" | "timeline";
 
@@ -827,6 +830,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   const [waiveFor, setWaiveFor] = useState<string | null>(null);
   const [waiveReason, setWaiveReason] = useState("");
   const [addingYearFor, setAddingYearFor] = useState<FyGroup | null>(null);
+  const [verifyFor, setVerifyFor] = useState<string | null>(null);
 
   if (!session.can("document.read", "own")) {
     return (
@@ -941,13 +945,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
             </Button>
           )}
           {requirement.status === "received" && session.can("document.verify", "own") && (
-            <Button
-              variant="primary"
-              onClick={() => {
-                const result = verifyDocument(requirement.id, session.user.id);
-                toast.show(result.ok ? "Verified" : (result.message ?? ""), result.ok ? "good" : "bad");
-              }}
-            >
+            <Button variant="primary" onClick={() => setVerifyFor(requirement.id)}>
               Verify
             </Button>
           )}
@@ -1095,7 +1093,175 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         group={addingYearFor}
         onClose={() => setAddingYearFor(null)}
       />
+
+      <VerifyDialog requirementId={verifyFor} onClose={() => setVerifyFor(null)} />
     </div>
+  );
+}
+
+function VerifyDialog({
+  requirementId,
+  onClose,
+}: {
+  requirementId: string | null;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const [notes, setNotes] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [preview, setPreview] = useState<
+    { status: "loading" } | { status: "error" } | { status: "ready"; url: string; isImage: boolean }
+  >({ status: "loading" });
+
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  const document = db.documents.find((d) => d.id === requirement?.satisfiedByDocumentId);
+  const expectedType = db.documentTypes.find((t) => t.id === requirement?.documentTypeId);
+  const suggestedType = db.documentTypes.find((t) => t.id === document?.suggestedDocumentTypeId);
+  const uploader = db.users.find((u) => u.id === document?.uploadedBy);
+
+  useEffect(() => {
+    setNotes("");
+    setRejecting(false);
+    setRejectReason("");
+    setPreview({ status: "loading" });
+    if (!document) return;
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    Promise.all([storageAdapter.get(document.filePath), storageAdapter.list(document.filePath)])
+      .then(([fileBytes, entries]) => {
+        if (cancelled) return;
+        const contentType = entries.find((entry) => entry.path === document.filePath)?.contentType;
+        const blob = new Blob([fileBytes as BlobPart], contentType ? { type: contentType } : undefined);
+        objectUrl = URL.createObjectURL(blob);
+        setPreview({ status: "ready", url: objectUrl, isImage: (contentType ?? "").startsWith("image/") });
+      })
+      .catch(() => {
+        if (!cancelled) setPreview({ status: "error" });
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document?.id]);
+
+  if (!requirement || !document) return null;
+
+  return (
+    <Modal open={requirementId !== null} title="Review before verifying" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex min-h-40 items-center justify-center overflow-hidden rounded-md bg-ink-50 ring-1 ring-ink-200">
+          {preview.status === "loading" && <p className="p-6 text-xs text-ink-500">Loading preview…</p>}
+          {preview.status === "error" && (
+            <p className="p-6 text-xs text-red-700">
+              Could not load a preview from the storage backend.
+            </p>
+          )}
+          {preview.status === "ready" &&
+            (preview.isImage ? (
+              <img src={preview.url} alt={document.fileName} className="max-h-80 w-full object-contain" />
+            ) : (
+              <iframe src={preview.url} title={document.fileName} className="h-80 w-full" />
+            ))}
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <div>
+            <dt className="text-xs text-ink-500">Filename</dt>
+            <dd className="truncate">{document.fileName}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-ink-500">Current version</dt>
+            <dd>v{document.version}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-ink-500">Expected document type</dt>
+            <dd>{expectedType?.name ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-ink-500">Uploaded document type</dt>
+            <dd>{suggestedType?.name ?? "—"}</dd>
+          </div>
+          {document.periodStart && (
+            <div>
+              <dt className="text-xs text-ink-500">Financial year</dt>
+              <dd>FY {financialYearOf(new Date(document.periodStart)).label}</dd>
+            </div>
+          )}
+          <div>
+            <dt className="text-xs text-ink-500">Uploaded by</dt>
+            <dd>{uploader?.name ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-ink-500">Uploaded on</dt>
+            <dd>{exactly(document.uploadedAt)}</dd>
+          </div>
+        </dl>
+
+        <div>
+          <p className="mb-1 text-xs font-medium text-ink-700">Storage location</p>
+          <StorageLocation filePath={document.filePath} />
+        </div>
+
+        <Field
+          label="Verification notes"
+          hint={
+            'Optional — becomes part of this document\'s history. e.g. "PAN readable." or ' +
+            '"Uploaded Aadhaar is blurry."'
+          }
+        >
+          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
+        </Field>
+
+        {rejecting && (
+          <Field label="Reason for rejection" hint="Required.">
+            <Textarea
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="Uploaded Aadhaar is blurry — asked customer to re-upload"
+            />
+          </Field>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          {rejecting ? (
+            <Button
+              variant="danger"
+              onClick={() => {
+                const result = rejectDocument(requirement.id, rejectReason, session.user.id);
+                toast.show(result.ok ? "Rejected" : (result.message ?? ""), result.ok ? "good" : "bad");
+                if (result.ok) onClose();
+              }}
+            >
+              Confirm rejection
+            </Button>
+          ) : (
+            <Button variant="danger" onClick={() => setRejecting(true)}>
+              Reject
+            </Button>
+          )}
+          {!rejecting && (
+            <Button
+              variant="primary"
+              onClick={() => {
+                const result = verifyDocument(requirement.id, session.user.id, notes);
+                toast.show(result.ok ? "Verified" : (result.message ?? ""), result.ok ? "good" : "bad");
+                if (result.ok) onClose();
+              }}
+            >
+              Confirm & Verify
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

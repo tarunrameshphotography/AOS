@@ -1,129 +1,193 @@
 /**
- * Requirement generation for the prototype.
+ * Requirement generation for the prototype — now an ADAPTER, not an engine.
  *
- * The real engine will live in `src/domain/requirements/` and be driven by
- * templates in the database. This is a stand-in with the same *shape*, because
- * the shape is what the product experience depends on:
+ * Before Milestone 9 this file held the rules themselves: a `KYC` array, a
+ * `SECURED_PRODUCTS` set, an `if` per product. All of that is gone. The rules
+ * live in `db.documentRequirementRules` (seeded from
+ * @domain/requirements/default-rules.ts) and are evaluated by
+ * @domain/requirements/rules.ts, which is the same code the server will run.
  *
- *  - Requirements are generated from the case's actual composition, never from a
- *    universal checklist (BR-033).
- *  - A party who does not exist generates NO ROWS — not rows marked N/A. Absence
- *    is silence (Principle #1, ADR-010).
- *  - Regeneration keeps what was already satisfied and marks what no longer
- *    applies `not_applicable` rather than deleting it (BR-034).
- *  - A financial-year-scoped document type (GST returns, ITR, balance sheet,
- *    profit and loss, bank statements) generates one row per required year,
- *    not one row that any year's document can satisfy — see
- *    src/domain/requirements/financial-year.ts.
+ * What is left here is the three jobs a pure evaluator cannot do, because
+ * each needs the database:
  *
- * If this file's output is wrong the progress bar lies, so it is the one piece
- * of fake backend worth being careful about.
+ *   1. Build CaseFacts — resolve ids to master-data codes.
+ *   2. Expand a financial-year requirement into one row per year, preserving
+ *      years already on the file.
+ *   3. Reconcile against what already exists, so regeneration keeps what was
+ *      satisfied and marks what is no longer wanted `not_applicable` rather
+ *      than deleting it (BR-034).
+ *
+ * The invariants are unchanged and still the reason this file gets tests:
+ *
+ *  - Requirements come from the case's actual composition, never a universal
+ *    checklist (BR-033).
+ *  - A party who does not exist generates NO ROWS (ADR-010). This now falls
+ *    out of the engine rather than being enforced here.
+ *  - Regeneration never resets a verified requirement.
+ *
+ * If this file's output is wrong the progress bar lies, so it remains the one
+ * piece of fake backend worth being careful about.
  */
 
-import type { ProgressionStage } from "@domain/case/stages.js";
 import {
   FINANCIAL_YEAR_DOCUMENT_TYPES,
+  evaluateRules,
   financialYearOf,
   recentFinancialYears,
+  type CaseFacts,
   type FinancialYear,
-} from "@domain/requirements/financial-year.js";
+  type GeneratedRequirement,
+  type PartyFacts,
+  type PropertyFacts,
+} from "@domain/requirements/index.js";
 
 import type {
-  CaseParty,
-  CaseProperty,
   Database,
   DocumentRequirement,
   Id,
   LoanCase,
 } from "./types.js";
 
-interface Template {
-  /** Document type code, resolved to an id at generation time. */
-  documentTypeCode: string;
-  applicableFromStage: ProgressionStage;
+// ---------------------------------------------------------------------------
+// Fact building — ids to codes, once, so the engine reads meaning
+// ---------------------------------------------------------------------------
+
+function codeOf(records: readonly { id: Id; code: string }[], id: Id | undefined): string | undefined {
+  if (!id) return undefined;
+  return records.find((record) => record.id === id)?.code;
 }
 
-/** Everyone on the file needs these, whoever they are. */
-const KYC: Template[] = [
-  { documentTypeCode: "pan_card", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "aadhaar_card", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "address_proof", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "photograph", applicableFromStage: "documents_pending" },
-];
-
-const SALARIED_INCOME: Template[] = [
-  { documentTypeCode: "salary_slip", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "form_16", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "bank_statement", applicableFromStage: "documents_pending" },
-];
-
-const SELF_EMPLOYED_INCOME: Template[] = [
-  { documentTypeCode: "itr", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "bank_statement", applicableFromStage: "documents_pending" },
-];
-
-/** Only for a party who is actually contributing income — not a guarantor. */
-const INCOME_ROLES = new Set(["applicant", "co_applicant"]);
-
-const PROPERTY_DOCUMENTS: Template[] = [
-  { documentTypeCode: "sale_deed", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "encumbrance_cert", applicableFromStage: "documents_pending" },
-  // Not due until a bank is being approached: demanding a valuation on day two,
-  // before a property is even chosen, makes the checklist wrong and the progress
-  // bar useless (Requirements and Progress, Part 3).
-  { documentTypeCode: "valuation_report", applicableFromStage: "ready_for_submission" },
-];
-
-const CONSTRUCTION_EXTRA: Template[] = [
-  { documentTypeCode: "approved_plan", applicableFromStage: "documents_pending" },
-];
-
 /**
- * gst_returns, balance_sheet and profit_and_loss are financial-year-scoped
- * (Database/migrations/0011): gst_certificate is not — it is a one-time
- * registration document, not a periodic filing.
+ * The employment type this party is underwritten on.
+ *
+ * The case-party override wins, then the person's current employment record.
+ * Two sources, one answer, and the override exists so a case screen never has
+ * to rewrite a shared person record to change one case's requirements
+ * (Database/migrations/0021).
  */
-const FIRM_DOCUMENTS: Template[] = [
-  { documentTypeCode: "gst_certificate", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "gst_returns", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "balance_sheet", applicableFromStage: "documents_pending" },
-  { documentTypeCode: "profit_and_loss", applicableFromStage: "documents_pending" },
-];
+function employmentCodeFor(db: Database, party: Database["caseParties"][number]): string | undefined {
+  const override = codeOf(db.employmentTypes, party.employmentTypeId);
+  if (override) return override;
 
-const CASE_DOCUMENTS: Template[] = [
-  { documentTypeCode: "login_form", applicableFromStage: "ready_for_submission" },
-];
+  const employment = db.employments.find((e) => e.personId === party.personId && e.isCurrent);
+  if (!employment) return undefined;
 
-/** Products that put a property on the file. A personal loan does not. */
-const SECURED_PRODUCTS = new Set([
-  "hl_purchase",
-  "hl_self_construct",
-  "hl_plot_purchase",
-  "hl_balance_transfer",
-  "hl_top_up",
-  "lap",
-]);
+  // employmentType (the legacy enum) and employmentTypeId (master data) are
+  // both kept and both populated (types.ts). The master-data id is preferred
+  // where present; the enum's values are already the master-data codes.
+  return codeOf(db.employmentTypes, employment.employmentTypeId) ?? employment.employmentType;
+}
 
-interface GeneratedRow {
-  documentTypeCode: string;
-  applicableFromStage: ProgressionStage;
-  casePartyId?: Id;
-  casePropertyId?: Id;
-  periodStart?: string;
-  periodEnd?: string;
+function constitutionCodeFor(
+  db: Database,
+  party: Database["caseParties"][number],
+): string | undefined {
+  const override = codeOf(db.businessConstitutions, party.businessConstitutionId);
+  if (override) return override;
+
+  const organisation = db.organisations.find((o) => o.id === party.organisationId);
+  return codeOf(db.businessConstitutions, organisation?.businessConstitutionId);
 }
 
 /**
- * Financial years to generate a row for: the default trailing window, plus
+ * The borrower type, falling back to what the party self-evidently is: an
+ * organisation borrows as a non-individual, a person as a resident
+ * individual. NRI is the case that must be recorded explicitly, because
+ * nothing about a person implies it.
+ */
+function borrowerTypeCodeFor(
+  db: Database,
+  party: Database["caseParties"][number],
+): string | undefined {
+  const override = codeOf(db.borrowerTypes, party.borrowerTypeId);
+  if (override) return override;
+  return party.organisationId ? "non_individual" : "resident_individual";
+}
+
+export function buildCaseFacts(db: Database, loanCase: LoanCase): CaseFacts {
+  const product = db.loanProducts.find((p) => p.id === loanCase.loanProductId);
+  const parties = db.caseParties.filter((p) => p.caseId === loanCase.id && !p.removedAt);
+  const caseProperties = db.caseProperties.filter((p) => p.caseId === loanCase.id);
+
+  const partyFacts: PartyFacts[] = parties.map((party) => ({
+    casePartyId: party.id,
+    role: party.role,
+    kind: party.organisationId ? "organisation" : "person",
+    isPrimary: party.isPrimary,
+    ...(employmentCodeFor(db, party) ? { employmentTypeCode: employmentCodeFor(db, party) } : {}),
+    ...(constitutionCodeFor(db, party)
+      ? { businessConstitutionCode: constitutionCodeFor(db, party) }
+      : {}),
+    ...(borrowerTypeCodeFor(db, party)
+      ? { borrowerTypeCode: borrowerTypeCodeFor(db, party) }
+      : {}),
+  }));
+
+  const propertyFacts: PropertyFacts[] = caseProperties.map((link) => {
+    const property = db.properties.find((p) => p.id === link.propertyId);
+    // propertyType is legacy free text ("Apartment", "Plot"); propertyTypeId
+    // is the master-data replacement. Prefer the id, fall back to the text
+    // normalised the way a code would be written, so a case created before
+    // the Master Data Engine still answers `property.type` correctly.
+    const typeCode =
+      codeOf(db.propertyTypes, property?.propertyTypeId) ??
+      property?.propertyType?.toLowerCase().replace(/\s+/g, "_");
+
+    return {
+      casePropertyId: link.id,
+      role: link.role,
+      ...(typeCode ? { propertyTypeCode: typeCode } : {}),
+      ...(codeOf(db.propertyOwnershipTypes, property?.propertyOwnershipTypeId)
+        ? {
+            ownershipTypeCode: codeOf(db.propertyOwnershipTypes, property?.propertyOwnershipTypeId),
+          }
+        : {}),
+    };
+  });
+
+  return {
+    productCode: product?.code ?? "",
+    ...(codeOf(db.customerProducts, product?.customerProductId)
+      ? { customerProductCode: codeOf(db.customerProducts, product?.customerProductId) }
+      : {}),
+    ...(codeOf(db.securityTypes, product?.securityTypeId)
+      ? { securityTypeCode: codeOf(db.securityTypes, product?.securityTypeId) }
+      : {}),
+    ...(codeOf(db.requirementApplicabilities, product?.propertyRequirementId)
+      ? { propertyRequirement: codeOf(db.requirementApplicabilities, product?.propertyRequirementId) }
+      : {}),
+    ...(codeOf(db.requirementApplicabilities, product?.gstRequirementId)
+      ? { gstRequirement: codeOf(db.requirementApplicabilities, product?.gstRequirementId) }
+      : {}),
+    ...(loanCase.requestedAmount !== undefined
+      ? { requestedAmount: loanCase.requestedAmount }
+      : {}),
+    ...(loanCase.isGstRegistered !== undefined
+      ? { isGstRegistered: loanCase.isGstRegistered }
+      : {}),
+    ...(loanCase.constructionStage ? { constructionStage: loanCase.constructionStage } : {}),
+    ...(loanCase.hasExistingObligations !== undefined
+      ? { hasExistingObligations: loanCase.hasExistingObligations }
+      : {}),
+    parties: partyFacts,
+    properties: propertyFacts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Financial-year expansion
+// ---------------------------------------------------------------------------
+
+/**
+ * Financial years to generate a row for: the window the RULE asks for, plus
  * any year that already has a live (non-`not_applicable`) row for this exact
  * document type and subject.
  *
- * That union is what stops two things from happening on every regenerate:
- * a verified three-year-old ITR silently becoming `not_applicable` just
- * because the default window rolled forward, and a year a user explicitly
- * requested beyond the default (`addFinancialYearRequirement` in
- * fake/store.ts) being discarded the next time anything else on the case
- * triggers regeneration.
+ * That union is what stops two things from happening on every regenerate: a
+ * verified three-year-old ITR silently becoming `not_applicable` just because
+ * the default window rolled forward, and a year a user explicitly requested
+ * beyond the default (`addFinancialYearRequirement` in fake/store.ts) being
+ * discarded the next time anything else on the case triggers regeneration.
  */
 function financialYearsFor(
   db: Database,
@@ -155,92 +219,71 @@ function financialYearsFor(
   return [...byLabel.values()].sort((a, b) => b.startDate.localeCompare(a.startDate));
 }
 
+interface PlannedRow {
+  documentTypeId: Id;
+  applicableFromStage: DocumentRequirement["applicableFromStage"];
+  requiredOfCasePartyId?: Id;
+  requiredOfCasePropertyId?: Id;
+  periodStart?: string;
+  periodEnd?: string;
+  generatedByRuleCode: string;
+  applicability: string;
+}
+
 /**
- * Expand one template into one or more generated rows. Most document types
- * are not financial-year-scoped and expand to exactly one row, unchanged
- * from before this feature existed.
+ * Expand one generated requirement into one or more rows.
+ *
+ * Most document types are not financial-year-scoped and expand to exactly one
+ * row. A rule that asks for two years produces two independent rows, because
+ * one year's ITR must never be able to satisfy another's (Milestone 3).
  */
-function expandTemplate(
+function expand(
   db: Database,
   loanCase: LoanCase,
-  template: Template,
-  subject: { casePartyId?: Id; casePropertyId?: Id },
-): GeneratedRow[] {
-  const trailingYears = FINANCIAL_YEAR_DOCUMENT_TYPES[template.documentTypeCode];
+  generated: GeneratedRequirement,
+): PlannedRow[] {
+  const documentType = db.documentTypes.find((t) => t.code === generated.documentTypeCode);
+  // A rule naming a document type nobody created generates nothing. That is a
+  // configuration error rather than a case fact, and the domain test
+  // `never names a document type that does not exist` is what catches it
+  // before anyone sees a checklist with a hole in it.
+  if (!documentType) return [];
+
+  const subject = {
+    ...(generated.casePartyId ? { casePartyId: generated.casePartyId } : {}),
+    ...(generated.casePropertyId ? { casePropertyId: generated.casePropertyId } : {}),
+  };
+
+  const base = {
+    documentTypeId: documentType.id,
+    applicableFromStage: generated.applicableFromStage,
+    ...(generated.casePartyId ? { requiredOfCasePartyId: generated.casePartyId } : {}),
+    ...(generated.casePropertyId ? { requiredOfCasePropertyId: generated.casePropertyId } : {}),
+    generatedByRuleCode: generated.ruleCode,
+    applicability: generated.applicability,
+  };
+
+  // The rule's own count is authoritative. The document type's default is the
+  // fallback for a type that recurs but whose rule did not say how often —
+  // better one year than a row that silently loses its period.
+  const trailingYears =
+    generated.financialYears ?? FINANCIAL_YEAR_DOCUMENT_TYPES[generated.documentTypeCode];
   if (trailingYears === undefined) {
-    return [{ ...template, ...subject }];
+    return [base];
   }
 
-  const documentType = db.documentTypes.find((t) => t.code === template.documentTypeCode);
-  if (!documentType) {
-    return [{ ...template, ...subject }];
-  }
-
-  const years = financialYearsFor(db, loanCase, documentType.id, subject, trailingYears);
-  return years.map((fy) => ({
-    ...template,
-    ...subject,
+  return financialYearsFor(db, loanCase, documentType.id, subject, trailingYears).map((fy) => ({
+    ...base,
     periodStart: fy.startDate,
     periodEnd: fy.endDate,
   }));
 }
 
 /** What this case genuinely requires, given what it actually contains. */
-function planFor(db: Database, loanCase: LoanCase): GeneratedRow[] {
-  const product = db.loanProducts.find((p) => p.id === loanCase.loanProductId);
-  const parties = db.caseParties.filter((p) => p.caseId === loanCase.id && !p.removedAt);
-  const caseProperties = db.caseProperties.filter((p) => p.caseId === loanCase.id);
-
-  const rows: GeneratedRow[] = [];
-
-  for (const party of parties) {
-    // A referrer is on the case for attribution. They are not applying for
-    // anything, so they generate nothing.
-    if (party.role === "referrer") {
-      continue;
-    }
-
-    if (party.role === "borrower_firm") {
-      for (const template of FIRM_DOCUMENTS) {
-        rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
-      }
-      continue;
-    }
-
-    for (const template of KYC) {
-      rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
-    }
-
-    if (INCOME_ROLES.has(party.role)) {
-      const employment = db.employments.find(
-        (e) => e.personId === party.personId && e.isCurrent,
-      );
-      const income =
-        employment?.employmentType === "salaried" ? SALARIED_INCOME : SELF_EMPLOYED_INCOME;
-      for (const template of income) {
-        rows.push(...expandTemplate(db, loanCase, template, { casePartyId: party.id }));
-      }
-    }
-  }
-
-  if (product && SECURED_PRODUCTS.has(product.code)) {
-    for (const caseProperty of caseProperties) {
-      for (const template of PROPERTY_DOCUMENTS) {
-        rows.push(...expandTemplate(db, loanCase, template, { casePropertyId: caseProperty.id }));
-      }
-      if (product.code === "hl_self_construct") {
-        for (const template of CONSTRUCTION_EXTRA) {
-          rows.push(...expandTemplate(db, loanCase, template, { casePropertyId: caseProperty.id }));
-        }
-      }
-    }
-  }
-
-  for (const template of CASE_DOCUMENTS) {
-    rows.push(...expandTemplate(db, loanCase, template, {}));
-  }
-
-  return rows;
+function planFor(db: Database, loanCase: LoanCase): PlannedRow[] {
+  const facts = buildCaseFacts(db, loanCase);
+  const generated = evaluateRules(db.documentRequirementRules, facts);
+  return generated.flatMap((row) => expand(db, loanCase, row));
 }
 
 function keyOf(row: {
@@ -278,32 +321,23 @@ export function regenerateRequirements(
   const existing = db.requirements.filter((r) => r.caseId === caseId);
   const byKey = new Map(existing.map((row) => [keyOf(row), row]));
 
-  const wanted = planFor(db, loanCase)
-    .map((row) => {
-      const documentType = db.documentTypes.find((t) => t.code === row.documentTypeCode);
-      if (!documentType) {
-        return null;
-      }
-      return {
-        documentTypeId: documentType.id,
-        applicableFromStage: row.applicableFromStage,
-        requiredOfCasePartyId: row.casePartyId,
-        requiredOfCasePropertyId: row.casePropertyId,
-        periodStart: row.periodStart,
-        periodEnd: row.periodEnd,
-      };
-    })
-    .filter((row): row is NonNullable<typeof row> => row !== null);
-
+  const wanted = planFor(db, loanCase);
   const wantedKeys = new Set(wanted.map(keyOf));
   const result: DocumentRequirement[] = [];
 
   for (const row of wanted) {
     const previous = byKey.get(keyOf(row));
     if (previous) {
-      // Already satisfied requirements keep their status. A co-applicant added in
-      // week three must not reset the applicant's verified KYC.
-      result.push({ ...previous, applicableFromStage: row.applicableFromStage });
+      // Already satisfied requirements keep their status. A co-applicant added
+      // in week three must not reset the applicant's verified KYC. The stage,
+      // provenance and strength are refreshed from the rule, because those are
+      // the rule's answer and not the case's history.
+      result.push({
+        ...previous,
+        applicableFromStage: row.applicableFromStage,
+        generatedByRuleCode: row.generatedByRuleCode,
+        applicability: row.applicability,
+      });
       continue;
     }
     result.push({
@@ -312,6 +346,8 @@ export function regenerateRequirements(
       documentTypeId: row.documentTypeId,
       applicableFromStage: row.applicableFromStage,
       status: "pending",
+      generatedByRuleCode: row.generatedByRuleCode,
+      applicability: row.applicability,
       ...(row.requiredOfCasePartyId ? { requiredOfCasePartyId: row.requiredOfCasePartyId } : {}),
       ...(row.requiredOfCasePropertyId
         ? { requiredOfCasePropertyId: row.requiredOfCasePropertyId }
@@ -322,7 +358,9 @@ export function regenerateRequirements(
   }
 
   // No longer wanted: kept, marked not_applicable, excluded from progress
-  // arithmetic entirely (BR-034).
+  // arithmetic entirely (BR-034). This is what a loan product changed
+  // mid-case looks like — the old product's documents do not vanish from the
+  // history, they stop counting.
   for (const row of existing) {
     if (!wantedKeys.has(keyOf(row))) {
       result.push({ ...row, status: "not_applicable" });

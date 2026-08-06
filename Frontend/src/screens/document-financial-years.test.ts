@@ -44,6 +44,7 @@ function baseDb(): Database {
     caseProperties: [],
     documents: [],
     requirements: [],
+    documentRequirementRules: [],
     submissions: [],
     offers: [],
     communications: [],

@@ -14,16 +14,28 @@
  */
 
 import { type CaseStage, type ProgressionStage, stageOrdinal } from "../case/stages.js";
+import type { ApplicabilityCode } from "../products/catalogue.js";
 
 export const REQUIREMENT_STATUSES = [
   "pending",
   "received",
   "verified",
+  /**
+   * A human looked at what was uploaded and refused it (BR-032). Distinct
+   * from `pending`, which the workflow used to fall back to: "nothing has
+   * arrived" and "something arrived and was wrong" are different facts, and
+   * only one of them means somebody has already had their time wasted.
+   * Counts as outstanding, exactly like pending.
+   */
+  "rejected",
   "waived",
   "not_applicable",
 ] as const;
 
 export type RequirementStatus = (typeof REQUIREMENT_STATUSES)[number];
+
+/** Statuses from which a fresh upload is the next move. */
+export const OUTSTANDING_STATUSES: readonly RequirementStatus[] = ["pending", "rejected"];
 
 /**
  * Statuses excluded from progress arithmetic entirely — they leave both the
@@ -40,6 +52,16 @@ export interface Requirement {
    * been chosen makes the checklist wrong and the progress figure useless.
    */
   readonly applicableFromStage: ProgressionStage;
+  /**
+   * How strongly the rule that generated this row asks for it (ADR-035).
+   * `optional` requirements are shown, collected and verified like any other,
+   * but never counted against the case — an optional document that nobody
+   * chased must not be able to hold a complete file at 94%.
+   *
+   * Undefined means mandatory, so rows generated before the rule engine
+   * existed (and every test that does not care) behave exactly as before.
+   */
+  readonly applicability?: ApplicabilityCode | undefined;
 }
 
 export interface ProgressSummary {
@@ -48,9 +70,13 @@ export interface ProgressSummary {
   readonly verifiedCount: number;
   /** Received but not yet checked by a human (BR-032). */
   readonly receivedCount: number;
+  /** Uploaded, looked at, and refused. A subset of `outstandingCount`. */
+  readonly rejectedCount: number;
   readonly outstandingCount: number;
   readonly waivedCount: number;
   readonly notApplicableCount: number;
+  /** Due, wanted, and deliberately not counted against the case. */
+  readonly optionalCount: number;
   /** Not yet due at the case's current stage. Shown as upcoming, never as missing. */
   readonly upcomingCount: number;
   /** 0–100, rounded. A case with nothing applicable is complete, not zero. */
@@ -91,11 +117,17 @@ export function summariseProgress(
 
   const waivedCount = due.filter((r) => r.status === "waived").length;
   const notApplicableCount = due.filter((r) => r.status === "not_applicable").length;
+  const optionalCount = due.filter(
+    (r) => r.applicability === "optional" && !EXCLUDED_FROM_PROGRESS.includes(r.status),
+  ).length;
 
-  const applicable = due.filter((r) => !EXCLUDED_FROM_PROGRESS.includes(r.status));
+  const applicable = due.filter(
+    (r) => !EXCLUDED_FROM_PROGRESS.includes(r.status) && r.applicability !== "optional",
+  );
 
   const verifiedCount = applicable.filter((r) => r.status === "verified").length;
   const receivedCount = applicable.filter((r) => r.status === "received").length;
+  const rejectedCount = applicable.filter((r) => r.status === "rejected").length;
   const outstandingCount = applicable.length - verifiedCount;
 
   // A case with nothing applicable is complete. This is the simple-case
@@ -107,9 +139,11 @@ export function summariseProgress(
     applicableCount: applicable.length,
     verifiedCount,
     receivedCount,
+    rejectedCount,
     outstandingCount,
     waivedCount,
     notApplicableCount,
+    optionalCount,
     upcomingCount,
     percentComplete,
     isReadyForSubmission: outstandingCount === 0,

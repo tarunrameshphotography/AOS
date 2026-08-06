@@ -1251,3 +1251,123 @@ role, submission mode or note category is a row in master data. Neither needs
 a developer. What stays hard, deliberately: getting AOS to decide anything
 about a lender. That is the next argument to have, and this milestone is the
 evidence it will need.
+
+---
+
+## ADR-035 — Document requirements are rules, not code; the situation is the unit, not the product
+
+**Status.** Accepted, Milestone 9.
+**Schema.** `Database/migrations/0021`, `0022`.
+**Code.** `src/domain/requirements/rules.ts`, `default-rules.ts`,
+`document-catalogue.ts`. **Guide.** `Docs/Document Requirement Engine.md`.
+
+**The problem.** Until this milestone, what AOS asked a customer for lived in
+`if` statements: a `KYC` array, a `SECURED_PRODUCTS` set, one branch per
+product. Three consequences, each worse than the last. A new lending product
+meant a code change and a deploy. The office could not *see* the checklist,
+let alone change it — which meant the people who actually know what a bank
+asks for had no way to correct the system that asks on their behalf. And the
+checklist was necessarily crude, because a hand-written branch cannot express
+"a partnership borrowing working capital, registered under GST, with a
+property offered" without collapsing under its own nesting.
+
+**The decision.** Every document requirement is generated from a structured,
+editable rule row. There is no hardcoded checklist left anywhere in the
+application.
+
+**Why not a `loan_product` → `document_type` junction table**, which is what
+0015 left room for and what most systems build. Because a rule is not "a
+document this product needs." It is "a document this SITUATION needs," and a
+situation is a conjunction: product AND employment type AND constitution AND
+whether a property exists AND whether GST applies AND how far construction has
+got. A two-column junction can express none of that. Systems that start with
+one end up with a `notes` column full of conditions nobody can query, and a
+developer back in the loop within a year. The unit had to be the situation.
+
+**The shape.** One rule names a document type, a scope (case, party or
+property), how strongly it is wanted, the stage it becomes due, how many
+trailing financial years of it, and zero or more conditions over a closed list
+of facts. Zero conditions means unconditional — PAN, for every individual who
+signs.
+
+**Scope is what makes ADR-010 automatic rather than enforced.** A party-scoped
+rule is evaluated once per party who actually exists, so a case with no
+guarantor never enters the guarantor branch and generates no guarantor rows —
+not rows marked N/A. Absence is silence, as a property of the design rather
+than as a check somebody has to remember. The same holds for property rules,
+which is the whole "collateral dependency" the brief asked for, for free.
+
+**The facts list is closed, and three of them are three-valued.** Closed
+because a rule editor has to offer a business user a dropdown of what can be
+asked, and "any string" is not a dropdown; adding a fact is the point at which
+a developer *should* be involved, because a new fact means new data to capture.
+Three-valued because `is_gst_registered`, `has_existing_obligations` and
+`construction_stage` are nullable and stay nullable: null is "nobody has asked
+yet", which is not false. The `is_true` / `is_false` operators exist so that an
+unanswered question never silently generates — or silently suppresses — a
+requirement. A system that treats unanswered as no is a system that quietly
+stops asking for things.
+
+**Merging takes the stricter reading, always.** Two rules can legitimately land
+on the same document for the same subject — a bank statement is asked for by
+the salaried income rule and again by the business-banking rule, for someone
+who is both. Mandatory beats optional, the earlier stage wins, the longer
+financial-year window wins. The alternative lets adding a rule quietly weaken
+an existing one, which is precisely the failure that makes people stop trusting
+a rules engine and start keeping their own list.
+
+**The evaluator is pure and holds no database.** Facts in, requirements out;
+same inputs, same answer, every time. That is what lets the whole engine be
+tested without a database, and what keeps the prototype and the server from
+diverging — the invariant this repository has held since ADR-001. Everything
+needing a database (resolving ids to codes, expanding financial years,
+preserving what has already been collected) lives in an adapter around it.
+
+**Two things it decides nothing about, deliberately.** It never decides whether
+a case is approvable — ADR-016's warning about confidently wrong answers is not
+weakened here, only kept out of scope. And it never reads a document; OCR is a
+later milestone that will *satisfy* these requirements, not generate them.
+
+**Editing a rule does not rewrite open cases.** A rule change can touch
+hundreds of live files, and an admin screen that silently rewrote them all is
+how a system loses the trust it needs to be useful at all. Each case picks the
+change up the next time anything on it changes, or on an explicit
+"re-evaluate" that somebody has decided to press.
+
+**Rules are deactivated, never deleted** — BR-027's discipline, applied where
+it matters most. A requirement generated two years ago names the rule that
+asked for it, and "why was this document collected?" has to stay answerable
+after the rule is retired. `applicability = not_applicable` records that a rule
+was switched off on purpose; `is_active = false` records that it is out of
+service. Business users mean different things by the two, so both are offered.
+
+**Two new concepts on the requirement itself.** `rejected` completes the status
+set: a refused upload used to fall back to `pending`, which loses the fact that
+a human already spent time on it and told the customer why. And `applicability`
+distinguishes optional requirements — listed, collected and verified like any
+other, but excluded from progress arithmetic, because an optional document
+nobody chased must not be able to hold a complete file at 94%.
+
+**Case-party overrides rather than editing the person.** Employment type,
+borrower type and business constitution can be set per case party. A case
+screen that rewrote a shared person record to change one case's checklist would
+corrupt every other case that person is on — and "underwritten as salaried on
+this file, as a business owner on that one" is two facts, not one fact that
+keeps changing.
+
+**What was seeded, and with what confidence.** Eighty-six rules and fifty-one
+new document types, researched against published Indian lender and NBFC
+checklists and Tamil Nadu registration practice: the three-way income split,
+constitution-driven business paperwork, the Tamil Nadu property core (patta /
+chitta, parent document, encumbrance certificate, DTCP layout approval), and
+security-documented products where no income proof is asked at all. These are
+**market norms, not any lender's policy**, and every one is a row a business
+user can change. The alternative — shipping an empty rule table and asking
+someone to type ninety rules on day one — produces a system nobody configures,
+and a blank checklist is worse than an imperfect one.
+
+**Consequences.** Adding a document to a product is data entry. Adding a
+*kind* of document is a master-data row. Adding a new fact for rules to branch
+on is a small, deliberate code change. What stays hard, on purpose: getting AOS
+to decide whether a customer qualifies. That remains ADR-016's territory, and
+nothing here moves the line.

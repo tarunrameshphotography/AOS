@@ -69,11 +69,20 @@ export function recentFinancialYears(count: number, asOf: Date = new Date()): Fi
  * `document_type.code`, with the number of trailing years requested by
  * default when a case first generates requirements.
  *
+ * SINCE THE RULE ENGINE (Milestone 9, ADR-035) the authoritative trailing-year
+ * count for a generated requirement is `RequirementRule.financialYears` — a
+ * configurable number on an editable rule, not a constant. This map remains
+ * for two jobs the rules cannot do:
+ *
+ *   1. `isFinancialYearScoped` — the UI's "is this document type tracked per
+ *      year, and may a user request another year of it?" question, which is a
+ *      property of the document type rather than of any one rule.
+ *   2. A fallback count for a requirement generated without a rule (an
+ *      explicitly-requested extra year, or a row that predates the engine).
+ *
  * **These counts are a starting assumption, not a finding** — real per-lender
  * practice varies (the same caveat `rejection_reason`'s seed data carries in
- * Database/migrations/0009). Revisit once the document requirement engine
- * gets its own research pass (PRD Product Validation Sprint 1, requirement 7,
- * requirement 11 — research quality).
+ * Database/migrations/0009).
  *
  * A document type absent from this map is period-scoped in the ordinary
  * sense (`document_type.requires_period`) without being multiplied per
@@ -90,6 +99,11 @@ export const FINANCIAL_YEAR_DOCUMENT_TYPES: Readonly<Record<string, number>> = {
   profit_and_loss: 2,
   bank_statement: 1,
   org_bank_statement: 1,
+  // Added with the rule engine (Milestone 9): a lender asking for two years'
+  // Form 16 or audited accounts means two distinguishable rows, for exactly
+  // the reason ITR did.
+  form_16: 2,
+  audit_report: 2,
 };
 
 export function isFinancialYearScoped(documentTypeCode: string): boolean {

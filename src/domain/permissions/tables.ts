@@ -588,6 +588,42 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     delete: NEVER_DELETED,
   },
   {
+    table: "document_requirement_rule",
+    family: "reference",
+    purpose:
+      "The Document Requirement Engine (ADR-035). Every document AOS asks for " +
+      "is generated from a row here — there is no hardcoded checklist left in " +
+      "the application. Seeded with researched defaults and edited afterwards " +
+      "by a business user, without a deploy.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+    notes:
+      "Never deleted, for a stronger reason than most reference tables: a " +
+      "requirement generated two years ago names the rule that asked for it, " +
+      "and 'why was this document collected?' has to stay answerable after " +
+      "the rule is retired. is_active takes a rule out of service; " +
+      "applicability = not_applicable records that it was switched off on " +
+      "purpose and why.",
+  },
+  {
+    table: "document_requirement_rule_condition",
+    family: "reference",
+    purpose:
+      "When a rule fires. Zero rows means unconditional — PAN, for every " +
+      "individual who signs.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: permits("master_data.manage"),
+    notes:
+      "Delete is permitted here and forbidden on the rule itself, for the " +
+      "same reason it is permitted on the loan_product junction tables: a " +
+      "condition carries no history of its own. The fact of record is the " +
+      "rule, and the edit is in the event log (ADR-005).",
+  },
+  {
     table: "loan_product_borrower_type",
     family: "reference",
     purpose:

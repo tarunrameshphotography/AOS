@@ -14,6 +14,8 @@
 
 import type { CaseStage, LostReason } from "@domain/case/stages.js";
 import type { RequirementStatus } from "@domain/requirements/progress.js";
+import type { ConstructionStage, RequirementRule } from "@domain/requirements/rules.js";
+import type { ApplicabilityCode } from "@domain/products/index.js";
 import type { ProgressionStage } from "@domain/case/stages.js";
 import type { Role } from "@domain/permissions/index.js";
 
@@ -390,6 +392,20 @@ export interface CaseParty {
   role: CasePartyRole;
   isPrimary: boolean;
   removedAt?: string;
+  /**
+   * Case-specific overrides the Document Requirement Engine reads
+   * (Milestone 9, Database/migrations/0021). Undefined means "use the
+   * person's employment record / the organisation's constitution", which is
+   * the normal case and keeps each fact in exactly one place (Principle #5).
+   *
+   * They exist because a case screen must never rewrite a shared person
+   * record to change one case's requirements — a person underwritten as
+   * salaried on one file and as a business owner on another is two facts, not
+   * one fact that keeps changing.
+   */
+  employmentTypeId?: Id;
+  borrowerTypeId?: Id;
+  businessConstitutionId?: Id;
 }
 
 export interface CaseProperty {
@@ -420,6 +436,31 @@ export interface LoanCase {
   tags: string[];
   createdAt: string;
   closedAt?: string;
+  /**
+   * Case facts the Document Requirement Engine reads (Milestone 9,
+   * Database/migrations/0021).
+   *
+   * All three are deliberately THREE-VALUED: undefined is "nobody has asked
+   * yet", which is not the same as false. The rules use is_true / is_false
+   * precisely so an unanswered question never silently generates — or
+   * silently suppresses — a requirement.
+   */
+  isGstRegistered?: boolean;
+  constructionStage?: ConstructionStage;
+  hasExistingObligations?: boolean;
+}
+
+/**
+ * A document requirement rule, as the prototype stores it (Milestone 9,
+ * ADR-035). The domain shape plus an id — the engine itself never sees the
+ * id, because a pure evaluator has no database to resolve one against.
+ *
+ * Seeded from DEFAULT_REQUIREMENT_RULES and editable afterwards, which is the
+ * milestone's whole point: a business user changes what AOS asks for without
+ * a developer and without a deploy.
+ */
+export interface DocumentRequirementRule extends RequirementRule {
+  id: Id;
 }
 
 export interface DocumentFile {
@@ -493,6 +534,16 @@ export interface DocumentRequirement {
    * financial-year-scoped. */
   periodStart?: string;
   periodEnd?: string;
+  /** Which rule asked for this (Milestone 9). Undefined for a row a user
+   * added by hand — an extra financial year — and for anything generated
+   * before the engine existed. This is the "why am I being asked for this?"
+   * answer, and a checklist nobody can interrogate is one people work
+   * around. */
+  generatedByRuleCode?: string;
+  /** mandatory or optional, carried down from the rule. Optional rows are
+   * collected and verified like any other but never counted against the
+   * case. Undefined reads as mandatory. */
+  applicability?: ApplicabilityCode;
 }
 
 export type SubmissionStatus =
@@ -611,6 +662,8 @@ export interface Database {
   caseProperties: CaseProperty[];
   documents: DocumentFile[];
   requirements: DocumentRequirement[];
+  // Document Requirement Engine (Milestone 9) — Database/migrations/0021, 0022.
+  documentRequirementRules: DocumentRequirementRule[];
   submissions: Submission[];
   offers: Offer[];
   communications: Communication[];

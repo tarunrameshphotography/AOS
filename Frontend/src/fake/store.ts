@@ -17,6 +17,7 @@ import { formatCaseNumber } from "@domain/case/case-number.js";
 import {
   type CaseStage,
   type LostReason,
+  type ProgressionStage,
   isTerminalStage,
 } from "@domain/case/stages.js";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@domain/case/transitions.js";
 import { type Requirement, summariseProgress } from "@domain/requirements/progress.js";
 import { recentFinancialYears } from "@domain/requirements/financial-year.js";
+import type { ConstructionStage } from "@domain/requirements/rules.js";
 import {
   buildStoragePath,
   nextVersion,
@@ -35,7 +37,7 @@ import {
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import { storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
-import type { LendingProduct } from "@domain/products/index.js";
+import type { ApplicabilityCode, LendingProduct } from "@domain/products/index.js";
 import type {
   LenderBranch,
   LenderInsight as DomainLenderInsight,
@@ -53,6 +55,7 @@ import type {
   BranchStatus,
   CasePartyRole,
   Database,
+  DocumentRequirementRule,
   Id,
   LenderInsight,
   LenderProfile,
@@ -76,8 +79,13 @@ import type {
  * v3 for the Bank & NBFC Catalogue (Milestone 8), which adds ten collections
  * — a stale v2 store would open the Lenders screen on an empty catalogue and
  * read as a broken feature rather than as stale data.
+ *
+ * v4 for the Document Requirement Engine (Milestone 9). A stale v3 store has
+ * no `documentRequirementRules` at all, which would generate ZERO
+ * requirements on every case — a checklist that is empty rather than obviously
+ * broken, which is the worst way for stale data to fail.
  */
-const STORAGE_KEY = "aos.prototype.v3";
+const STORAGE_KEY = "aos.prototype.v4";
 
 let counter = 1000;
 const nextId = (): string => `gen_${++counter}`;
@@ -211,6 +219,10 @@ export function requirementsAsDomain(caseId: Id): Requirement[] {
       id: r.id,
       status: r.status,
       applicableFromStage: r.applicableFromStage,
+      // Optional requirements are shown and collected like any other but
+      // never counted against the case (Milestone 9) — an optional document
+      // nobody chased must not hold a complete file at 94%.
+      ...(r.applicability ? { applicability: r.applicability } : {}),
     }));
 }
 
@@ -659,6 +671,404 @@ export function assignOwner(caseId: Id, ownerUserId: Id, actorUserId: Id): Actio
 }
 
 // ---------------------------------------------------------------------------
+// Case facts — the inputs the Document Requirement Engine reads (Milestone 9)
+//
+// Every mutation here ends in `regenerate`, which is the milestone's UI
+// promise: the Documents page updates the moment a fact changes, with no
+// refresh and no "recalculate" button. A checklist a user has to remember to
+// refresh is a checklist that is wrong most of the time.
+// ---------------------------------------------------------------------------
+
+export interface CaseFactsInput {
+  isGstRegistered?: boolean | undefined;
+  constructionStage?: ConstructionStage | undefined;
+  hasExistingObligations?: boolean | undefined;
+}
+
+/**
+ * Record a case fact. Each is three-valued — undefined means "nobody has
+ * asked yet", which is not false, and clearing an answer back to unknown is a
+ * legitimate thing to do.
+ */
+export function updateCaseFacts(
+  caseId: Id,
+  input: CaseFactsInput,
+  actorUserId: Id,
+): ActionResult {
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
+  const changes: string[] = [];
+  const describe = (label: string, before: unknown, after: unknown): void => {
+    if (before === after) return;
+    changes.push(`${label}: ${format(before)} → ${format(after)}`);
+  };
+  const format = (value: unknown): string =>
+    value === undefined ? "not asked" : value === true ? "yes" : value === false ? "no" : String(value);
+
+  describe("GST registered", loanCase.isGstRegistered, input.isGstRegistered);
+  describe("Construction stage", loanCase.constructionStage, input.constructionStage);
+  describe("Existing obligations", loanCase.hasExistingObligations, input.hasExistingObligations);
+
+  if (changes.length === 0) return { ok: true };
+
+  db.cases = db.cases.map((c) => {
+    if (c.id !== caseId) return c;
+    const { isGstRegistered, constructionStage, hasExistingObligations, ...rest } = c;
+    return {
+      ...rest,
+      ...(input.isGstRegistered !== undefined ? { isGstRegistered: input.isGstRegistered } : {}),
+      ...(input.constructionStage ? { constructionStage: input.constructionStage } : {}),
+      ...(input.hasExistingObligations !== undefined
+        ? { hasExistingObligations: input.hasExistingObligations }
+        : {}),
+    };
+  });
+
+  const before = progressFor(caseId).percentComplete;
+  regenerate(caseId, changes.join("; "));
+  const after = progressFor(caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "case",
+    entityId: caseId,
+    eventType: "case.facts_updated",
+    // Progress moving backwards because a fact was recorded honestly is the
+    // system working, not a regression to hide.
+    summary:
+      after === before
+        ? changes.join("; ")
+        : `${changes.join("; ")} — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(caseId, "Case facts updated");
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Change the lending product mid-case.
+ *
+ * The requirements of the old product are not deleted — they become
+ * `not_applicable` and leave the arithmetic (BR-034), because a document that
+ * was collected under the old product is part of what happened to this case.
+ */
+export function changeLoanProduct(
+  caseId: Id,
+  loanProductId: Id,
+  actorUserId: Id,
+): ActionResult {
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+  if (loanCase.loanProductId === loanProductId) return { ok: true };
+
+  const from = db.loanProducts.find((p) => p.id === loanCase.loanProductId);
+  const to = db.loanProducts.find((p) => p.id === loanProductId);
+  if (!to) return { ok: false, message: "That lending product does not exist." };
+
+  db.cases = db.cases.map((c) => (c.id === caseId ? { ...c, loanProductId } : c));
+
+  const before = progressFor(caseId).percentComplete;
+  regenerate(caseId, "Loan product changed");
+  const after = progressFor(caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "case",
+    entityId: caseId,
+    eventType: "case.product_changed",
+    summary: `Lending product changed: ${from?.name ?? from?.variant ?? "unknown"} → ${to.name ?? to.variant} — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(caseId, "Loan product changed");
+  commit();
+  return { ok: true };
+}
+
+export interface CasePropertyInput {
+  propertyId?: Id;
+  role: "collateral" | "purchase" | "both";
+  /** Search found nothing: create the property inline, same as a person. */
+  newPropertyLocality?: string;
+  newPropertyCity?: string;
+  newPropertyTypeId?: Id;
+}
+
+/**
+ * Attach a property to the case — the fact behind every property rule.
+ *
+ * Before this existed, seeded cases had properties and new ones never could,
+ * which made "property documents only when collateral exists" untestable in
+ * the running prototype.
+ */
+export function addCaseProperty(
+  caseId: Id,
+  input: CasePropertyInput,
+  actorUserId: Id,
+): ActionResult {
+  let propertyId = input.propertyId;
+
+  if (!propertyId) {
+    const locality = input.newPropertyLocality?.trim();
+    if (!locality) {
+      return { ok: false, message: "A property needs at least a locality to be findable later." };
+    }
+    propertyId = nextId();
+    const propertyType = db.propertyTypes.find((t) => t.id === input.newPropertyTypeId);
+    db.properties = [
+      ...db.properties,
+      {
+        id: propertyId,
+        locality,
+        ...(input.newPropertyCity?.trim() ? { city: input.newPropertyCity.trim() } : {}),
+        ...(propertyType
+          ? { propertyTypeId: propertyType.id, propertyType: propertyType.name }
+          : {}),
+      },
+    ];
+    record({
+      actorUserId,
+      entityType: "property",
+      entityId: propertyId,
+      eventType: "property.created",
+      summary: `Property created: ${locality}`,
+    });
+  }
+
+  if (db.caseProperties.some((p) => p.caseId === caseId && p.propertyId === propertyId)) {
+    return { ok: false, message: "That property is already on this case." };
+  }
+
+  db.caseProperties = [
+    ...db.caseProperties,
+    { id: nextId(), caseId, propertyId, role: input.role },
+  ];
+
+  const property = db.properties.find((p) => p.id === propertyId);
+  const before = progressFor(caseId).percentComplete;
+  regenerate(caseId, "Property added");
+  const after = progressFor(caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "case_property",
+    eventType: "case.property_added",
+    summary: `Property added: ${property?.locality ?? "property"} — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(caseId, "Property added");
+  commit();
+  return { ok: true };
+}
+
+export interface PartyProfileInput {
+  employmentTypeId?: Id | undefined;
+  borrowerTypeId?: Id | undefined;
+  businessConstitutionId?: Id | undefined;
+}
+
+/**
+ * Record how a party is being underwritten ON THIS CASE.
+ *
+ * Deliberately NOT an edit of the person's employment record or the
+ * organisation's constitution. A case screen that rewrites a shared entity to
+ * change one case's checklist corrupts every other case that person is on —
+ * and "underwritten as salaried here, as a business owner there" is two
+ * facts, not one fact that keeps changing (Database/migrations/0021).
+ */
+export function updatePartyProfile(
+  casePartyId: Id,
+  input: PartyProfileInput,
+  actorUserId: Id,
+): ActionResult {
+  const party = db.caseParties.find((p) => p.id === casePartyId);
+  if (!party) return { ok: false, message: "That party is not on this case." };
+
+  db.caseParties = db.caseParties.map((p) => {
+    if (p.id !== casePartyId) return p;
+    const { employmentTypeId, borrowerTypeId, businessConstitutionId, ...rest } = p;
+    return {
+      ...rest,
+      ...(input.employmentTypeId ? { employmentTypeId: input.employmentTypeId } : {}),
+      ...(input.borrowerTypeId ? { borrowerTypeId: input.borrowerTypeId } : {}),
+      ...(input.businessConstitutionId
+        ? { businessConstitutionId: input.businessConstitutionId }
+        : {}),
+    };
+  });
+
+  const person = db.people.find((p) => p.id === party.personId);
+  const organisation = db.organisations.find((o) => o.id === party.organisationId);
+  const name = person?.fullName ?? organisation?.canonicalName ?? "Party";
+
+  const before = progressFor(party.caseId).percentComplete;
+  regenerate(party.caseId, "Party profile updated");
+  const after = progressFor(party.caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId: party.caseId,
+    entityType: "case_party",
+    entityId: casePartyId,
+    eventType: "case.party_profile_updated",
+    summary: `${name}'s profile updated — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(party.caseId, "Party profile updated");
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Document requirement rules — the engine's configuration (Milestone 9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which rule asked for a requirement, and under what conditions.
+ *
+ * The "why am I being asked for this?" answer. A checklist nobody can
+ * interrogate is a checklist people work around.
+ */
+export function ruleBehind(requirementId: Id): DocumentRequirementRule | undefined {
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  if (!requirement?.generatedByRuleCode) return undefined;
+  return db.documentRequirementRules.find(
+    (rule) => rule.code === requirement.generatedByRuleCode,
+  );
+}
+
+export interface RuleEditInput {
+  name?: string;
+  applicability?: ApplicabilityCode;
+  applicableFromStage?: ProgressionStage;
+  /** 0 or undefined clears the financial-year expansion. */
+  financialYears?: number | undefined;
+  notes?: string | undefined;
+}
+
+/**
+ * Edit a rule.
+ *
+ * Only the four fields a business user has a settled opinion about are
+ * editable here: how strongly the document is wanted, when it becomes due,
+ * how many years of it, and why. Conditions are edited too (see
+ * `setRuleConditions`) but separately, because changing WHEN a rule fires is
+ * a different kind of decision from changing WHAT it asks for, and a single
+ * form that does both invites the accidental version of each.
+ *
+ * Cases are NOT regenerated here. A rule change can affect hundreds of cases,
+ * and silently rewriting all of them from an admin screen is how a system
+ * loses a user's trust. Each case picks the change up the next time anything
+ * on it changes, and the case screen offers an explicit "re-evaluate now".
+ */
+export function updateDocumentRequirementRule(
+  ruleId: Id,
+  input: RuleEditInput,
+  actorUserId: Id,
+): ActionResult {
+  const rule = db.documentRequirementRules.find((r) => r.id === ruleId);
+  if (!rule) return { ok: false, message: "Rule not found." };
+  if (input.name !== undefined && !input.name.trim()) {
+    return { ok: false, message: "A rule needs a name someone else can recognise." };
+  }
+  if (input.financialYears !== undefined && input.financialYears > 10) {
+    return { ok: false, message: "Ten financial years is already more than any lender asks for." };
+  }
+
+  db.documentRequirementRules = db.documentRequirementRules.map((r) => {
+    if (r.id !== ruleId) return r;
+    const { financialYears, notes, ...rest } = r;
+    return {
+      ...rest,
+      ...(input.name !== undefined ? { name: input.name.trim() } : { name: r.name }),
+      ...(input.applicability ? { applicability: input.applicability } : {}),
+      ...(input.applicableFromStage
+        ? { applicableFromStage: input.applicableFromStage }
+        : { applicableFromStage: r.applicableFromStage }),
+      ...(input.financialYears ? { financialYears: input.financialYears } : {}),
+      ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+    };
+  });
+
+  record({
+    actorUserId,
+    entityType: "document_requirement_rule",
+    entityId: ruleId,
+    eventType: "requirement_rule.updated",
+    summary: `Rule updated: ${input.name?.trim() ?? rule.name}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Take a rule in or out of service.
+ *
+ * Never deleted — the same never-delete discipline as `rejection_reason` and
+ * `document_type` (BR-027). A rule that generated a requirement two years ago
+ * still has to be readable when someone asks why that document was collected.
+ */
+export function setDocumentRequirementRuleActive(
+  ruleId: Id,
+  isActive: boolean,
+  actorUserId: Id,
+): ActionResult {
+  const rule = db.documentRequirementRules.find((r) => r.id === ruleId);
+  if (!rule) return { ok: false, message: "Rule not found." };
+
+  db.documentRequirementRules = db.documentRequirementRules.map((r) =>
+    r.id === ruleId ? { ...r, isActive } : r,
+  );
+
+  record({
+    actorUserId,
+    entityType: "document_requirement_rule",
+    entityId: ruleId,
+    eventType: isActive ? "requirement_rule.activated" : "requirement_rule.deactivated",
+    summary: `${rule.name} ${isActive ? "returned to service" : "taken out of service"}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Re-evaluate one case's requirements against the current rules, on request.
+ *
+ * The explicit counterpart to `updateDocumentRequirementRule` not touching
+ * cases: after a rule changes, this is how a specific file is brought up to
+ * date by someone who has decided it should be.
+ */
+export function reevaluateRequirements(caseId: Id, actorUserId: Id): ActionResult {
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
+  const before = db.requirements.filter((r) => r.caseId === caseId).length;
+  regenerate(caseId, "Re-evaluated against current rules");
+  const after = db.requirements.filter((r) => r.caseId === caseId).length;
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "document_requirement",
+    eventType: "requirements.reevaluated",
+    summary:
+      after === before
+        ? "Re-evaluated: no change"
+        : `Re-evaluated: ${before} → ${after} requirements`,
+  });
+
+  reconcileReadiness(caseId, "Requirements re-evaluated");
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Documents
 // ---------------------------------------------------------------------------
 
@@ -805,10 +1215,12 @@ export function verifyDocument(
 /**
  * A document uploaded and then found wanting under View — blurry, wrong
  * type, wrong year — is rejected rather than silently re-verified over.
- * The requirement goes back to "pending" (it needs a fresh upload); the
- * rejected document itself is kept exactly as BR-031 keeps every version,
- * so the next upload supersedes it and the rejection stays visible in
- * history rather than disappearing.
+ * The requirement moves to "rejected" (Milestone 9) rather than back to
+ * "pending": both need a fresh upload, but only one of them records that a
+ * human already spent time on this and told the customer why. The rejected
+ * document itself is kept exactly as BR-031 keeps every version, so the next
+ * upload supersedes it and the rejection stays visible in history rather than
+ * disappearing.
  */
 export function rejectDocument(requirementId: Id, reason: string, actorUserId: Id): ActionResult {
   if (!reason.trim()) {
@@ -834,7 +1246,7 @@ export function rejectDocument(requirementId: Id, reason: string, actorUserId: I
       : d,
   );
   db.requirements = db.requirements.map((r) =>
-    r.id === requirementId ? { ...r, status: "pending" as const } : r,
+    r.id === requirementId ? { ...r, status: "rejected" as const } : r,
   );
 
   record({

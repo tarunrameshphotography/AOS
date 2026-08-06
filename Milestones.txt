@@ -8,7 +8,7 @@ The sequence I'd follow
 ✅ Lending Product Catalogue
 ✅ Lending Product Refinement
 ✅ Bank & NBFC Catalogue
-Document Requirement Engine
+✅ ✅ Document Requirement Engine
 Workflow Polish
 OCR & AI
 Email / WhatsApp Integration

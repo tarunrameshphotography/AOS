@@ -12,6 +12,10 @@
  */
 
 import { buildStoragePath, type DocumentOwner } from "@domain/storage/index.js";
+import {
+  DEFAULT_REQUIREMENT_RULES,
+  ENGINE_DOCUMENT_TYPES,
+} from "@domain/requirements/index.js";
 
 import type { Database } from "./types.js";
 
@@ -174,7 +178,38 @@ export function buildSeed(): Database {
     { id: id("dty", 14), code: "valuation_report", name: "Valuation Report", ownerKind: "property", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 170 },
     { id: id("dty", 15), code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false, isActive: true, displayOrder: 180 },
     { id: id("dty", 16), code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 190 },
+    // The Document Requirement Engine's own types (Milestone 9), built from
+    // @domain/requirements/document-catalogue.ts rather than restated here —
+    // a rule naming a type nobody created generates NOTHING, which looks
+    // exactly like a case that does not need the document. One definition,
+    // shared with Database/migrations/0022, is the only way to be sure.
+    // Ids continue from 20 so the sixteen above keep the ids everything else
+    // already points at.
+    ...ENGINE_DOCUMENT_TYPES.map((type, index) => ({
+      id: id("dty", 20 + index),
+      code: type.code,
+      name: type.name,
+      description: type.description,
+      ownerKind: type.ownerKind,
+      requiresPeriod: type.requiresPeriod,
+      requiresExpiry: type.requiresExpiry,
+      isActive: true,
+      displayOrder: type.displayOrder,
+    })),
   ];
+
+  /**
+   * The rule pack, seeded exactly as Database/migrations/0022 seeds it.
+   *
+   * These are DEFAULTS. Everything below is editable from the Document Rules
+   * screen — which is the milestone: what AOS asks for is data a business
+   * user owns, not code a developer owns.
+   */
+  const documentRequirementRules: Database["documentRequirementRules"] =
+    DEFAULT_REQUIREMENT_RULES.map((rule, index) => ({
+      ...rule,
+      id: id("drr", index + 1),
+    }));
 
   const rejectionReasons: Database["rejectionReasons"] = [
     { id: id("rej", 1), code: "credit_history", name: "Credit history", displayOrder: 10, isActive: true },
@@ -697,6 +732,9 @@ export function buildSeed(): Database {
     {
       id: id("cas", 3), caseNumber: num(43), loanProductId: id("lpr", 6), requestedAmount: 5000000,
       stage: "submitted", ownerUserId: id("usr", 2), source: "Referral",
+      // A GST-registered working-capital case: the fact that drives the GST
+      // certificate and GST returns requirements existing at all (Milestone 9).
+      isGstRegistered: true, hasExistingObligations: true,
       isOnHold: false, isInvoiceRaised: false, tags: ["urgent"], createdAt: daysAgo(28),
     },
     {
@@ -833,7 +871,8 @@ export function buildSeed(): Database {
     lenderProfiles, bankBranches, bankContacts, bankProducts,
     lenderSubmissionRules, lenderInsights,
     cases, caseParties, caseProperties, documents,
-    requirements: [], submissions, offers, communications, notes, tasks, events,
+    requirements: [], documentRequirementRules,
+    submissions, offers, communications, notes, tasks, events,
     caseNumberSequence: { [year]: 47 },
   };
 }

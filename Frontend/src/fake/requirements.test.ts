@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_REQUIREMENT_RULES } from "@domain/requirements/default-rules.js";
 import { financialYearOf, recentFinancialYears } from "@domain/requirements/financial-year.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
@@ -7,6 +8,15 @@ import type { Database, DocumentType, LoanProduct } from "./types.js";
 
 let counter = 0;
 const nextId = (): string => `test_${++counter}`;
+
+/**
+ * The real default pack. These tests exercise the ADAPTER — fact building,
+ * financial-year expansion and reconciliation — so running them against
+ * invented rules would prove nothing about what the product actually does.
+ */
+const RULES: Database["documentRequirementRules"] = DEFAULT_REQUIREMENT_RULES.map(
+  (rule, index) => ({ ...rule, id: `drr_${index}` }),
+);
 
 const DOCUMENT_TYPES: DocumentType[] = [
   { id: "dty_pan", code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 10 },
@@ -64,6 +74,7 @@ function baseDb(): Database {
     caseProperties: [],
     documents: [],
     requirements: [],
+    documentRequirementRules: RULES,
     submissions: [],
     offers: [],
     communications: [],
@@ -103,6 +114,11 @@ describe("regenerateRequirements — financial-year scoping", () => {
       },
     ];
     db.caseParties = [{ id: "cpt_1", caseId: "cas_1", personId: "per_1", role: "applicant", isPrimary: true }];
+    // Self-employed: the fact the ITR rule turns on. A salaried applicant is
+    // asked for Form 16 instead, which is the engine working, not a gap.
+    db.employments = [
+      { id: "emp_1", personId: "per_1", organisationId: "org_x", employmentType: "self_employed", isCurrent: true },
+    ];
 
     const generated = regenerateRequirements(db, "cas_1", nextId);
     const itrRows = generated.filter((r) => r.documentTypeId === "dty_itr");
@@ -124,7 +140,8 @@ describe("regenerateRequirements — financial-year scoping", () => {
     db.cases = [
       {
         id: "cas_1", caseNumber: "AL-2026-00001", loanProductId: "lpr_bl", stage: "documents_pending",
-        ownerUserId: "usr_1", isOnHold: false, isInvoiceRaised: false, tags: [], createdAt: new Date().toISOString(),
+        ownerUserId: "usr_1", isGstRegistered: true, isOnHold: false, isInvoiceRaised: false,
+        tags: [], createdAt: new Date().toISOString(),
       },
     ];
     db.caseParties = [
@@ -155,6 +172,9 @@ describe("regenerateRequirements — financial-year scoping", () => {
       },
     ];
     db.caseParties = [{ id: "cpt_1", caseId: "cas_1", personId: "per_1", role: "applicant", isPrimary: true }];
+    db.employments = [
+      { id: "emp_1", personId: "per_1", organisationId: "org_x", employmentType: "self_employed", isCurrent: true },
+    ];
 
     const first = regenerateRequirements(db, "cas_1", nextId);
     const itrRow = first.find((r) => r.documentTypeId === "dty_itr");
@@ -184,6 +204,9 @@ describe("regenerateRequirements — financial-year scoping", () => {
       },
     ];
     db.caseParties = [{ id: "cpt_1", caseId: "cas_1", personId: "per_1", role: "applicant", isPrimary: true }];
+    db.employments = [
+      { id: "emp_1", personId: "per_1", organisationId: "org_x", employmentType: "self_employed", isCurrent: true },
+    ];
     db.requirements = [
       {
         id: "req_old", caseId: "cas_1", documentTypeId: "dty_itr", requiredOfCasePartyId: "cpt_1",
@@ -256,5 +279,121 @@ describe("applyExistingDocuments — financial-year matching", () => {
     const result = applyExistingDocuments(db, requirements);
     expect(result[0]?.status).toBe("verified");
     expect(result[0]?.satisfiedByDocumentId).toBe("doc_1");
+  });
+});
+
+/**
+ * The adapter's own job: turning a database into CaseFacts, and turning a
+ * changed fact into a changed checklist. The rules themselves are tested in
+ * src/domain/requirements/default-rules.test.ts — these tests are about the
+ * wiring between the two, which is where a rule engine usually goes wrong.
+ */
+describe("the engine reads the case's actual composition", () => {
+  const PROPERTY_TYPES: DocumentType[] = [
+    { id: "dty_sale_deed", code: "sale_deed", name: "Sale Deed", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 200 },
+    { id: "dty_patta", code: "patta_chitta", name: "Patta / Chitta", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 210 },
+  ];
+
+  function homeLoanCase(): Database {
+    const db = baseDb();
+    db.documentTypes = [...DOCUMENT_TYPES, ...PROPERTY_TYPES];
+    db.loanProducts = [
+      ...LOAN_PRODUCTS,
+      { id: "lpr_hl", code: "hl_purchase", category: "Home Loan", variant: "Purchase", name: "Home Loan — Purchase", isActive: true, displayOrder: 30 },
+    ];
+    db.people = [{ id: "per_1", fullName: "Ravi Kumar", aliases: [], identifiers: [] }];
+    db.cases = [
+      {
+        id: "cas_1", caseNumber: "AL-2026-00001", loanProductId: "lpr_hl", stage: "documents_pending",
+        ownerUserId: "usr_1", isOnHold: false, isInvoiceRaised: false, tags: [], createdAt: new Date().toISOString(),
+      },
+    ];
+    db.caseParties = [{ id: "cpt_1", caseId: "cas_1", personId: "per_1", role: "applicant", isPrimary: true }];
+    return db;
+  }
+
+  const codes = (db: Database): string[] =>
+    db.requirements.map(
+      (r) => db.documentTypes.find((t) => t.id === r.documentTypeId)?.code ?? "?",
+    );
+
+  it("asks for no property documents until a property exists, then asks immediately", () => {
+    const db = homeLoanCase();
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    expect(codes(db)).not.toContain("sale_deed");
+    expect(codes(db)).not.toContain("patta_chitta");
+
+    db.properties = [{ id: "prp_1", locality: "Saibaba Colony", city: "Coimbatore", propertyType: "Independent House" }];
+    db.caseProperties = [{ id: "cpr_1", caseId: "cas_1", propertyId: "prp_1", role: "purchase" }];
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    expect(codes(db)).toContain("sale_deed");
+    expect(codes(db)).toContain("patta_chitta");
+  });
+
+  it("reads a legacy free-text property type, so a case predating master data still answers correctly", () => {
+    // "Apartment" as free text must exclude patta exactly as the master-data
+    // code `apartment` would. A fact that only works on new records is a fact
+    // that silently misbehaves on the old ones.
+    const db = homeLoanCase();
+    db.properties = [{ id: "prp_1", locality: "RS Puram", propertyType: "Apartment" }];
+    db.caseProperties = [{ id: "cpr_1", caseId: "cas_1", propertyId: "prp_1", role: "purchase" }];
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    expect(codes(db)).toContain("sale_deed");
+    expect(codes(db)).not.toContain("patta_chitta");
+  });
+
+  it("prefers the case-party override to the person's employment record", () => {
+    const db = homeLoanCase();
+    db.employmentTypes = [
+      { id: "emt_1", code: "salaried", name: "Salaried", isActive: true, displayOrder: 10 },
+      { id: "emt_2", code: "self_employed", name: "Self-Employed", isActive: true, displayOrder: 20 },
+    ];
+    db.employments = [
+      { id: "emp_1", personId: "per_1", organisationId: "org_x", employmentType: "salaried", isCurrent: true },
+    ];
+
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+    expect(codes(db)).not.toContain("itr");
+
+    // Underwritten as self-employed on THIS case. The person's own record is
+    // untouched — that is the whole reason the override exists.
+    db.caseParties = db.caseParties.map((p) => ({ ...p, employmentTypeId: "emt_2" }));
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    expect(codes(db)).toContain("itr");
+    expect(db.employments[0]?.employmentType).toBe("salaried");
+  });
+
+  it("marks the old product's documents not_applicable when the product changes, rather than deleting them", () => {
+    const db = homeLoanCase();
+    db.properties = [{ id: "prp_1", locality: "Peelamedu", propertyType: "Independent House" }];
+    db.caseProperties = [{ id: "cpr_1", caseId: "cas_1", propertyId: "prp_1", role: "purchase" }];
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    const saleDeed = db.requirements.find((r) => r.documentTypeId === "dty_sale_deed");
+    expect(saleDeed).toBeDefined();
+
+    // Switched to an unsecured personal loan. The property rows do not vanish
+    // — a document collected and then dropped is part of the case's history
+    // (BR-034).
+    db.cases = db.cases.map((c) => ({ ...c, loanProductId: "lpr_pl" }));
+    db.caseProperties = [];
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    const after = db.requirements.find((r) => r.id === saleDeed?.id);
+    expect(after).toBeDefined();
+    expect(after?.status).toBe("not_applicable");
+  });
+
+  it("records which rule asked for each requirement", () => {
+    const db = homeLoanCase();
+    db.requirements = regenerateRequirements(db, "cas_1", nextId);
+
+    const pan = db.requirements.find((r) => r.documentTypeId === "dty_pan");
+    expect(pan?.generatedByRuleCode).toBe("kyc_pan");
+    expect(pan?.applicability).toBe("mandatory");
   });
 });

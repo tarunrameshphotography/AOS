@@ -22,20 +22,27 @@ import {
 } from "@domain/case/stages.js";
 import { evaluateTransition } from "@domain/case/transitions.js";
 import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
+import { CONSTRUCTION_STAGES } from "@domain/requirements/rules.js";
 
 import {
   acceptOffer,
+  addCaseProperty,
   addFinancialYearRequirement,
   addNote,
   addParty,
+  changeLoanProduct,
   createSubmission,
   logCommunication,
   moveStage,
   progressFor,
+  reevaluateRequirements,
   rejectDocument,
+  ruleBehind,
   selectableFinancialYears,
   setHold,
   snapshotOf,
+  updateCaseFacts,
+  updatePartyProfile,
   updateSubmissionStatus,
   uploadDocument,
   verifyDocument,
@@ -429,6 +436,7 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
   const [addOpen, setAddOpen] = useState(false);
   const [note, setNote] = useState("");
   const [logOpen, setLogOpen] = useState(false);
+  const [profileFor, setProfileFor] = useState<string | null>(null);
 
   const parties = db.caseParties.filter((p) => p.caseId === caseId && !p.removedAt);
   const caseProperties = db.caseProperties.filter((p) => p.caseId === caseId);
@@ -500,6 +508,13 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
                         ? (panOf(person) ?? "")
                         : (maskedPan(person) ?? "")}
                     </span>
+                  )}
+                  {/* How this party is underwritten ON THIS CASE — the facts
+                      the Document Requirement Engine reads (Milestone 9). */}
+                  {canEdit && party.role !== "referrer" && (
+                    <Button variant="ghost" onClick={() => setProfileFor(party.id)}>
+                      Profile
+                    </Button>
                   )}
                 </li>
               );
@@ -615,7 +630,153 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
 
       <AddPartyDialog open={addOpen} caseId={caseId} onClose={() => setAddOpen(false)} />
       <LogCallDialog open={logOpen} caseId={caseId} onClose={() => setLogOpen(false)} />
+      <PartyProfileDialog casePartyId={profileFor} onClose={() => setProfileFor(null)} />
     </div>
+  );
+}
+
+/**
+ * How one party is underwritten on this case.
+ *
+ * Deliberately NOT an edit of the person's employment record or the
+ * organisation's constitution. Rewriting a shared entity from a case screen
+ * would corrupt every other case that person is on, and "salaried on this
+ * file, business owner on that one" is two facts rather than one fact that
+ * keeps changing (Database/migrations/0021).
+ */
+function PartyProfileDialog({
+  casePartyId,
+  onClose,
+}: {
+  casePartyId: string | null;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+
+  const party = db.caseParties.find((p) => p.id === casePartyId);
+  const [employmentTypeId, setEmploymentTypeId] = useState("");
+  const [borrowerTypeId, setBorrowerTypeId] = useState("");
+  const [constitutionId, setConstitutionId] = useState("");
+
+  useEffect(() => {
+    if (!party) return;
+    setEmploymentTypeId(party.employmentTypeId ?? "");
+    setBorrowerTypeId(party.borrowerTypeId ?? "");
+    setConstitutionId(party.businessConstitutionId ?? "");
+  }, [party]);
+
+  if (!party) return null;
+
+  const isOrganisation = Boolean(party.organisationId);
+  const person = db.people.find((p) => p.id === party.personId);
+  const organisation = db.organisations.find((o) => o.id === party.organisationId);
+
+  return (
+    <Modal
+      open={casePartyId !== null}
+      title={`${person?.fullName ?? organisation?.canonicalName ?? "Party"} — on this case`}
+      onClose={onClose}
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          These answers decide what this party is asked for. They apply to this case only — the
+          person's own record is not rewritten.
+        </p>
+
+        {!isOrganisation && (
+          <Field
+            label="Employment type"
+            hint="Salaried is asked for payslips and Form 16; self-employed for an ITR. Leaving it blank uses the person's current employment record."
+          >
+            <Select
+              value={employmentTypeId}
+              onChange={(event) => setEmploymentTypeId(event.target.value)}
+            >
+              <option value="">Use the person's employment record</option>
+              {db.employmentTypes
+                .filter((type) => type.isActive)
+                .map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        )}
+
+        <Field
+          label="Borrower type"
+          hint="NRI is the one that must be recorded explicitly — nothing about a person implies it, and it changes the whole KYC set."
+        >
+          <Select
+            value={borrowerTypeId}
+            onChange={(event) => setBorrowerTypeId(event.target.value)}
+          >
+            <option value="">
+              {isOrganisation ? "Non-individual entity" : "Resident individual"}
+            </option>
+            {db.borrowerTypes
+              .filter((type) => type.isActive)
+              .map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+
+        {isOrganisation && (
+          <Field
+            label="Business constitution"
+            hint="A partnership is asked for its deed; a private limited for incorporation, MOA/AOA and a board resolution. This one answer changes most of the business checklist."
+          >
+            <Select
+              value={constitutionId}
+              onChange={(event) => setConstitutionId(event.target.value)}
+            >
+              <option value="">Use the organisation's own record</option>
+              {db.businessConstitutions
+                .filter((type) => type.isActive)
+                .map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              const result = updatePartyProfile(
+                party.id,
+                {
+                  ...(employmentTypeId ? { employmentTypeId } : {}),
+                  ...(borrowerTypeId ? { borrowerTypeId } : {}),
+                  ...(constitutionId ? { businessConstitutionId: constitutionId } : {}),
+                },
+                session.user.id,
+              );
+              if (!result.ok) {
+                toast.show(result.message ?? "", "bad");
+                return;
+              }
+              toast.show("Profile updated. The documents list has already changed.");
+              onClose();
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -867,7 +1028,9 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     (r) => currentIndex >= 0 && stageOrder.indexOf(r.applicableFromStage) > currentIndex,
   );
 
-  const outstanding = due.filter((r) => r.status === "pending" || r.status === "received");
+  const outstanding = due.filter((r) =>
+    ["pending", "received", "rejected"].includes(r.status),
+  );
   const settled = due.filter((r) => ["verified", "waived", "not_applicable"].includes(r.status));
   const fyGroups = financialYearGroups(db, requirements);
 
@@ -911,11 +1074,18 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         ? "good"
         : requirement.status === "received"
           ? "info"
-          : requirement.status === "waived"
-            ? "warn"
-            : requirement.status === "not_applicable"
-              ? "neutral"
-              : "neutral";
+          : requirement.status === "rejected"
+            ? "bad"
+            : requirement.status === "waived"
+              ? "warn"
+              : requirement.status === "not_applicable"
+                ? "neutral"
+                : "neutral";
+
+    // Why this is being asked for. A checklist nobody can interrogate is a
+    // checklist people work around (Milestone 9).
+    const rule = ruleBehind(requirement.id);
+    const isOptional = requirement.applicability === "optional";
 
     return (
       <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5 first:pt-0 last:pb-0">
@@ -928,28 +1098,38 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
             {subject}
             {document && ` · ${document.fileName} · ${bytes(document.fileSizeBytes)}`}
             {requirement.status === "waived" && ` · waived: ${requirement.reason}`}
+            {requirement.status === "rejected" &&
+              document?.rejectionReason &&
+              ` · rejected: ${document.rejectionReason}`}
           </p>
+          {rule && (
+            <p className="mt-0.5 text-xs text-ink-400" title={rule.notes ?? rule.code}>
+              Asked for by: {rule.name}
+            </p>
+          )}
         </div>
 
+        {isOptional && <Badge>Optional</Badge>}
         <Badge tone={tone}>{titleCase(requirement.status)}</Badge>
 
         <div className="flex shrink-0 gap-1.5">
-          {requirement.status === "pending" && session.can("document.upload", "own") && (
-            <Button
-              onClick={() => {
-                setUploadingFor(requirement.id);
-                fileInput.current?.click();
-              }}
-            >
-              Upload
-            </Button>
-          )}
+          {["pending", "rejected"].includes(requirement.status) &&
+            session.can("document.upload", "own") && (
+              <Button
+                onClick={() => {
+                  setUploadingFor(requirement.id);
+                  fileInput.current?.click();
+                }}
+              >
+                {requirement.status === "rejected" ? "Upload again" : "Upload"}
+              </Button>
+            )}
           {requirement.status === "received" && session.can("document.verify", "own") && (
             <Button variant="primary" onClick={() => setVerifyFor(requirement.id)}>
               Verify
             </Button>
           )}
-          {["pending", "received"].includes(requirement.status) &&
+          {["pending", "received", "rejected"].includes(requirement.status) &&
             session.can("requirement.waive", "own") && (
               <Button
                 variant="ghost"
@@ -970,12 +1150,24 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     <div className="space-y-6">
       <input ref={fileInput} type="file" className="hidden" onChange={onFileChosen} />
 
+      <CaseFacts caseId={caseId} />
+
       <Card
         title="Still needed"
         subtitle={
           outstanding.length === 0
             ? "Nothing outstanding. This file is complete."
-            : `${outstanding.length} outstanding · ${progress.percentComplete}% complete`
+            : // Counted the way the progress bar counts (Milestone 9): optional
+              // requirements are listed and collected, but naming them as
+              // "outstanding" beside a percentage that ignores them is two
+              // numbers for one question.
+              [
+                `${outstanding.filter((r) => r.applicability !== "optional").length} outstanding`,
+                progress.optionalCount > 0 ? `${progress.optionalCount} optional` : "",
+                `${progress.percentComplete}% complete`,
+              ]
+                .filter(Boolean)
+                .join(" · ")
         }
       >
         {outstanding.length === 0 ? (
@@ -1096,6 +1288,355 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
 
       <VerifyDialog requirementId={verifyFor} onClose={() => setVerifyFor(null)} />
     </div>
+  );
+}
+
+/**
+ * The facts the Document Requirement Engine reads, on the page whose contents
+ * they decide (Milestone 9, ADR-035).
+ *
+ * Here rather than on the Overview tab on purpose: the milestone's promise is
+ * that the checklist changes the moment a fact does, and a promise the user
+ * has to switch tabs to observe is one they will never notice being kept.
+ * Every control below writes through a store mutation that regenerates, so
+ * there is no refresh and no "recalculate" button.
+ *
+ * Each answer is three-valued. "Not asked" is a real state and is offered as
+ * one: recording "no" and never having asked are different facts, and a
+ * checklist built on the assumption that unanswered means no is a checklist
+ * that quietly stops asking for things.
+ */
+function CaseFacts({ caseId }: { caseId: string }): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [propertyOpen, setPropertyOpen] = useState(false);
+
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return null;
+
+  const canEdit =
+    session.can("case.update", "all") ||
+    (session.can("case.update", "own") && loanCase.ownerUserId === session.user.id);
+
+  const product = db.loanProducts.find((p) => p.id === loanCase.loanProductId);
+  const properties = db.caseProperties.filter((p) => p.caseId === caseId);
+  const parties = db.caseParties.filter((p) => p.caseId === caseId && !p.removedAt);
+
+  const tri = (value: boolean | undefined): string =>
+    value === undefined ? "Not asked" : value ? "Yes" : "No";
+
+  const set = (input: Parameters<typeof updateCaseFacts>[1]): void => {
+    const result = updateCaseFacts(caseId, input, session.user.id);
+    if (!result.ok) toast.show(result.message ?? "", "bad");
+  };
+
+  return (
+    <>
+      <Card
+        title="What this case is"
+        subtitle="Every document below is generated from these facts. Change one and the checklist changes with it — no refresh."
+        actions={
+          canEdit && (
+            <div className="flex gap-1.5">
+              <Button onClick={() => setPropertyOpen(true)}>Add property</Button>
+              <Button onClick={() => setOpen(true)}>Edit facts</Button>
+            </div>
+          )
+        }
+      >
+        <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+          <Fact label="Lending product" value={product?.name ?? product?.variant ?? "—"} />
+          <Fact
+            label="Property on file"
+            value={properties.length === 0 ? "None" : `${properties.length}`}
+            hint={
+              properties.length === 0
+                ? "No property means no property documents at all — not rows marked N/A"
+                : undefined
+            }
+          />
+          <Fact label="GST registered" value={tri(loanCase.isGstRegistered)} />
+          <Fact
+            label="Existing obligations"
+            value={tri(loanCase.hasExistingObligations)}
+          />
+          <Fact
+            label="Construction stage"
+            value={loanCase.constructionStage ? titleCase(loanCase.constructionStage) : "—"}
+          />
+          <Fact
+            label="People on the file"
+            value={parties
+              .filter((p) => p.role !== "referrer")
+              .map((p) => titleCase(p.role))
+              .join(", ")}
+          />
+        </dl>
+
+        {canEdit && (
+          <div className="mt-4 border-t border-ink-100 pt-3">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                const result = reevaluateRequirements(caseId, session.user.id);
+                toast.show(
+                  result.ok ? "Re-evaluated against the current rules." : (result.message ?? ""),
+                  result.ok ? "good" : "bad",
+                );
+              }}
+            >
+              Re-evaluate against current rules
+            </Button>
+            <p className="mt-1 text-xs text-ink-500">
+              Editing a rule does not silently rewrite every open case. This brings just this one
+              up to date.
+            </p>
+          </div>
+        )}
+      </Card>
+
+      <EditFactsDialog open={open} caseId={caseId} onClose={() => setOpen(false)} onSave={set} />
+      <AddPropertyDialog
+        open={propertyOpen}
+        caseId={caseId}
+        onClose={() => setPropertyOpen(false)}
+      />
+    </>
+  );
+}
+
+function Fact({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string | undefined;
+}): ReactNode {
+  return (
+    <div>
+      <dt className="text-xs text-ink-500">{label}</dt>
+      <dd className="text-sm font-medium">{value || "—"}</dd>
+      {hint && <p className="mt-0.5 text-xs text-ink-400">{hint}</p>}
+    </div>
+  );
+}
+
+function EditFactsDialog({
+  open,
+  caseId,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  caseId: string;
+  onClose: () => void;
+  onSave: (input: Parameters<typeof updateCaseFacts>[1]) => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const loanCase = db.cases.find((c) => c.id === caseId);
+
+  const [gst, setGst] = useState("");
+  const [obligations, setObligations] = useState("");
+  const [stage, setStage] = useState("");
+  const [productId, setProductId] = useState("");
+
+  useEffect(() => {
+    if (!open || !loanCase) return;
+    setGst(loanCase.isGstRegistered === undefined ? "" : String(loanCase.isGstRegistered));
+    setObligations(
+      loanCase.hasExistingObligations === undefined
+        ? ""
+        : String(loanCase.hasExistingObligations),
+    );
+    setStage(loanCase.constructionStage ?? "");
+    setProductId(loanCase.loanProductId);
+  }, [open, loanCase]);
+
+  if (!loanCase) return null;
+
+  const parse = (value: string): boolean | undefined =>
+    value === "" ? undefined : value === "true";
+
+  return (
+    <Modal open={open} title="What this case is" onClose={onClose}>
+      <div className="space-y-3">
+        <Field
+          label="Lending product"
+          hint="Changing this does not delete the old product's documents — they stop counting and stay in the history (BR-034)."
+        >
+          <Select value={productId} onChange={(event) => setProductId(event.target.value)}>
+            {db.loanProducts
+              .filter((product) => product.isActive)
+              .map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name ?? product.variant}
+                </option>
+              ))}
+          </Select>
+        </Field>
+
+        <Field
+          label="Is the business registered under GST?"
+          hint="No registration, no GST rows. Leaving it unanswered is honest and generates nothing either way."
+        >
+          <Select value={gst} onChange={(event) => setGst(event.target.value)}>
+            <option value="">Not asked yet</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </Select>
+        </Field>
+
+        <Field
+          label="Is anyone on this file already servicing a loan?"
+          hint="Drives the existing-loan statement."
+        >
+          <Select value={obligations} onChange={(event) => setObligations(event.target.value)}>
+            <option value="">Not asked yet</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </Select>
+        </Field>
+
+        <Field
+          label="Construction stage"
+          hint="Only meaningful on a construction loan. Nothing to report before the first brick, so the progress report does not exist until building starts."
+        >
+          <Select value={stage} onChange={(event) => setStage(event.target.value)}>
+            <option value="">—</option>
+            {CONSTRUCTION_STAGES.map((value) => (
+              <option key={value} value={value}>
+                {titleCase(value)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (productId !== loanCase.loanProductId) {
+                const result = changeLoanProduct(caseId, productId, session.user.id);
+                if (!result.ok) {
+                  toast.show(result.message ?? "", "bad");
+                  return;
+                }
+              }
+              onSave({
+                isGstRegistered: parse(gst),
+                hasExistingObligations: parse(obligations),
+                ...(stage ? { constructionStage: stage as (typeof CONSTRUCTION_STAGES)[number] } : {}),
+              });
+              onClose();
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddPropertyDialog({
+  open,
+  caseId,
+  onClose,
+}: {
+  open: boolean;
+  caseId: string;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const [locality, setLocality] = useState("");
+  const [city, setCity] = useState("");
+  const [typeId, setTypeId] = useState("");
+  const [role, setRole] = useState<"collateral" | "purchase" | "both">("collateral");
+
+  return (
+    <Modal open={open} title="Add a property" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          Property documents exist because a property does. Adding one here generates the title,
+          revenue and encumbrance documents immediately — including the Tamil Nadu ones a generic
+          checklist misses.
+        </p>
+
+        <Field label="Locality">
+          <Input value={locality} onChange={(event) => setLocality(event.target.value)} />
+        </Field>
+        <Field label="City">
+          <Input value={city} onChange={(event) => setCity(event.target.value)} />
+        </Field>
+        <Field
+          label="Property type"
+          hint="An apartment on undivided share is the one common case with no patta of its own."
+        >
+          <Select value={typeId} onChange={(event) => setTypeId(event.target.value)}>
+            <option value="">—</option>
+            {db.propertyTypes
+              .filter((type) => type.isActive)
+              .map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+        <Field label="Role on this case">
+          <Select
+            value={role}
+            onChange={(event) => setRole(event.target.value as typeof role)}
+          >
+            <option value="collateral">Collateral</option>
+            <option value="purchase">Purchase</option>
+            <option value="both">Both</option>
+          </Select>
+        </Field>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              const result = addCaseProperty(
+                caseId,
+                {
+                  role,
+                  newPropertyLocality: locality,
+                  newPropertyCity: city,
+                  ...(typeId ? { newPropertyTypeId: typeId } : {}),
+                },
+                session.user.id,
+              );
+              if (!result.ok) {
+                toast.show(result.message ?? "", "bad");
+                return;
+              }
+              setLocality("");
+              setCity("");
+              setTypeId("");
+              onClose();
+            }}
+          >
+            Add property
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

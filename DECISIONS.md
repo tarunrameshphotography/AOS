@@ -988,3 +988,91 @@ empty Operational tab are told where that data already lives (`app_user`,
 `bank_contact`, `organisation` roles) rather than shown nothing. No new
 permission, no new table, no new domain module — same conclusion Milestone 5
 reached for master data generally, now extended to its own presentation.
+
+## ADR-032 — Lending products are a catalogue, not a taxonomy; three layers, kept separate
+Date: 2026-08-06
+Status: Accepted
+
+**Decision.** `loan_product` stops being a two-column taxonomy (category +
+variant, free text since 0003) and becomes AOS's description of what Amaze
+lends against: a name, a description, a security type, borrower / employment
+/ business eligibility, property and GST requirement, typical tenure and
+amount ranges, and lifecycle dates (Database/migrations/0015). Three layers
+are modelled separately and named separately:
+
+- **Loan Category** — Amaze's commercial grouping. "Business Loans." Master
+  data since ADR-030.
+- **Lending Product** — what Amaze actually arranges, bank-independent.
+  "Working Capital Facility (Cash Credit)." This ADR.
+- **Bank Product** — one lender's version of it. "HDFC Smart Business Loan."
+  `bank_product`, since 0003, unchanged here; its own screen is the Bank &
+  NBFC Catalogue milestone.
+
+**Why the middle layer is the load-bearing one.** It is the finest-grained
+thing that is known at case creation, before any bank is chosen. A bank
+product cannot drive document requirements because banks are selected late
+(ADR-016). A loan category is too coarse — "Business Loan" does not tell you
+whether a property is involved. Collapsing the three into one table, which
+the two-column taxonomy effectively did, is what would make the Document
+Requirement Engine impossible to build from data rather than from `if`
+statements on product codes.
+
+**Why eligibility is many-to-many junctions, not columns.** A LAP is
+available to a salaried employee AND a self-employed professional AND a
+business owner. A column forces one; a comma-separated text column forces
+every reader to parse it, which is the vocabulary drift ADR-030 existed to
+remove. Three junction tables (`loan_product_borrower_type`,
+`loan_product_employment_type`, `loan_product_business_constitution`) reuse
+the master data Milestone 5 already created rather than inventing parallel
+vocabularies — reuse was the return on having built the Master Data Engine
+first. These junctions are the one family of tables in this schema where
+`delete` is permitted: a junction row carries no history of its own, the fact
+of record is the product, and the edit is already in the event log (ADR-005).
+
+**Why three new master-data tables and not six.** `borrower_type` and
+`security_type` are genuinely new vocabulary. Property requirement and GST
+requirement share ONE table, `requirement_applicability` (mandatory /
+optional / not applicable), because they ask the same question about
+different things and two identical three-row tables would be two places to
+get one answer wrong. Employment and business eligibility create no tables at
+all — they reuse `employment_type` and `business_constitution`.
+
+**Why `borrower_type` is not a duplicate of `business_constitution`.** The
+constitution table answers "how is this firm legally constituted?"
+(proprietorship, partnership, private limited) and is reused unchanged.
+Borrower type answers the coarser question a product asks first — is the
+borrower a person or a firm, and does residency change the product? An NRI
+Home Loan and a resident Home Loan are different products with different
+documents, which is why residency belongs on this axis and nowhere else.
+
+**Why the ranges are declarative and must stay that way.** Tenure and amount
+are TYPICAL market ranges, guidance for an office user, never a rule. The
+binding figures are per lender, on `bank_product`. This is ADR-016 restated:
+an out-of-date engine that confidently returns a wrong answer is worse than
+no engine. `@domain/products` therefore does lifecycle and selection — is
+this product offerable, which products match what the user typed — and
+deliberately does not answer "will this customer qualify?".
+
+**Revision and retirement, designed and not built.** Retirement is
+`is_active = false` plus `effective_to`. Revision is a new row with its own
+code, `supersedes_loan_product_id` pointing at the old one, and the old one
+retired; `supersededCodes` in the domain layer inverts the arrow for readers
+who want it forwards. Neither flow has a screen. The columns exist so the
+first one is data entry rather than a migration, which is the same bet 0012
+made and won.
+
+**Backward compatibility.** Additive throughout. `category` and `variant`
+keep their names, types and NOT NULL, and every row the catalogue writes
+still populates them, so anything reading the old pair sees a complete table.
+`name` and `loan_category_id` are what new code reads. The text pair is
+retired when nothing reads it, which is not this milestone.
+
+**Consequences.** The Document Requirement Engine can key templates off
+product attributes (needs a property? expects GST?) instead of branching on
+product codes in TypeScript, which is the branch that exists in
+`Frontend/src/fake/requirements.ts` today and is the next thing to remove. A
+future Eligibility Engine, Bank Catalogue, reporting cut by product, and AI
+product recommendation all read this table and need no schema change to do
+it. The cost is a screen with more fields on it than a master-data row has,
+which is why the catalogue got its own screen rather than becoming an
+eleventh section on the Master Data one.

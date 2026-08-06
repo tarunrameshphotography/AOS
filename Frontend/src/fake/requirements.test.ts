@@ -23,8 +23,8 @@ const DOCUMENT_TYPES: DocumentType[] = [
 ];
 
 const LOAN_PRODUCTS: LoanProduct[] = [
-  { id: "lpr_pl", code: "pl", category: "Personal", variant: "Personal Loan" },
-  { id: "lpr_bl", code: "bl_working_capital", category: "Business Loan", variant: "Working Capital" },
+  { id: "lpr_pl", code: "pl", category: "Personal Loan", variant: "Personal Loan", name: "Personal Loan — Salaried", isActive: true, displayOrder: 10 },
+  { id: "lpr_bl", code: "bl_working_capital", category: "Business Loan", variant: "Working Capital", name: "Working Capital Facility (Cash Credit)", isActive: true, displayOrder: 20 },
 ];
 
 /** A minimal, otherwise-empty database — just enough for requirement generation. */
@@ -46,6 +46,9 @@ function baseDb(): Database {
     referralSources: [],
     districts: [],
     cities: [],
+    borrowerTypes: [],
+    securityTypes: [],
+    requirementApplicabilities: [],
     cases: [],
     caseParties: [],
     caseProperties: [],

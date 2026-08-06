@@ -32,11 +32,12 @@
  *
  * Deliberately absent as editable sections: Banks / NBFCs / HFCs / Branches
  * (already organisation rows, ADR-014/015 — their own screen is the
- * "Coimbatore Bank & NBFC Catalogue" milestone) and the Loan Product / Bank
- * Product catalogue itself (the "Loan Product Catalogue" milestone). Loan
- * *Category* — the taxonomy those products will hang off — is managed here.
- * Both appear as planned Business Master Data below so the hierarchy is
- * visible before the screens exist.
+ * "Coimbatore Bank & NBFC Catalogue" milestone), and lending products
+ * themselves, which since Milestone 7 have their own screen (Products in the
+ * top bar, ADR-032) because a product is far richer than a code/name row.
+ * The vocabulary that screen is built from — Loan Category, Borrower Type,
+ * Security Type, Requirement Applicability — is managed here, which is the
+ * division this screen has always drawn.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -120,9 +121,12 @@ const SECTIONS: Section[] = [
   { kind: "rejectionReason", label: "Rejection Reasons", hint: "Amaze's standardised categories for why a bank declined a case (ADR-028).", category: "system" },
   { kind: "simple", key: "districts", label: "Districts", hint: "Districts Amaze operates in or lends against.", category: "system" },
   { kind: "simple", key: "cities", label: "Cities", hint: "Cities Amaze operates in or lends against, each within a district.", category: "system" },
+  { kind: "simple", key: "requirementApplicabilities", label: "Requirement Applicability", hint: "Mandatory, optional, not applicable. Used wherever a product says how strongly it needs something.", category: "system" },
 
   // Business — business-controlled, defines Amaze's lending ecosystem.
-  { kind: "simple", key: "loanCategories", label: "Loan Categories", hint: "The commercial grouping loan products hang off — Home Loan, Business Loan, LAP.", category: "business" },
+  { kind: "simple", key: "loanCategories", label: "Loan Categories", hint: "The commercial grouping lending products hang off — Home Loan, Business Loan, LAP.", category: "business" },
+  { kind: "simple", key: "borrowerTypes", label: "Borrower Types", hint: "Who can borrow — resident individual, NRI, or a firm in its own name.", category: "business" },
+  { kind: "simple", key: "securityTypes", label: "Security Types", hint: "What secures a lending product — a mortgage, pledged gold, hypothecated stock, a guarantee.", category: "business" },
   { kind: "simple", key: "referralSources", label: "Referral Sources", hint: "How a lead reached Amaze. Populates the Source field on case creation.", category: "business" },
 ];
 
@@ -141,7 +145,7 @@ interface PlannedEntity {
 const PLANNED_BY_CATEGORY: Record<MasterDataCategory, PlannedEntity[]> = {
   system: [],
   business: [
-    { name: "Loan Products", note: "Modelled today (loan_product, ADR-016). Own catalogue screen: \"Loan Product Catalogue\" milestone." },
+    { name: "Lending Products", note: "Has its own screen — Products in the top bar (Milestone 7, ADR-032). The vocabulary it is built from is managed here." },
     { name: "Banks", note: "Organisation rows holding the lender role (ADR-014). Own screen: \"Coimbatore Bank & NBFC Catalogue\" milestone." },
     { name: "NBFCs", note: "Organisation rows, lender_profile.lender_type = 'nbfc'. Same upcoming screen as Banks." },
     { name: "Housing Finance Companies", note: "Organisation rows, lender_profile.lender_type = 'hfc'. Same upcoming screen as Banks." },

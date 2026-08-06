@@ -24,6 +24,9 @@ function baseDb(): Database {
     referralSources: [],
     districts: [],
     cities: [],
+    borrowerTypes: [],
+    securityTypes: [],
+    requirementApplicabilities: [],
     cases: [],
     caseParties: [
       { id: "cpt_1", caseId: "cas_1", personId: "per_1", role: "applicant", isPrimary: true },

@@ -421,12 +421,18 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     table: "loan_product",
     family: "reference",
     purpose:
-      "Amaze's own bank-independent taxonomy. Known at case creation, which is what " +
-      "makes the requirement engine possible (ADR-016).",
+      "Amaze's own bank-independent lending product catalogue — the middle layer " +
+      "between loan_category and bank_product. Known at case creation, which is " +
+      "what makes the requirement engine possible (ADR-016, ADR-032).",
     select: permits("master_data.read"),
     insert: permits("master_data.manage"),
     update: permits("master_data.manage"),
     delete: NEVER_DELETED,
+    notes:
+      "Retirement is is_active = false plus effective_to; revision is a new row " +
+      "pointing at the old one through supersedes_loan_product_id (Database/" +
+      "migrations/0015). Neither flow is built yet; the columns exist so the " +
+      "first one is data entry rather than a migration.",
   },
   {
     table: "bank_product",
@@ -436,6 +442,84 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     insert: permits("master_data.manage"),
     update: permits("master_data.manage"),
     delete: NEVER_DELETED,
+  },
+  {
+    table: "borrower_type",
+    family: "reference",
+    purpose:
+      "Who may borrow under a lending product — resident individual, NRI, or a " +
+      "non-individual entity. Not a duplicate of business_constitution, which " +
+      "answers how a firm is constituted (Database/migrations/0015).",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "security_type",
+    family: "reference",
+    purpose:
+      "What secures a lending product — nothing, a mortgage, pledged gold, " +
+      "hypothecated stock, a guarantee. Lender and RBI terminology, kept as " +
+      "master data because the list grows with the products Amaze sources.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "requirement_applicability",
+    family: "reference",
+    purpose:
+      "Mandatory / optional / not applicable. One shared vocabulary for both " +
+      "loan_product.property_requirement_id and gst_requirement_id, which ask " +
+      "the same question about different things.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "loan_product_borrower_type",
+    family: "reference",
+    purpose:
+      "Which kinds of borrower a lending product is available to. Many-to-many, " +
+      "because a product serves several and a column would force one.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: permits("master_data.manage"),
+    notes:
+      "The one family of tables in this schema where delete is permitted. A " +
+      "junction row carries no history of its own — the fact of record is the " +
+      "product, and the edit is in the event log (ADR-005). Soft-deleting it " +
+      "would make every consuming query filter forever for no reader's benefit.",
+  },
+  {
+    table: "loan_product_employment_type",
+    family: "reference",
+    purpose:
+      "Which income-source classifications a lending product accepts, reusing " +
+      "the employment_type master data rather than a second vocabulary for the " +
+      "same idea.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: permits("master_data.manage"),
+    notes: "Deletable for the same reason as loan_product_borrower_type.",
+  },
+  {
+    table: "loan_product_business_constitution",
+    family: "reference",
+    purpose:
+      "Which legal constitutions of a borrowing firm a lending product accepts. " +
+      "Empty for a product no firm can take, which is an answer rather than a " +
+      "missing row.",
+    select: permits("master_data.read"),
+    insert: permits("master_data.manage"),
+    update: permits("master_data.manage"),
+    delete: permits("master_data.manage"),
+    notes: "Deletable for the same reason as loan_product_borrower_type.",
   },
   {
     table: "document_type",

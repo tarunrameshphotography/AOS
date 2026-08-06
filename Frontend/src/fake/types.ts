@@ -111,6 +111,12 @@ export type PropertyOwnershipTypeRecord = MasterDataRecord;
 export type ReferralSource = MasterDataRecord;
 export type District = MasterDataRecord;
 export type City = MasterDataRecord;
+// Lending Product Catalogue (Milestone 7) — Database/migrations/0015. Same
+// shared shape again, which is the point: three more vocabularies and no new
+// concept for office staff to learn.
+export type BorrowerType = MasterDataRecord;
+export type SecurityType = MasterDataRecord;
+export type RequirementApplicability = MasterDataRecord;
 
 export interface AppUser {
   id: Id;
@@ -120,15 +126,50 @@ export interface AppUser {
   isActive: boolean;
 }
 
+/**
+ * A lending product — Amaze's own, bank-independent (ADR-016, ADR-032).
+ *
+ * The middle layer of the catalogue: `loanCategoryId` groups it commercially,
+ * `bank_product` (not yet in the prototype) is a lender's version of it.
+ * Mirrors `loan_product` after Database/migrations/0015.
+ *
+ * The three eligibility arrays are this prototype's projection of the
+ * junction tables `loan_product_borrower_type`,
+ * `loan_product_employment_type` and `loan_product_business_constitution`.
+ * An EMPTY array means the product admits nobody on that axis (a salaried
+ * personal loan has no business constitutions) — that emptiness is an
+ * answer, not a missing row.
+ */
 export interface LoanProduct {
   id: Id;
   code: string;
+  /** Legacy free text, still populated so nothing reading it breaks. `name`
+   * and `loanCategoryId` are what new code reads (Database/migrations/0015). */
   category: string;
   variant: string;
-  /** Master-data replacement for `category` (Milestone 5). `category` is
-   * kept for backward compatibility until the Loan Product Catalogue
-   * milestone rebuilds this table's own management screen. */
   loanCategoryId?: Id;
+  name?: string;
+  description?: string;
+  securityTypeId?: Id;
+  propertyRequirementId?: Id;
+  gstRequirementId?: Id;
+  borrowerTypeIds?: Id[];
+  employmentTypeIds?: Id[];
+  businessConstitutionIds?: Id[];
+  /** Typical market ranges, never a rule — the binding figures are per
+   * lender, on bank_product (ADR-016). */
+  minTenureMonths?: number;
+  maxTenureMonths?: number;
+  minAmount?: number;
+  maxAmount?: number;
+  isActive: boolean;
+  displayOrder: number;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  /** Set when this product is a revision of an earlier one. Nothing creates
+   * a revision yet; the field exists so the first one is data entry. */
+  supersedesLoanProductId?: Id;
+  notes?: string;
 }
 
 export interface DocumentType {
@@ -347,6 +388,10 @@ export interface Database {
   referralSources: ReferralSource[];
   districts: District[];
   cities: City[];
+  // Lending Product Catalogue (Milestone 7) — Database/migrations/0015.
+  borrowerTypes: BorrowerType[];
+  securityTypes: SecurityType[];
+  requirementApplicabilities: RequirementApplicability[];
   cases: LoanCase[];
   caseParties: CaseParty[];
   caseProperties: CaseProperty[];

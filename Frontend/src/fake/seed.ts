@@ -148,17 +148,8 @@ export function buildSeed(): Database {
     { id: id("usr", 5), personId: id("per", 91), name: "Karthik V (also calling)", roles: ["telecaller", "login_executive"], isActive: true },
   ];
 
-  const loanProducts: Database["loanProducts"] = [
-    { id: id("lpr", 1), code: "hl_purchase", category: "Home Loan", variant: "Purchase" },
-    { id: id("lpr", 2), code: "hl_self_construct", category: "Home Loan", variant: "Self Construction" },
-    { id: id("lpr", 3), code: "hl_plot_purchase", category: "Home Loan", variant: "Plot Purchase" },
-    { id: id("lpr", 4), code: "hl_balance_transfer", category: "Home Loan", variant: "Balance Transfer" },
-    { id: id("lpr", 5), code: "hl_top_up", category: "Home Loan", variant: "Top-up" },
-    { id: id("lpr", 6), code: "bl_working_capital", category: "Business Loan", variant: "Working Capital" },
-    { id: id("lpr", 7), code: "bl_term_loan", category: "Business Loan", variant: "Term Loan" },
-    { id: id("lpr", 8), code: "lap", category: "LAP", variant: "Loan Against Property" },
-    { id: id("lpr", 9), code: "pl", category: "Personal", variant: "Personal Loan" },
-  ];
+  // The lending product catalogue itself is built further down, once the
+  // master data it points at exists (Milestone 7).
 
   const documentTypes: Database["documentTypes"] = [
     { id: id("dty", 1), code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 10 },
@@ -207,10 +198,15 @@ export function buildSeed(): Database {
   // ---------------------------------------------------------------------
 
   const loanCategories: Database["loanCategories"] = [
-    { id: id("lct", 1), code: "home_loan", name: "Home Loan", isActive: true, displayOrder: 10 },
-    { id: id("lct", 2), code: "business_loan", name: "Business Loan", isActive: true, displayOrder: 20 },
-    { id: id("lct", 3), code: "lap", name: "Loan Against Property", isActive: true, displayOrder: 30 },
-    { id: id("lct", 4), code: "personal_loan", name: "Personal Loan", isActive: true, displayOrder: 40 },
+    { id: id("lct", 1), code: "home_loan", name: "Home Loan", description: "Purchase, construction, improvement and refinance of residential property.", isActive: true, displayOrder: 10 },
+    { id: id("lct", 2), code: "business_loan", name: "Business Loan", description: "Working capital and term finance for a running business, funded and non-funded.", isActive: true, displayOrder: 20 },
+    { id: id("lct", 3), code: "lap", name: "Loan Against Property", description: "Lending against property already owned, for any declared end use.", isActive: true, displayOrder: 30 },
+    { id: id("lct", 4), code: "personal_loan", name: "Personal Loan", description: "Unsecured lending to an individual against income, for any personal end use.", isActive: true, displayOrder: 40 },
+    // Four more business lines (Milestone 7, Database/migrations/0016).
+    { id: id("lct", 5), code: "vehicle_loan", name: "Vehicle Loan", description: "Finance against a new or used vehicle, secured by hypothecation of the vehicle itself.", isActive: true, displayOrder: 50 },
+    { id: id("lct", 6), code: "gold_loan", name: "Gold Loan", description: "Short-tenure lending against pledged gold ornaments. Fast, small-ticket, no income proof in most cases.", isActive: true, displayOrder: 60 },
+    { id: id("lct", 7), code: "education_loan", name: "Education Loan", description: "Finance for higher education in India or overseas, usually with a moratorium during the course.", isActive: true, displayOrder: 70 },
+    { id: id("lct", 8), code: "loan_against_securities", name: "Loan Against Securities", description: "Overdraft or demand loan against pledged financial assets — shares, mutual funds, fixed deposits.", isActive: true, displayOrder: 80 },
   ];
 
   const employmentTypes: Database["employmentTypes"] = [
@@ -292,6 +288,140 @@ export function buildSeed(): Database {
     { id: id("cty", 12), code: "sulur", name: "Sulur", districtId: id("dst", 4), isActive: true, displayOrder: 120 },
     { id: id("cty", 13), code: "annur", name: "Annur", districtId: id("dst", 4), isActive: true, displayOrder: 130 },
   ];
+
+  // ---------------------------------------------------------------------
+  // Lending Product Catalogue (Milestone 7) — Database/migrations/0015, 0016.
+  // Mirrors the DB seed, so the prototype and the schema agree on what Amaze
+  // lends against.
+  // ---------------------------------------------------------------------
+
+  const borrowerTypes: Database["borrowerTypes"] = [
+    { id: id("bwt", 1), code: "resident_individual", name: "Resident Individual", description: "A natural person resident in India. The default borrower for most retail products.", isActive: true, displayOrder: 10 },
+    { id: id("bwt", 2), code: "nri_individual", name: "NRI Individual", description: "A non-resident Indian or person of Indian origin. Separate documentation, repayment from NRE/NRO accounts.", isActive: true, displayOrder: 20 },
+    { id: id("bwt", 3), code: "non_individual", name: "Non-Individual Entity", description: "A firm, company, LLP, HUF or trust borrowing in its own name.", isActive: true, displayOrder: 30 },
+  ];
+
+  const securityTypes: Database["securityTypes"] = [
+    { id: id("sct", 1), code: "unsecured", name: "Unsecured (Clean)", description: "No security. Priced against income and credit history alone.", isActive: true, displayOrder: 10 },
+    { id: id("sct", 2), code: "immovable_property", name: "Mortgage of Immovable Property", description: "Equitable or registered mortgage of land or built property.", isActive: true, displayOrder: 20 },
+    { id: id("sct", 3), code: "gold_pledge", name: "Pledge of Gold Ornaments", description: "Physical gold held by the lender for the tenure of the loan.", isActive: true, displayOrder: 30 },
+    { id: id("sct", 4), code: "vehicle_hypothecation", name: "Hypothecation of Vehicle", description: "The financed vehicle itself, endorsed in the registration certificate.", isActive: true, displayOrder: 40 },
+    { id: id("sct", 5), code: "plant_machinery", name: "Hypothecation of Plant and Machinery", description: "The financed equipment, plant or machinery.", isActive: true, displayOrder: 50 },
+    { id: id("sct", 6), code: "stock_book_debts", name: "Hypothecation of Stock and Book Debts", description: "Current assets of a running business — inventory and receivables.", isActive: true, displayOrder: 60 },
+    { id: id("sct", 7), code: "financial_securities", name: "Pledge of Financial Securities", description: "Shares, mutual fund units, bonds or deposits pledged with the lender.", isActive: true, displayOrder: 70 },
+    { id: id("sct", 8), code: "guarantee_backed", name: "Guarantee Backed", description: "Secured by a guarantee rather than an asset — CGTMSE, CGFMU or a third-party personal guarantee.", isActive: true, displayOrder: 80 },
+  ];
+
+  const requirementApplicabilities: Database["requirementApplicabilities"] = [
+    { id: id("rqa", 1), code: "mandatory", name: "Mandatory", description: "The product cannot proceed without it.", isActive: true, displayOrder: 10 },
+    { id: id("rqa", 2), code: "optional", name: "Optional", description: "Accepted and sometimes asked for, but the product exists without it.", isActive: true, displayOrder: 20 },
+    { id: id("rqa", 3), code: "not_applicable", name: "Not Applicable", description: "The product has no use for it. Nothing should ask.", isActive: true, displayOrder: 30 },
+  ];
+
+  /** Resolves a master-data code to its seeded id, loudly. A typo in the
+   * table below should fail at seed time, not show a blank field later. */
+  function idOf(list: readonly { id: string; code: string }[], code: string): string {
+    const found = list.find((record) => record.code === code);
+    if (!found) throw new Error(`Seed error: no master data row with code "${code}"`);
+    return found.id;
+  }
+
+  const codes = (csv: string): string[] => (csv ? csv.split(",") : []);
+
+  /**
+   * The catalogue, in the same order and with the same content as
+   * Database/migrations/0016. Written as a table rather than as object
+   * literals because thirty-five products of fourteen fields each is only
+   * reviewable as a table — the same reason the migration writes it as one.
+   *
+   * Columns: seed id, code, category, name, variant (the legacy free-text
+   * column, still populated), security, property requirement, GST
+   * requirement, borrower types, employment types, business constitutions,
+   * tenure months, amount rupees.
+   *
+   * Ids 1–9 keep the products the earlier seed had, so the seeded cases
+   * still point at the products they always pointed at.
+   */
+  const catalogue: Array<[
+    number, string, string, string, string, string, string, string,
+    string, string, string, number, number, number, number, string,
+  ]> = [
+    [1, "hl_purchase", "home_loan", "Home Loan — Purchase", "Purchase", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual", "salaried,self_employed,business_owner", "", 60, 360, 500000, 100000000, "Purchase of a ready or under-construction residential property from a builder or a resale seller."],
+    [2, "hl_self_construct", "home_loan", "Home Construction Loan", "Self Construction", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual", "salaried,self_employed,business_owner", "", 60, 300, 500000, 50000000, "Construction of a house on a plot the borrower already owns. Disbursed in stages against construction progress."],
+    [3, "hl_plot_purchase", "home_loan", "Plot Purchase Loan", "Plot Purchase", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 36, 180, 500000, 30000000, "Purchase of residential land, with no construction commitment. Shorter tenure and lower funding than a home loan."],
+    [10, "hl_plot_construction", "home_loan", "Composite Plot and Construction Loan", "Plot and Construction", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 60, 300, 500000, 50000000, "One sanction covering the purchase of a plot and the construction on it, disbursed in two phases."],
+    [11, "hl_improvement", "home_loan", "Home Improvement Loan", "Improvement", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 12, 180, 100000, 5000000, "Renovation, repair or interior work on a property the borrower owns."],
+    [12, "hl_extension", "home_loan", "Home Extension Loan", "Extension", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 36, 240, 200000, 10000000, "Adding built-up area to an existing house. Needs approved plans, which renovation usually does not."],
+    [4, "hl_balance_transfer", "home_loan", "Home Loan Balance Transfer", "Balance Transfer", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual", "salaried,self_employed,business_owner", "", 36, 360, 500000, 100000000, "Takeover of an existing home loan from another lender, usually for a lower rate."],
+    [5, "hl_top_up", "home_loan", "Home Loan Top-up", "Top-up", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual", "salaried,self_employed,business_owner", "", 12, 240, 100000, 10000000, "Additional lending on an existing home loan, against the same mortgage."],
+    [13, "hl_nri", "home_loan", "NRI Home Loan", "NRI", "immovable_property", "mandatory", "not_applicable", "nri_individual", "salaried,self_employed", "", 60, 300, 1000000, 100000000, "Home loan to a non-resident Indian. Same security, different documentation — passport and visa, overseas income proof, a resident power of attorney holder."],
+    [14, "hl_affordable", "home_loan", "Affordable Housing Loan", "Affordable Housing", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 60, 240, 200000, 5000000, "Small-ticket home loan for the informal-income segment, the space affordable housing finance companies specialise in."],
+
+    [6, "bl_working_capital", "business_loan", "Working Capital Facility (Cash Credit)", "Working Capital", "stock_book_debts", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 500000, 100000000, "A revolving limit against stock and receivables, renewed annually rather than repaid in EMIs."],
+    [15, "bl_overdraft", "business_loan", "Business Overdraft", "Overdraft", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 200000, 50000000, "A drawing limit on the current account, secured by property or deposits. Interest on the drawn balance only."],
+    [7, "bl_term_loan", "business_loan", "Business Term Loan", "Term Loan", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 120, 500000, 100000000, "A fixed-tenure loan repaid in EMIs, for a defined business purpose."],
+    [16, "bl_unsecured", "business_loan", "Unsecured Business Loan", "Unsecured", "unsecured", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited", 12, 60, 100000, 7500000, "Clean business lending priced against banking turnover and GST returns. The NBFC segment's core offering."],
+    [17, "bl_machinery", "business_loan", "Machinery and Equipment Loan", "Machinery", "plant_machinery", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 12, 84, 300000, 50000000, "Finance for plant, machinery or equipment, secured by the asset being financed. Common in Coimbatore's engineering and textile units."],
+    [18, "bl_msme_cgtmse", "business_loan", "MSME Term Loan (CGTMSE-backed)", "MSME CGTMSE", "guarantee_backed", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 12, 84, 100000, 20000000, "Collateral-free term finance to a registered MSME under the CGTMSE guarantee scheme. Needs Udyam registration."],
+    [19, "bl_mudra", "business_loan", "Mudra Loan (PMMY)", "Mudra", "guarantee_backed", "not_applicable", "optional", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,huf", 12, 60, 10000, 2000000, "Micro-enterprise finance under the Pradhan Mantri Mudra Yojana, in the Shishu, Kishore, Tarun and Tarun Plus tiers."],
+    [20, "bl_bill_discounting", "business_loan", "Bill and Invoice Discounting", "Bill Discounting", "stock_book_debts", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 1, 12, 500000, 50000000, "Advance against accepted invoices or bills of exchange, repaid when the buyer pays."],
+    [21, "bl_non_fund_based", "business_loan", "Bank Guarantee and Letter of Credit", "Non-Fund Based", "guarantee_backed", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 1, 36, 100000, 50000000, "Non-fund-based limits. No money moves unless the instrument is invoked, but the limit is assessed like any other exposure."],
+
+    [8, "lap", "lap", "Loan Against Property — Residential", "Loan Against Property", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 36, 240, 500000, 100000000, "Mortgage of a residential property the borrower already owns, for a declared end use."],
+    [22, "lap_commercial", "lap", "Loan Against Property — Commercial", "Commercial Property", "immovable_property", "mandatory", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 36, 180, 500000, 100000000, "Mortgage of a shop, office, godown or industrial unit. Lower funding ratio and tighter valuation than residential LAP."],
+    [23, "lap_lrd", "lap", "Lease Rental Discounting", "Lease Rental Discounting", "immovable_property", "mandatory", "optional", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 36, 180, 2000000, 200000000, "Lending against rent receivable under a registered lease, repaid from the rent itself. Assessed on the tenant's covenant, not the landlord's income."],
+    [24, "lap_balance_transfer", "lap", "LAP Balance Transfer and Top-up", "Balance Transfer", "immovable_property", "mandatory", "optional", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 36, 240, 500000, 100000000, "Takeover of an existing loan against property, usually with additional lending on the same security."],
+
+    [9, "pl", "personal_loan", "Personal Loan — Salaried", "Personal Loan", "unsecured", "not_applicable", "not_applicable", "resident_individual", "salaried", "", 12, 72, 50000, 4000000, "Unsecured lending to a salaried individual against take-home income and employer category."],
+    [25, "pl_self_employed", "personal_loan", "Personal Loan — Self-Employed", "Self-Employed", "unsecured", "not_applicable", "optional", "resident_individual", "self_employed,business_owner", "", 12, 60, 50000, 2500000, "Unsecured personal lending assessed on ITR and banking rather than on payslips."],
+    [26, "pl_professional", "personal_loan", "Professional Loan", "Professional", "unsecured", "not_applicable", "optional", "resident_individual", "self_employed", "", 12, 84, 100000, 7500000, "Unsecured lending to a qualified professional — doctor, chartered accountant, architect — priced off the qualification and practice vintage."],
+
+    [27, "vl_new_car", "vehicle_loan", "New Car Loan", "New Car", "vehicle_hypothecation", "not_applicable", "not_applicable", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 12, 84, 100000, 10000000, "Finance for a new passenger vehicle, secured by hypothecation endorsed in the registration certificate."],
+    [28, "vl_used_car", "vehicle_loan", "Used Car Loan", "Used Car", "vehicle_hypothecation", "not_applicable", "not_applicable", "resident_individual", "salaried,self_employed,business_owner", "", 12, 60, 100000, 5000000, "Finance for a pre-owned vehicle. Tenure is capped by the vehicle's age."],
+    [29, "vl_two_wheeler", "vehicle_loan", "Two-Wheeler Loan", "Two-Wheeler", "vehicle_hypothecation", "not_applicable", "not_applicable", "resident_individual", "salaried,self_employed,business_owner", "", 12, 48, 20000, 500000, "Small-ticket finance for a motorcycle or scooter, usually sourced at the dealership."],
+    [30, "vl_commercial_vehicle", "vehicle_loan", "Commercial Vehicle Loan", "Commercial Vehicle", "vehicle_hypothecation", "not_applicable", "optional", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited", 12, 60, 200000, 20000000, "Finance for goods or passenger commercial vehicles, assessed on the transport business's route and earnings."],
+
+    [31, "gl_gold", "gold_loan", "Gold Loan", "Gold Loan", "gold_pledge", "not_applicable", "not_applicable", "resident_individual", "salaried,self_employed,business_owner", "", 3, 36, 10000, 5000000, "Short-tenure lending against pledged gold ornaments, disbursed the same day. The security is the whole underwriting."],
+
+    [32, "el_domestic", "education_loan", "Education Loan — Domestic", "Domestic", "unsecured", "optional", "not_applicable", "resident_individual", "salaried,self_employed,business_owner", "", 12, 180, 50000, 5000000, "Finance for higher education in India, with a moratorium covering the course. Small tickets are collateral-free."],
+    [33, "el_abroad", "education_loan", "Education Loan — Overseas", "Overseas", "immovable_property", "mandatory", "not_applicable", "resident_individual", "salaried,self_employed,business_owner", "", 12, 180, 500000, 20000000, "Finance for study abroad, covering tuition and living costs. Almost always needs collateral and a resident co-applicant."],
+
+    [34, "las_shares_mf", "loan_against_securities", "Loan Against Shares and Mutual Funds", "Shares and Mutual Funds", "financial_securities", "not_applicable", "not_applicable", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited", 12, 36, 100000, 50000000, "An overdraft against pledged listed shares or mutual fund units, with the limit revised as the market moves."],
+    [35, "las_fd", "loan_against_securities", "Loan Against Fixed Deposit", "Fixed Deposit", "financial_securities", "not_applicable", "not_applicable", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 3, 60, 10000, 50000000, "An overdraft against the borrower's own term deposit. The cheapest borrowing available to a depositor."],
+  ];
+
+  const loanProducts: Database["loanProducts"] = catalogue.map((row, index) => {
+    const [
+      seedId, code, categoryCode, name, variant, securityCode, propertyReq, gstReq,
+      borrowerCodes, employmentCodes, constitutionCodes,
+      minTenureMonths, maxTenureMonths, minAmount, maxAmount, description,
+    ] = row;
+    const category = loanCategories.find((c) => c.code === categoryCode);
+    if (!category) throw new Error(`Seed error: no loan category "${categoryCode}"`);
+    return {
+      id: id("lpr", seedId),
+      code,
+      // The legacy free-text pair, still populated so nothing reading it
+      // breaks (Database/migrations/0015).
+      category: category.name,
+      variant,
+      loanCategoryId: category.id,
+      name,
+      description,
+      securityTypeId: idOf(securityTypes, securityCode),
+      propertyRequirementId: idOf(requirementApplicabilities, propertyReq),
+      gstRequirementId: idOf(requirementApplicabilities, gstReq),
+      borrowerTypeIds: codes(borrowerCodes).map((c) => idOf(borrowerTypes, c)),
+      employmentTypeIds: codes(employmentCodes).map((c) => idOf(employmentTypes, c)),
+      businessConstitutionIds: codes(constitutionCodes).map((c) => idOf(businessConstitutions, c)),
+      minTenureMonths,
+      maxTenureMonths,
+      minAmount,
+      maxAmount,
+      isActive: true,
+      displayOrder: (index + 1) * 10,
+    };
+  });
 
   const year = new Date().getFullYear();
   const num = (n: number): string => `AL-${year}-${String(n).padStart(5, "0")}`;
@@ -441,6 +571,7 @@ export function buildSeed(): Database {
     rejectionReasons,
     loanCategories, employmentTypes, businessConstitutions, propertyTypes,
     propertyOwnershipTypes, referralSources, districts, cities,
+    borrowerTypes, securityTypes, requirementApplicabilities,
     cases, caseParties, caseProperties, documents,
     requirements: [], submissions, offers, communications, notes, tasks, events,
     caseNumberSequence: { [year]: 47 },

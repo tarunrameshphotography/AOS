@@ -5,7 +5,7 @@ The sequence I'd follow
 ✅ Automatic Storage
 ✅ Master Data Engine
 ✅ Master Data Refinement
-Loan Product Catalogue
+✅ Lending Product Catalogue
 Coimbatore Bank & NBFC Catalogue
 Document Requirement Engine
 Workflow Polish

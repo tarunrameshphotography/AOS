@@ -35,17 +35,28 @@ import {
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import { storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
+import type { LendingProduct } from "@domain/products/index.js";
+
 import type {
   AosEvent,
   CasePartyRole,
   Database,
   Id,
   LoanCase,
+  LoanProduct,
   MasterDataRecord,
   SubmissionStatus,
 } from "./types.js";
 
-const STORAGE_KEY = "aos.prototype.v1";
+/**
+ * Bumped whenever the seeded shape changes in a way a stored database cannot
+ * satisfy — v2 for the Lending Product Catalogue (Milestone 7), which added
+ * three master-data collections and made `isActive` a required field on a
+ * product. A stale v1 store would render a catalogue of products that all
+ * look retired, which is worse than starting fresh from a seed that is, by
+ * the footer's own admission, fake.
+ */
+const STORAGE_KEY = "aos.prototype.v2";
 
 let counter = 1000;
 const nextId = (): string => `gen_${++counter}`;
@@ -1171,6 +1182,10 @@ export const MASTER_DATA_KINDS = [
   "referralSources",
   "districts",
   "cities",
+  // Lending Product Catalogue (Milestone 7) — Database/migrations/0015.
+  "borrowerTypes",
+  "securityTypes",
+  "requirementApplicabilities",
 ] as const;
 
 export type MasterDataKind = (typeof MASTER_DATA_KINDS)[number];
@@ -1184,6 +1199,9 @@ export const MASTER_DATA_LABELS: Record<MasterDataKind, string> = {
   referralSources: "Referral Source",
   districts: "District",
   cities: "City",
+  borrowerTypes: "Borrower Type",
+  securityTypes: "Security Type",
+  requirementApplicabilities: "Requirement Applicability",
 };
 
 export interface MasterDataInput {
@@ -1420,4 +1438,237 @@ export function setRejectionReasonActive(id: Id, isActive: boolean, actorUserId:
   });
   commit();
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Lending Product Catalogue (Milestone 7) — Database/migrations/0015.
+//
+// A lending product is richer than a MasterDataRecord (a category, a security
+// type, three many-to-many eligibility lists, tenure and amount ranges), so
+// it does not go through the generic functions above — the same reason
+// document_type and rejection_reason have their own. What it shares with
+// them: records are deactivated, never deleted, and every write pairs with an
+// event (BR-050).
+//
+// Governed by master_data.manage, checked by the screen that calls these
+// (BR-060), as everywhere else in this store.
+// ---------------------------------------------------------------------------
+
+export interface LendingProductInput {
+  code: string;
+  name: string;
+  loanCategoryId: Id;
+  description?: string;
+  securityTypeId?: Id;
+  propertyRequirementId?: Id;
+  gstRequirementId?: Id;
+  borrowerTypeIds?: Id[];
+  employmentTypeIds?: Id[];
+  businessConstitutionIds?: Id[];
+  minTenureMonths?: number;
+  maxTenureMonths?: number;
+  minAmount?: number;
+  maxAmount?: number;
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  notes?: string;
+}
+
+/**
+ * Rejects what the database's own check constraints would reject, in the
+ * words an office user would use. The constraint is the real guard; this
+ * exists so the message arrives before the save rather than after it.
+ */
+function validateLendingProduct(input: LendingProductInput): string | undefined {
+  if (!input.code.trim() || !input.name.trim()) return "Code and product name are both required.";
+  if (!/^[a-z][a-z0-9_]*$/.test(input.code.trim())) {
+    return "Code must be lowercase letters, numbers and underscores, starting with a letter.";
+  }
+  if (!input.loanCategoryId) return "Every product belongs to a loan category.";
+  const { minTenureMonths: minT, maxTenureMonths: maxT, minAmount, maxAmount } = input;
+  if (minT !== undefined && maxT !== undefined && maxT < minT) {
+    return "Maximum tenure cannot be shorter than the minimum.";
+  }
+  if (minAmount !== undefined && maxAmount !== undefined && maxAmount < minAmount) {
+    return "Maximum amount cannot be less than the minimum.";
+  }
+  if (input.effectiveFrom && input.effectiveTo && input.effectiveTo < input.effectiveFrom) {
+    return "The last effective date cannot be before the first.";
+  }
+  return undefined;
+}
+
+/** Only the fields the input actually carries — exactOptionalPropertyTypes. */
+function lendingProductFields(input: LendingProductInput): Partial<LoanProduct> {
+  return {
+    ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+    ...(input.securityTypeId ? { securityTypeId: input.securityTypeId } : {}),
+    ...(input.propertyRequirementId ? { propertyRequirementId: input.propertyRequirementId } : {}),
+    ...(input.gstRequirementId ? { gstRequirementId: input.gstRequirementId } : {}),
+    ...(input.borrowerTypeIds ? { borrowerTypeIds: [...input.borrowerTypeIds] } : {}),
+    ...(input.employmentTypeIds ? { employmentTypeIds: [...input.employmentTypeIds] } : {}),
+    ...(input.businessConstitutionIds
+      ? { businessConstitutionIds: [...input.businessConstitutionIds] }
+      : {}),
+    ...(input.minTenureMonths !== undefined ? { minTenureMonths: input.minTenureMonths } : {}),
+    ...(input.maxTenureMonths !== undefined ? { maxTenureMonths: input.maxTenureMonths } : {}),
+    ...(input.minAmount !== undefined ? { minAmount: input.minAmount } : {}),
+    ...(input.maxAmount !== undefined ? { maxAmount: input.maxAmount } : {}),
+    ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}),
+    ...(input.effectiveTo ? { effectiveTo: input.effectiveTo } : {}),
+    ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+  };
+}
+
+export function createLendingProduct(input: LendingProductInput, actorUserId: Id): ActionResult {
+  const problem = validateLendingProduct(input);
+  if (problem) return { ok: false, message: problem };
+
+  const code = input.code.trim();
+  const name = input.name.trim();
+  if (db.loanProducts.some((p) => p.code === code)) {
+    return { ok: false, message: `"${code}" is already in use — product codes must be unique.` };
+  }
+  const category = db.loanCategories.find((c) => c.id === input.loanCategoryId);
+  if (!category) return { ok: false, message: "That loan category no longer exists." };
+
+  const product: LoanProduct = {
+    id: nextId(),
+    code,
+    // The legacy free-text pair, still written so nothing reading it breaks
+    // (Database/migrations/0015).
+    category: category.name,
+    variant: name,
+    loanCategoryId: category.id,
+    name,
+    isActive: true,
+    displayOrder: (db.loanProducts.length + 1) * 10,
+    ...lendingProductFields(input),
+  };
+  db = { ...db, loanProducts: [...db.loanProducts, product] };
+
+  record({
+    actorUserId,
+    entityType: "loan_product",
+    entityId: product.id,
+    eventType: "master_data.created",
+    summary: `Lending product added: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function updateLendingProduct(
+  id: Id,
+  input: LendingProductInput,
+  actorUserId: Id,
+): ActionResult {
+  const existing = db.loanProducts.find((p) => p.id === id);
+  if (!existing) return { ok: false, message: "Product not found." };
+  const problem = validateLendingProduct(input);
+  if (problem) return { ok: false, message: problem };
+
+  const name = input.name.trim();
+  const category = db.loanCategories.find((c) => c.id === input.loanCategoryId);
+  if (!category) return { ok: false, message: "That loan category no longer exists." };
+
+  db = {
+    ...db,
+    loanProducts: db.loanProducts.map((p) =>
+      p.id === id
+        ? {
+            // Rebuilt rather than merged: an eligibility list the user
+            // cleared must stay cleared, and spreading the old row would
+            // silently keep what was just unticked.
+            id: p.id,
+            code: p.code,
+            category: category.name,
+            variant: name,
+            loanCategoryId: category.id,
+            name,
+            isActive: p.isActive,
+            displayOrder: p.displayOrder,
+            ...(p.supersedesLoanProductId
+              ? { supersedesLoanProductId: p.supersedesLoanProductId }
+              : {}),
+            ...lendingProductFields(input),
+          }
+        : p,
+    ),
+  };
+
+  record({
+    actorUserId,
+    entityType: "loan_product",
+    entityId: id,
+    eventType: "master_data.updated",
+    summary: `Lending product updated: ${name}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+export function setLendingProductActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
+  const existing = db.loanProducts.find((p) => p.id === id);
+  if (!existing) return { ok: false, message: "Product not found." };
+
+  db = {
+    ...db,
+    loanProducts: db.loanProducts.map((p) => (p.id === id ? { ...p, isActive } : p)),
+  };
+
+  record({
+    actorUserId,
+    entityType: "loan_product",
+    entityId: id,
+    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
+    summary: `Lending product ${isActive ? "reactivated" : "retired"}: ${existing.name ?? existing.variant}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Projects the stored products into the domain layer's shape — ids resolved
+ * to codes, which is what @domain/products reasons about.
+ *
+ * The same translation the server will do when it loads a product out of
+ * Postgres, done here so the catalogue screen filters through the real
+ * domain code rather than through a second implementation of it.
+ */
+export function lendingProductsAsDomain(source: Database = db): LendingProduct[] {
+  const codeOf = (list: readonly MasterDataRecord[], id?: Id): string | undefined =>
+    id === undefined ? undefined : list.find((r) => r.id === id)?.code;
+  const codesOf = (list: readonly MasterDataRecord[], ids?: readonly Id[]): string[] | undefined =>
+    ids === undefined
+      ? undefined
+      : ids.flatMap((id) => {
+          const code = codeOf(list, id);
+          return code === undefined ? [] : [code];
+        });
+
+  return source.loanProducts.map((product) => ({
+    code: product.code,
+    name: product.name ?? `${product.category} — ${product.variant}`,
+    categoryCode: codeOf(source.loanCategories, product.loanCategoryId),
+    description: product.description,
+    securityTypeCode: codeOf(source.securityTypes, product.securityTypeId),
+    borrowerTypeCodes: codesOf(source.borrowerTypes, product.borrowerTypeIds),
+    employmentTypeCodes: codesOf(source.employmentTypes, product.employmentTypeIds),
+    businessConstitutionCodes: codesOf(
+      source.businessConstitutions,
+      product.businessConstitutionIds,
+    ),
+    propertyRequirement: codeOf(source.requirementApplicabilities, product.propertyRequirementId),
+    gstRequirement: codeOf(source.requirementApplicabilities, product.gstRequirementId),
+    minTenureMonths: product.minTenureMonths,
+    maxTenureMonths: product.maxTenureMonths,
+    minAmount: product.minAmount,
+    maxAmount: product.maxAmount,
+    isActive: product.isActive,
+    effectiveFrom: product.effectiveFrom,
+    effectiveTo: product.effectiveTo,
+    supersedesProductCode: source.loanProducts.find((p) => p.id === product.supersedesLoanProductId)
+      ?.code,
+  }));
 }

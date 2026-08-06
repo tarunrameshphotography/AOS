@@ -39,6 +39,7 @@ import type { LendingProduct } from "@domain/products/index.js";
 
 import type {
   AosEvent,
+  AvailabilityStatus,
   CasePartyRole,
   Database,
   Id,
@@ -1174,7 +1175,7 @@ export function completeTask(taskId: Id, actorUserId: Id): ActionResult {
 
 /** The Database keys holding a MasterDataRecord[] collection. */
 export const MASTER_DATA_KINDS = [
-  "loanCategories",
+  "customerProducts",
   "employmentTypes",
   "businessConstitutions",
   "propertyTypes",
@@ -1191,7 +1192,7 @@ export const MASTER_DATA_KINDS = [
 export type MasterDataKind = (typeof MASTER_DATA_KINDS)[number];
 
 export const MASTER_DATA_LABELS: Record<MasterDataKind, string> = {
-  loanCategories: "Loan Category",
+  customerProducts: "Customer Product",
   employmentTypes: "Employment Type",
   businessConstitutions: "Business Constitution",
   propertyTypes: "Property Type",
@@ -1457,7 +1458,7 @@ export function setRejectionReasonActive(id: Id, isActive: boolean, actorUserId:
 export interface LendingProductInput {
   code: string;
   name: string;
-  loanCategoryId: Id;
+  customerProductId: Id;
   description?: string;
   securityTypeId?: Id;
   propertyRequirementId?: Id;
@@ -1471,6 +1472,8 @@ export interface LendingProductInput {
   maxAmount?: number;
   effectiveFrom?: string;
   effectiveTo?: string;
+  typicalCustomerProfile?: string;
+  typicalDocumentsSummary?: string;
   notes?: string;
 }
 
@@ -1484,7 +1487,7 @@ function validateLendingProduct(input: LendingProductInput): string | undefined 
   if (!/^[a-z][a-z0-9_]*$/.test(input.code.trim())) {
     return "Code must be lowercase letters, numbers and underscores, starting with a letter.";
   }
-  if (!input.loanCategoryId) return "Every product belongs to a loan category.";
+  if (!input.customerProductId) return "Every product belongs to a customer product.";
   const { minTenureMonths: minT, maxTenureMonths: maxT, minAmount, maxAmount } = input;
   if (minT !== undefined && maxT !== undefined && maxT < minT) {
     return "Maximum tenure cannot be shorter than the minimum.";
@@ -1516,6 +1519,12 @@ function lendingProductFields(input: LendingProductInput): Partial<LoanProduct> 
     ...(input.maxAmount !== undefined ? { maxAmount: input.maxAmount } : {}),
     ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}),
     ...(input.effectiveTo ? { effectiveTo: input.effectiveTo } : {}),
+    ...(input.typicalCustomerProfile?.trim()
+      ? { typicalCustomerProfile: input.typicalCustomerProfile.trim() }
+      : {}),
+    ...(input.typicalDocumentsSummary?.trim()
+      ? { typicalDocumentsSummary: input.typicalDocumentsSummary.trim() }
+      : {}),
     ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
   };
 }
@@ -1529,19 +1538,20 @@ export function createLendingProduct(input: LendingProductInput, actorUserId: Id
   if (db.loanProducts.some((p) => p.code === code)) {
     return { ok: false, message: `"${code}" is already in use — product codes must be unique.` };
   }
-  const category = db.loanCategories.find((c) => c.id === input.loanCategoryId);
-  if (!category) return { ok: false, message: "That loan category no longer exists." };
+  const customerProduct = db.customerProducts.find((c) => c.id === input.customerProductId);
+  if (!customerProduct) return { ok: false, message: "That customer product no longer exists." };
 
   const product: LoanProduct = {
     id: nextId(),
     code,
     // The legacy free-text pair, still written so nothing reading it breaks
     // (Database/migrations/0015).
-    category: category.name,
+    category: customerProduct.name,
     variant: name,
-    loanCategoryId: category.id,
+    customerProductId: customerProduct.id,
     name,
     isActive: true,
+    availabilityStatus: "active",
     displayOrder: (db.loanProducts.length + 1) * 10,
     ...lendingProductFields(input),
   };
@@ -1569,8 +1579,8 @@ export function updateLendingProduct(
   if (problem) return { ok: false, message: problem };
 
   const name = input.name.trim();
-  const category = db.loanCategories.find((c) => c.id === input.loanCategoryId);
-  if (!category) return { ok: false, message: "That loan category no longer exists." };
+  const customerProduct = db.customerProducts.find((c) => c.id === input.customerProductId);
+  if (!customerProduct) return { ok: false, message: "That customer product no longer exists." };
 
   db = {
     ...db,
@@ -1582,11 +1592,12 @@ export function updateLendingProduct(
             // silently keep what was just unticked.
             id: p.id,
             code: p.code,
-            category: category.name,
+            category: customerProduct.name,
             variant: name,
-            loanCategoryId: category.id,
+            customerProductId: customerProduct.id,
             name,
             isActive: p.isActive,
+            availabilityStatus: p.availabilityStatus ?? (p.isActive ? "active" : "retired"),
             displayOrder: p.displayOrder,
             ...(p.supersedesLoanProductId
               ? { supersedesLoanProductId: p.supersedesLoanProductId }
@@ -1608,24 +1619,48 @@ export function updateLendingProduct(
   return { ok: true };
 }
 
-export function setLendingProductActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
+/**
+ * Sets the full three-state lifecycle (Milestone 7.1, ADR-033).
+ * `isActive` is kept in lockstep — true only for `"active"` — the same
+ * consistency the database enforces with a check constraint
+ * (Database/migrations/0017), so every reader that only knows `isActive`
+ * still gets the right on/off answer.
+ */
+export function setLendingProductAvailability(
+  id: Id,
+  status: AvailabilityStatus,
+  actorUserId: Id,
+): ActionResult {
   const existing = db.loanProducts.find((p) => p.id === id);
   if (!existing) return { ok: false, message: "Product not found." };
 
   db = {
     ...db,
-    loanProducts: db.loanProducts.map((p) => (p.id === id ? { ...p, isActive } : p)),
+    loanProducts: db.loanProducts.map((p) =>
+      p.id === id ? { ...p, availabilityStatus: status, isActive: status === "active" } : p,
+    ),
   };
 
+  const labels: Record<AvailabilityStatus, string> = {
+    active: "reactivated",
+    temporarily_suspended: "temporarily suspended",
+    retired: "retired",
+  };
   record({
     actorUserId,
     entityType: "loan_product",
     entityId: id,
-    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
-    summary: `Lending product ${isActive ? "reactivated" : "retired"}: ${existing.name ?? existing.variant}`,
+    eventType: status === "active" ? "master_data.activated" : "master_data.deactivated",
+    summary: `Lending product ${labels[status]}: ${existing.name ?? existing.variant}`,
   });
   commit();
   return { ok: true };
+}
+
+/** Thin two-state wrapper over {@link setLendingProductAvailability}, kept
+ * for callers that only reason in Active/Inactive terms. */
+export function setLendingProductActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
+  return setLendingProductAvailability(id, isActive ? "active" : "retired", actorUserId);
 }
 
 /**
@@ -1650,7 +1685,7 @@ export function lendingProductsAsDomain(source: Database = db): LendingProduct[]
   return source.loanProducts.map((product) => ({
     code: product.code,
     name: product.name ?? `${product.category} — ${product.variant}`,
-    categoryCode: codeOf(source.loanCategories, product.loanCategoryId),
+    customerProductCode: codeOf(source.customerProducts, product.customerProductId),
     description: product.description,
     securityTypeCode: codeOf(source.securityTypes, product.securityTypeId),
     borrowerTypeCodes: codesOf(source.borrowerTypes, product.borrowerTypeIds),
@@ -1666,9 +1701,12 @@ export function lendingProductsAsDomain(source: Database = db): LendingProduct[]
     minAmount: product.minAmount,
     maxAmount: product.maxAmount,
     isActive: product.isActive,
+    availabilityStatus: product.availabilityStatus,
     effectiveFrom: product.effectiveFrom,
     effectiveTo: product.effectiveTo,
     supersedesProductCode: source.loanProducts.find((p) => p.id === product.supersedesLoanProductId)
       ?.code,
+    typicalCustomerProfile: product.typicalCustomerProfile,
+    typicalDocumentsSummary: product.typicalDocumentsSummary,
   }));
 }

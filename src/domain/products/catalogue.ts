@@ -1,7 +1,7 @@
 /**
  * The lending product catalogue, as domain logic rather than as a screen.
  *
- * Source of truth: ADR-016, ADR-032. Schema: Database/migrations/0015.
+ * Source of truth: ADR-016, ADR-032, ADR-033. Schema: Database/migrations/0015, 0017.
  *
  * A lending product is the finest-grained thing that is both known at case
  * creation and stable enough to generate requirements from — coarser than a
@@ -42,10 +42,12 @@ export type ApplicabilityCode = "mandatory" | "optional" | "not_applicable" | (s
  * report or an AI prompt would name anyway. The layer that loads a product
  * resolves ids to codes once; everything after that reads meaning.
  */
+export type AvailabilityStatus = "active" | "temporarily_suspended" | "retired";
+
 export interface LendingProduct {
   readonly code: string;
   readonly name: string;
-  readonly categoryCode?: string | undefined;
+  readonly customerProductCode?: string | undefined;
   readonly description?: string | undefined;
   readonly securityTypeCode?: string | undefined;
   readonly borrowerTypeCodes?: readonly string[] | undefined;
@@ -58,12 +60,31 @@ export interface LendingProduct {
   readonly minAmount?: number | undefined;
   readonly maxAmount?: number | undefined;
   readonly isActive: boolean;
+  /**
+   * Active, Temporarily Suspended or Retired (Database/migrations/0017).
+   * Undefined means the loader did not carry it — treated as `"active"` when
+   * `isActive` is true and `"retired"` when it is not, so older data and
+   * `isActive` alone still produce the right answer (ADR-033).
+   */
+  readonly availabilityStatus?: AvailabilityStatus | undefined;
   /** ISO date. Null/undefined means "as long as it has been active". */
   readonly effectiveFrom?: string | undefined;
   /** ISO date. The last day the product was offered. */
   readonly effectiveTo?: string | undefined;
   /** The code of the earlier product this one replaces, if it is a revision. */
   readonly supersedesProductCode?: string | undefined;
+  /**
+   * Who typically takes this product, in office-staff language — "Salaried
+   * Employee", "Textile Unit", "NRI". Informational only: NOT an eligibility
+   * rule (Database/migrations/0017).
+   */
+  readonly typicalCustomerProfile?: string | undefined;
+  /**
+   * A concise, human-readable summary of what is usually asked for.
+   * Guidance, not a requirement template — the Document Requirement Engine
+   * is a separate, future milestone (Database/migrations/0017).
+   */
+  readonly typicalDocumentsSummary?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +104,7 @@ export type ProductAvailability =
   | "offerable"
   | "not_yet_effective"
   | "expired"
+  | "suspended"
   | "retired"
   | "superseded";
 
@@ -110,12 +132,18 @@ export function productAvailability(
   if (product.effectiveTo && isoDay(product.effectiveTo) < day) {
     return "expired";
   }
-  // Superseded is reported ahead of retired: both are inactive, but only one
-  // of them can tell the user where the product went.
+  // Superseded is reported ahead of retired/suspended: all three are
+  // inactive, but only one of them can tell the user where the product went.
   if (supersededByCodes.has(product.code)) {
     return "superseded";
   }
-  if (!product.isActive) {
+  // Undefined status falls back to isActive alone (ADR-033): older or
+  // partially-loaded data must still resolve to a sensible answer.
+  const status = product.availabilityStatus ?? (product.isActive ? "active" : "retired");
+  if (status === "temporarily_suspended") {
+    return "suspended";
+  }
+  if (status === "retired" || !product.isActive) {
     return "retired";
   }
   return "offerable";
@@ -157,9 +185,9 @@ export function supersededCodes(products: readonly LendingProduct[]): ReadonlySe
  * a filter panel feel broken the moment someone clears a box.
  */
 export interface ProductFilter {
-  /** Free text, matched against name, code, description and category code. */
+  /** Free text, matched against name, code, description and customer product code. */
   readonly query?: string | undefined;
-  readonly categoryCode?: string | undefined;
+  readonly customerProductCode?: string | undefined;
   readonly securityTypeCode?: string | undefined;
   readonly borrowerTypeCode?: string | undefined;
   readonly employmentTypeCode?: string | undefined;
@@ -180,7 +208,7 @@ function matchesText(product: LendingProduct, query: string): boolean {
     product.name,
     product.code,
     product.description ?? "",
-    product.categoryCode ?? "",
+    product.customerProductCode ?? "",
   ]
     .join(" ")
     .toLowerCase();
@@ -219,7 +247,12 @@ export function matchesFilter(product: LendingProduct, filter: ProductFilter): b
 
   if (!filter.includeInactive && !isOfferable(product, on)) return false;
   if (filter.query !== undefined && !matchesText(product, filter.query)) return false;
-  if (filter.categoryCode !== undefined && product.categoryCode !== filter.categoryCode) return false;
+  if (
+    filter.customerProductCode !== undefined &&
+    product.customerProductCode !== filter.customerProductCode
+  ) {
+    return false;
+  }
   if (
     filter.securityTypeCode !== undefined &&
     product.securityTypeCode !== filter.securityTypeCode

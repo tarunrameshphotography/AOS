@@ -1076,3 +1076,71 @@ product recommendation all read this table and need no schema change to do
 it. The cost is a screen with more fields on it than a master-data row has,
 which is why the catalogue got its own screen rather than becoming an
 eleventh section on the Master Data one.
+
+## ADR-033 — Lending Product refinement: rename, not rebuild; a three-state lifecycle; guidance columns kept declarative-free
+
+Date: 2026-08-06
+Status: Accepted
+
+**Decision.** Milestone 7.1 refines the catalogue ADR-032 created, without
+redesigning it. Three changes, all additive:
+
+- **`loan_category` renamed to `customer_product`.** No new table.
+  `loan_category` already modelled exactly what a telecaller calls a
+  "Customer Product" — Home Loan, Business Loan, LAP — grouping several
+  lending products underneath it (Home Loan groups Purchase, Self
+  Construction, Balance Transfer, Top-up, NRI...). The milestone brief asked
+  to "separate Customer Products from Lending Products... do not duplicate
+  data" — the separation already existed in ADR-032's three-layer hierarchy;
+  duplicating it into a second table would have been the mistake the brief
+  warned against. Renaming is the whole change (Database/migrations/0017): a
+  plain `ALTER TABLE ... RENAME`, no data moved, every id and foreign key
+  intact. `loan_product` keeps its name — it was already the "Lending
+  Product" layer ADR-032 named — and `bank_product` is untouched and stays
+  independent, as the brief asked.
+
+- **Active/Inactive becomes a three-state `availability_status`**: `active`,
+  `temporarily_suspended`, `retired`. A lender pausing a scheme is a
+  different fact from Amaze retiring a product for good, and a boolean could
+  not say which. Kept as a plain text column with a check constraint, not a
+  new master-data table: this is fixed, three-value operational vocabulary
+  tied to code (the domain layer's lifecycle logic), the same reasoning
+  0012's closing summary used to keep `case_stage` and its siblings as enums
+  rather than master data — a business user does not get to invent a fourth
+  lifecycle state without a code and workflow review. `is_active` is kept,
+  unchanged in name and type, and pinned to the new column by a check
+  constraint (`is_active = (availability_status = 'active')`) so the two can
+  never drift apart — every existing reader that only knows `is_active` still
+  gets the right on/off answer, satisfying the brief's explicit backward
+  compatibility instruction for this part.
+
+- **`typical_customer_profile` and `typical_documents_summary`**, both free
+  text. Deliberately NOT structured data, on the brief's own instruction:
+  "this is guidance only... later milestones will generate exact requirements
+  automatically." Neither column is read by the borrower_type /
+  employment_type / business_constitution eligibility junctions ADR-032
+  created, which remain the one declarative source of truth about who may
+  actually take a product. A human reads these two columns; no engine does.
+
+**Why a migration and not just a UI relabel.** The brief's own examples
+("Home Loan → Purchase, Self Construction...") describe the schema
+`loan_category`/`loan_product` already implements. A cosmetic-only relabel
+would leave the database calling something a "Loan Category" that every
+office conversation calls a "Customer Product," which is exactly the
+kind of naming drift the Master Data Engine milestone (ADR-030) existed to
+prevent. The rename is cheap (no data movement) and keeps the schema's
+vocabulary matching the business's.
+
+**Coimbatore-first, kept out of the schema.** The brief's Part 5 (prioritise
+products the Coimbatore ecosystem actually uses) is entirely seed data and
+UI ordering — `customer_product.display_order` and a handful of description
+edits naming local industries (Database/migrations/0018) — not a schema
+change. No product was invented or removed.
+
+**Consequences.** The Document Requirement Engine (still a future milestone)
+gains nothing new to read from this migration — it already had everything it
+needs from 0015. What changes is entirely legibility: the catalogue's names
+match how Amaze's own staff describe it, a suspended product is
+distinguishable from a retired one, and a telecaller can see who a product is
+usually for and what it usually asks for without waiting for the requirement
+engine to exist.

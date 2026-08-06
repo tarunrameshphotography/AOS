@@ -103,7 +103,11 @@ export interface MasterDataRecord {
   state?: string;
 }
 
-export type LoanCategory = MasterDataRecord;
+/** Was `LoanCategory` (Milestone 5). Renamed in Milestone 7.1 (ADR-033) —
+ * this record already modelled what office staff call a "Customer Product"
+ * (Home Loan, Business Loan, LAP), grouping several lending products
+ * underneath it. */
+export type CustomerProduct = MasterDataRecord;
 export type EmploymentTypeRecord = MasterDataRecord;
 export type BusinessConstitution = MasterDataRecord;
 export type PropertyTypeRecord = MasterDataRecord;
@@ -127,11 +131,11 @@ export interface AppUser {
 }
 
 /**
- * A lending product — Amaze's own, bank-independent (ADR-016, ADR-032).
+ * A lending product — Amaze's own, bank-independent (ADR-016, ADR-032, ADR-033).
  *
- * The middle layer of the catalogue: `loanCategoryId` groups it commercially,
+ * The middle layer of the catalogue: `customerProductId` groups it commercially,
  * `bank_product` (not yet in the prototype) is a lender's version of it.
- * Mirrors `loan_product` after Database/migrations/0015.
+ * Mirrors `loan_product` after Database/migrations/0015, 0017.
  *
  * The three eligibility arrays are this prototype's projection of the
  * junction tables `loan_product_borrower_type`,
@@ -140,14 +144,18 @@ export interface AppUser {
  * personal loan has no business constitutions) — that emptiness is an
  * answer, not a missing row.
  */
+/** Active, Temporarily Suspended or Retired (Database/migrations/0017). */
+export type AvailabilityStatus = "active" | "temporarily_suspended" | "retired";
+
 export interface LoanProduct {
   id: Id;
   code: string;
   /** Legacy free text, still populated so nothing reading it breaks. `name`
-   * and `loanCategoryId` are what new code reads (Database/migrations/0015). */
+   * and `customerProductId` are what new code reads (Database/migrations/0015). */
   category: string;
   variant: string;
-  loanCategoryId?: Id;
+  /** Was `loanCategoryId` (Milestone 5). Renamed in Milestone 7.1 (ADR-033). */
+  customerProductId?: Id;
   name?: string;
   description?: string;
   securityTypeId?: Id;
@@ -163,12 +171,24 @@ export interface LoanProduct {
   minAmount?: number;
   maxAmount?: number;
   isActive: boolean;
+  /**
+   * Richer than `isActive` alone (Milestone 7.1, ADR-033). Undefined is
+   * treated as `"active"` when `isActive` is true and `"retired"` otherwise,
+   * so existing data and code that only knows `isActive` still behaves.
+   */
+  availabilityStatus?: AvailabilityStatus;
   displayOrder: number;
   effectiveFrom?: string;
   effectiveTo?: string;
   /** Set when this product is a revision of an earlier one. Nothing creates
    * a revision yet; the field exists so the first one is data entry. */
   supersedesLoanProductId?: Id;
+  /** Who typically takes this product — "Salaried Employee", "Textile Unit",
+   * "NRI". Informational only, NOT an eligibility rule (Milestone 7.1). */
+  typicalCustomerProfile?: string;
+  /** A short, human-readable summary of what is usually asked for — guidance,
+   * not a requirement template (Milestone 7.1). */
+  typicalDocumentsSummary?: string;
   notes?: string;
 }
 
@@ -379,8 +399,9 @@ export interface Database {
   loanProducts: LoanProduct[];
   documentTypes: DocumentType[];
   rejectionReasons: RejectionReason[];
-  // Master Data Engine (Milestone 5) — Database/migrations/0012.
-  loanCategories: LoanCategory[];
+  // Master Data Engine (Milestone 5) — Database/migrations/0012. Renamed
+  // from loanCategories in Milestone 7.1 (ADR-033).
+  customerProducts: CustomerProduct[];
   employmentTypes: EmploymentTypeRecord[];
   businessConstitutions: BusinessConstitution[];
   propertyTypes: PropertyTypeRecord[];

@@ -17,7 +17,7 @@ function product(overrides: Partial<LendingProduct> = {}): LendingProduct {
   return {
     code: "lap",
     name: "Loan Against Property — Residential",
-    categoryCode: "lap",
+    customerProductCode: "lap",
     securityTypeCode: "immovable_property",
     borrowerTypeCodes: ["resident_individual", "non_individual"],
     employmentTypeCodes: ["salaried", "self_employed", "business_owner"],
@@ -60,6 +60,20 @@ describe("availability", () => {
     expect(productAvailability(product({ isActive: false }), TODAY)).toBe("retired");
   });
 
+  it("reports a temporarily suspended product distinctly from a retired one", () => {
+    expect(
+      productAvailability(
+        product({ isActive: false, availabilityStatus: "temporarily_suspended" }),
+        TODAY,
+      ),
+    ).toBe("suspended");
+  });
+
+  it("falls back to isActive alone when availabilityStatus is absent", () => {
+    expect(productAvailability(product({ isActive: true }), TODAY)).toBe("offerable");
+    expect(productAvailability(product({ isActive: false }), TODAY)).toBe("retired");
+  });
+
   it("reports a superseded product as superseded, not merely retired", () => {
     // The distinction is the whole point: only one of the two can tell the
     // user where the product went.
@@ -86,7 +100,7 @@ describe("filtering", () => {
     product({
       code: "pl",
       name: "Personal Loan — Salaried",
-      categoryCode: "personal_loan",
+      customerProductCode: "personal_loan",
       securityTypeCode: "unsecured",
       borrowerTypeCodes: ["resident_individual"],
       employmentTypeCodes: ["salaried"],
@@ -98,7 +112,7 @@ describe("filtering", () => {
       code: "bl_unsecured",
       name: "Unsecured Business Loan",
       description: "Clean business lending priced against banking turnover and GST returns.",
-      categoryCode: "business_loan",
+      customerProductCode: "business_loan",
       securityTypeCode: "unsecured",
       employmentTypeCodes: ["self_employed", "business_owner"],
       businessConstitutionCodes: ["proprietorship", "private_limited"],
@@ -125,8 +139,8 @@ describe("filtering", () => {
     expect(codes({ query: "turnover" })).toEqual(["bl_unsecured"]);
   });
 
-  it("narrows by category and by security", () => {
-    expect(codes({ categoryCode: "lap" })).toEqual(["lap"]);
+  it("narrows by customer product and by security", () => {
+    expect(codes({ customerProductCode: "lap" })).toEqual(["lap"]);
     expect(codes({ securityTypeCode: "unsecured" })).toEqual(["pl", "bl_unsecured"]);
   });
 

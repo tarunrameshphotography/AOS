@@ -17,17 +17,17 @@ import { lendingProductsAsDomain } from "./store.js";
 const db = buildSeed();
 
 describe("the seeded catalogue", () => {
-  it("has a product for every category, and a category for every product", () => {
+  it("has a product for every customer product, and a customer product for every product", () => {
     expect(db.loanProducts.length).toBeGreaterThan(30);
     for (const product of db.loanProducts) {
       expect(
-        db.loanCategories.find((c) => c.id === product.loanCategoryId),
-        `${product.code} points at no loan category`,
+        db.customerProducts.find((c) => c.id === product.customerProductId),
+        `${product.code} points at no customer product`,
       ).toBeDefined();
     }
-    const used = new Set(db.loanProducts.map((p) => p.loanCategoryId));
-    for (const category of db.loanCategories) {
-      expect(used.has(category.id), `${category.code} has no products`).toBe(true);
+    const used = new Set(db.loanProducts.map((p) => p.customerProductId));
+    for (const customerProduct of db.customerProducts) {
+      expect(used.has(customerProduct.id), `${customerProduct.code} has no products`).toBe(true);
     }
   });
 
@@ -93,7 +93,7 @@ describe("the catalogue through the domain layer", () => {
 
   it("projects every product into the domain shape", () => {
     expect(products).toHaveLength(db.loanProducts.length);
-    expect(products.every((p) => p.categoryCode !== undefined)).toBe(true);
+    expect(products.every((p) => p.customerProductCode !== undefined)).toBe(true);
   });
 
   it("finds a product by a word from its name", () => {

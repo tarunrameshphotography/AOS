@@ -33,7 +33,13 @@ function migrationSql(): string {
     .join("\n");
 }
 
-/** Table names from `create table <name> (`, ignoring anything inside a comment. */
+/**
+ * Table names presently in the schema — every `create table <name>`, with an
+ * `alter table <old> rename to <new>` (Database/migrations/0017) replacing
+ * the old name with the new one, in migration order. Text-scanned, same as
+ * `create table`: good enough for "which tables exist", no running Postgres
+ * needed.
+ */
 function tablesCreatedByMigrations(sql: string): ReadonlySet<string> {
   const withoutLineComments = sql
     .split("\n")
@@ -41,19 +47,63 @@ function tablesCreatedByMigrations(sql: string): ReadonlySet<string> {
     .join("\n");
 
   const found = new Set<string>();
-  const pattern = /create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z0-9_]*)/gi;
+  const createPattern = /create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z0-9_]*)/gi;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(withoutLineComments)) !== null) {
+  while ((match = createPattern.exec(withoutLineComments)) !== null) {
     if (match[1] !== undefined) {
       found.add(match[1]);
+    }
+  }
+
+  for (const [from, to] of renamesIn(withoutLineComments)) {
+    if (found.has(from)) {
+      found.delete(from);
+      found.add(to);
     }
   }
   return found;
 }
 
+/** Every `alter table <old> rename to <new>` pair, in migration order. */
+function renamesIn(sql: string): Array<[string, string]> {
+  const pattern = /alter\s+table\s+([a-z_][a-z0-9_]*)\s+rename\s+to\s+([a-z_][a-z0-9_]*)/gi;
+  const pairs: Array<[string, string]> = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(sql)) !== null) {
+    const [, from, to] = match;
+    if (from !== undefined && to !== undefined) pairs.push([from, to]);
+  }
+  return pairs;
+}
+
+/**
+ * Every name a currently-existing table was known by at some point,
+ * including its current one — so a check keyed to whichever name a section
+ * of SQL used (e.g. RLS enabled under the pre-rename name) still finds it.
+ */
+function nameHistory(table: string, renames: readonly (readonly [string, string])[]): string[] {
+  const history = [table];
+  let current = table;
+  // Walk the rename chain backwards: find the pair whose `to` is the name
+  // we're currently looking for, and step to its `from`.
+  for (let step = 0; step < renames.length; step++) {
+    const pair = renames.find(([, to]) => to === current);
+    if (!pair) break;
+    current = pair[0];
+    history.push(current);
+  }
+  return history;
+}
+
 const sql = migrationSql();
 const created = tablesCreatedByMigrations(sql);
 const bound = new Set(TABLE_BINDINGS.map((binding) => binding.table));
+const renames = renamesIn(
+  sql
+    .split("\n")
+    .map((line) => line.replace(/--.*$/, ""))
+    .join("\n"),
+);
 
 describe("schema coverage", () => {
   it("finds the migrations at all", () => {
@@ -80,13 +130,17 @@ describe("schema coverage", () => {
   });
 
   it("enables row level security on every table it creates", () => {
-    // 0010 enables RLS from an array literal, so the check is that every
-    // created table is named there.
+    // 0010 (and later migrations' own enablement loops) enable RLS from an
+    // array literal keyed to the name a table had AT THE TIME — which, for a
+    // renamed table, is the pre-rename name (Database/migrations/0017 renamed
+    // loan_category to customer_product; RLS enabled under the old name
+    // stays enabled across a rename, Postgres does not need it re-granted).
     for (const table of created) {
+      const history = nameHistory(table, renames);
       expect(
-        sql.includes(`'${table}'`),
-        `${table} is not listed in the RLS enablement block in ` +
-          `0010_security_defaults.sql, so it would ship with no row security.`,
+        history.some((name) => sql.includes(`'${name}'`)),
+        `${table} is not listed in the RLS enablement block under any name it has ` +
+          `held (${history.join(" <- ")}), so it would ship with no row security.`,
       ).toBe(true);
     }
   });

@@ -1,11 +1,12 @@
 /**
- * The Lending Product Catalogue (Milestone 7, ADR-032).
+ * The Lending Product Catalogue (Milestone 7, ADR-032; refined in Milestone
+ * 7.1, ADR-033).
  *
  * The middle layer of the lending hierarchy, given a screen of its own:
  *
- *   Loan Category   →   Lending Product   →   Bank Product
- *   (Master Data)       (this screen)         (Bank & NBFC Catalogue
- *                                              milestone — not built yet)
+ *   Customer Product   →   Lending Product   →   Bank Product
+ *   (Master Data)          (this screen)         (Bank & NBFC Catalogue
+ *                                                 milestone — not built yet)
  *
  * Built for office staff, so:
  *
@@ -44,12 +45,18 @@ import {
 import {
   createLendingProduct,
   lendingProductsAsDomain,
-  setLendingProductActive,
+  setLendingProductAvailability,
   updateLendingProduct,
   type LendingProductInput,
 } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { Database, Id, LoanProduct, MasterDataRecord } from "../fake/types.js";
+import type {
+  AvailabilityStatus,
+  Database,
+  Id,
+  LoanProduct,
+  MasterDataRecord,
+} from "../fake/types.js";
 import { useSession } from "../session.js";
 import {
   Badge,
@@ -70,7 +77,7 @@ export function LendingProducts(): ReactNode {
   const toast = useToast();
 
   const [query, setQuery] = useState("");
-  const [categoryId, setCategoryId] = useState<Id | "">("");
+  const [customerProductId, setCustomerProductId] = useState<Id | "">("");
   const [securityTypeId, setSecurityTypeId] = useState<Id | "">("");
   const [borrowerTypeId, setBorrowerTypeId] = useState<Id | "">("");
   const [employmentTypeId, setEmploymentTypeId] = useState<Id | "">("");
@@ -94,8 +101,8 @@ export function LendingProducts(): ReactNode {
 
   const filter: ProductFilter = {
     query,
-    ...(codeOf(db.loanCategories, categoryId) !== undefined
-      ? { categoryCode: codeOf(db.loanCategories, categoryId) as string }
+    ...(codeOf(db.customerProducts, customerProductId) !== undefined
+      ? { customerProductCode: codeOf(db.customerProducts, customerProductId) as string }
       : {}),
     ...(codeOf(db.securityTypes, securityTypeId) !== undefined
       ? { securityTypeCode: codeOf(db.securityTypes, securityTypeId) as string }
@@ -115,7 +122,7 @@ export function LendingProducts(): ReactNode {
     // The filter object is rebuilt each render; its fields are the real
     // dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [domainProducts, query, categoryId, securityTypeId, borrowerTypeId, employmentTypeId, propertyFilter, showRetired],
+    [domainProducts, query, customerProductId, securityTypeId, borrowerTypeId, employmentTypeId, propertyFilter, showRetired],
   );
 
   const superseded = useMemo(() => supersededCodes(domainProducts), [domainProducts]);
@@ -137,7 +144,7 @@ export function LendingProducts(): ReactNode {
 
   const filtersApplied =
     query.trim().length > 0 ||
-    categoryId !== "" ||
+    customerProductId !== "" ||
     securityTypeId !== "" ||
     borrowerTypeId !== "" ||
     employmentTypeId !== "" ||
@@ -145,7 +152,7 @@ export function LendingProducts(): ReactNode {
 
   const clearFilters = (): void => {
     setQuery("");
-    setCategoryId("");
+    setCustomerProductId("");
     setSecurityTypeId("");
     setBorrowerTypeId("");
     setEmploymentTypeId("");
@@ -184,10 +191,10 @@ export function LendingProducts(): ReactNode {
 
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <FilterSelect
-              label="Category"
-              value={categoryId}
-              onChange={setCategoryId}
-              options={db.loanCategories}
+              label="Customer Product"
+              value={customerProductId}
+              onChange={setCustomerProductId}
+              options={db.customerProducts}
             />
             <FilterSelect
               label="Security"
@@ -229,7 +236,7 @@ export function LendingProducts(): ReactNode {
                 checked={showRetired}
                 onChange={(event) => setShowRetired(event.target.checked)}
               />
-              Show retired products
+              Show suspended and retired products
             </label>
             {filtersApplied && (
               <button
@@ -263,7 +270,7 @@ export function LendingProducts(): ReactNode {
                         <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
                           {product.name ?? product.variant}
                           <Badge tone="info">
-                            {nameOf(db.loanCategories, product.loanCategoryId) ?? product.category}
+                            {nameOf(db.customerProducts, product.customerProductId) ?? product.category}
                           </Badge>
                           {availability !== "offerable" && (
                             <Badge tone="neutral">{AVAILABILITY_LABELS[availability]}</Badge>
@@ -280,26 +287,30 @@ export function LendingProducts(): ReactNode {
                       {canManage && (
                         <div className="flex shrink-0 items-center gap-2">
                           <Button onClick={() => setEditing(product)}>Edit</Button>
-                          <Button
-                            variant={product.isActive ? "secondary" : "primary"}
-                            onClick={() => {
-                              const result = setLendingProductActive(
-                                product.id,
-                                !product.isActive,
-                                session.user.id,
-                              );
-                              toast.show(
-                                result.ok
-                                  ? `${product.name ?? product.variant} ${
-                                      product.isActive ? "retired" : "reactivated"
-                                    }.`
-                                  : (result.message ?? "Could not update."),
-                                result.ok ? "good" : "bad",
-                              );
-                            }}
-                          >
-                            {product.isActive ? "Retire" : "Reactivate"}
-                          </Button>
+                          <label className="text-xs text-ink-700">
+                            <span className="sr-only">Availability</span>
+                            <Select
+                              value={product.availabilityStatus ?? (product.isActive ? "active" : "retired")}
+                              onChange={(event) => {
+                                const status = event.target.value as AvailabilityStatus;
+                                const result = setLendingProductAvailability(
+                                  product.id,
+                                  status,
+                                  session.user.id,
+                                );
+                                toast.show(
+                                  result.ok
+                                    ? `${product.name ?? product.variant} ${AVAILABILITY_ACTION_LABELS[status]}.`
+                                    : (result.message ?? "Could not update."),
+                                  result.ok ? "good" : "bad",
+                                );
+                              }}
+                            >
+                              <option value="active">Active</option>
+                              <option value="temporarily_suspended">Temporarily Suspended</option>
+                              <option value="retired">Retired</option>
+                            </Select>
+                          </label>
                         </div>
                       )}
                     </div>
@@ -319,8 +330,8 @@ export function LendingProducts(): ReactNode {
       >
         <ol className="space-y-2 text-sm text-ink-700">
           <li>
-            <span className="font-medium">Loan Category</span> — Amaze's commercial grouping, e.g.
-            Business Loans. Managed under Master Data.
+            <span className="font-medium">Customer Product</span> — what a telecaller thinks of
+            first, e.g. Home Loan or Business Loan. Managed under Master Data.
           </li>
           <li>
             <span className="font-medium">Lending Product</span> — what Amaze actually arranges,
@@ -372,9 +383,16 @@ export function LendingProducts(): ReactNode {
 
 const AVAILABILITY_LABELS: Record<string, string> = {
   retired: "Retired",
+  suspended: "Temporarily Suspended",
   superseded: "Superseded",
   expired: "No longer offered",
   not_yet_effective: "Not yet effective",
+};
+
+const AVAILABILITY_ACTION_LABELS: Record<AvailabilityStatus, string> = {
+  active: "reactivated",
+  temporarily_suspended: "temporarily suspended",
+  retired: "retired",
 };
 
 function today(): string {
@@ -455,9 +473,21 @@ function ProductDetail({ db, product }: { db: Database; product: LoanProduct }):
           {names(db.businessConstitutions, product.businessConstitutionIds)}
         </Detail>
       </dl>
+      {(product.typicalCustomerProfile ?? product.typicalDocumentsSummary) && (
+        <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+          {product.typicalCustomerProfile && (
+            <Detail label="Typical customer profile">{product.typicalCustomerProfile}</Detail>
+          )}
+          {product.typicalDocumentsSummary && (
+            <Detail label="Usually requested">{product.typicalDocumentsSummary}</Detail>
+          )}
+        </dl>
+      )}
       <p className="mt-3 text-xs text-ink-500">
-        Tenure and amount ranges are typical of the market, not a commitment. The binding figures
-        are per lender and live on that lender's own product (ADR-016).
+        Tenure and amount ranges, typical customer profile and usually-requested documents are all
+        guidance, never a rule. The binding figures are per lender and live on that lender's own
+        product (ADR-016); exact document requirements are the Document Requirement Engine
+        milestone, not yet built.
       </p>
       {product.notes && <p className="mt-2 text-xs text-ink-500">{product.notes}</p>}
     </div>
@@ -496,7 +526,7 @@ function ProductForm({
 }): ReactNode {
   const [code, setCode] = useState(initial?.code ?? "");
   const [name, setName] = useState(initial?.name ?? initial?.variant ?? "");
-  const [loanCategoryId, setLoanCategoryId] = useState(initial?.loanCategoryId ?? "");
+  const [customerProductId, setCustomerProductId] = useState(initial?.customerProductId ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [securityTypeId, setSecurityTypeId] = useState(initial?.securityTypeId ?? "");
   const [propertyRequirementId, setPropertyRequirementId] = useState(
@@ -514,9 +544,15 @@ function ProductForm({
   const [maxTenure, setMaxTenure] = useState(String(initial?.maxTenureMonths ?? ""));
   const [minAmount, setMinAmount] = useState(String(initial?.minAmount ?? ""));
   const [maxAmount, setMaxAmount] = useState(String(initial?.maxAmount ?? ""));
+  const [typicalCustomerProfile, setTypicalCustomerProfile] = useState(
+    initial?.typicalCustomerProfile ?? "",
+  );
+  const [typicalDocumentsSummary, setTypicalDocumentsSummary] = useState(
+    initial?.typicalDocumentsSummary ?? "",
+  );
   const [notes, setNotes] = useState(initial?.notes ?? "");
 
-  const ready = code.trim().length > 0 && name.trim().length > 0 && loanCategoryId !== "";
+  const ready = code.trim().length > 0 && name.trim().length > 0 && customerProductId !== "";
   const numeric = (value: string): number | undefined =>
     value.trim() === "" ? undefined : Number(value);
 
@@ -541,15 +577,15 @@ function ProductForm({
           </Field>
         </div>
 
-        <Field label="Loan category" hint="The commercial grouping. Managed under Master Data.">
+        <Field label="Customer product" hint="What a telecaller thinks of first. Managed under Master Data.">
           <Select
-            value={loanCategoryId}
-            onChange={(event) => setLoanCategoryId(event.target.value)}
+            value={customerProductId}
+            onChange={(event) => setCustomerProductId(event.target.value)}
           >
             <option value="">— Choose —</option>
-            {activeSorted(db.loanCategories).map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
+            {activeSorted(db.customerProducts).map((customerProduct) => (
+              <option key={customerProduct.id} value={customerProduct.id}>
+                {customerProduct.name}
               </option>
             ))}
           </Select>
@@ -663,6 +699,28 @@ function ProductForm({
           </Field>
         </div>
 
+        <Field
+          label="Typical customer profile"
+          hint="Who normally takes this — Salaried Employee, Textile Unit, NRI. Informational only, not an eligibility rule."
+        >
+          <Input
+            value={typicalCustomerProfile}
+            onChange={(event) => setTypicalCustomerProfile(event.target.value)}
+            placeholder="e.g. MSME Manufacturer, Textile Unit"
+          />
+        </Field>
+
+        <Field
+          label="Usually requested"
+          hint="A concise, human-readable summary. Guidance for office staff, not a requirement template."
+        >
+          <Textarea
+            value={typicalDocumentsSummary}
+            onChange={(event) => setTypicalDocumentsSummary(event.target.value)}
+            placeholder="e.g. PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months)"
+          />
+        </Field>
+
         <Field label="Notes" hint="Free text for office staff. Not read by any business rule.">
           <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
         </Field>
@@ -676,7 +734,7 @@ function ProductForm({
               onSubmit({
                 code,
                 name,
-                loanCategoryId,
+                customerProductId,
                 ...(description ? { description } : {}),
                 ...(securityTypeId ? { securityTypeId } : {}),
                 ...(propertyRequirementId ? { propertyRequirementId } : {}),
@@ -696,6 +754,8 @@ function ProductForm({
                 ...(numeric(maxAmount) !== undefined
                   ? { maxAmount: numeric(maxAmount) as number }
                   : {}),
+                ...(typicalCustomerProfile ? { typicalCustomerProfile } : {}),
+                ...(typicalDocumentsSummary ? { typicalDocumentsSummary } : {}),
                 ...(notes ? { notes } : {}),
               })
             }

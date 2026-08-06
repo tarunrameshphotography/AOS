@@ -16,7 +16,7 @@ function baseDb(): Database {
       { id: "dty_pan", code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 20 },
     ],
     rejectionReasons: [],
-    loanCategories: [],
+    customerProducts: [],
     employmentTypes: [],
     businessConstitutions: [],
     propertyTypes: [],

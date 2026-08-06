@@ -422,8 +422,8 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     family: "reference",
     purpose:
       "Amaze's own bank-independent lending product catalogue — the middle layer " +
-      "between loan_category and bank_product. Known at case creation, which is " +
-      "what makes the requirement engine possible (ADR-016, ADR-032).",
+      "between customer_product and bank_product. Known at case creation, which is " +
+      "what makes the requirement engine possible (ADR-016, ADR-032, ADR-033).",
     select: permits("master_data.read"),
     insert: permits("master_data.manage"),
     update: permits("master_data.manage"),
@@ -567,12 +567,13 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
 
   // ── Master Data Engine (Milestone 5) ─────────────────────────────────────
   {
-    table: "loan_category",
+    table: "customer_product",
     family: "reference",
     purpose:
       "Amaze's commercial grouping of loan products — Home Loan, Business Loan, " +
       "LAP, Personal. Promoted from loan_product.category free text (Database/" +
-      "migrations/0012).",
+      "migrations/0012). Renamed from loan_category in Milestone 7.1 (ADR-033) " +
+      "to match how office staff and telecallers already refer to it.",
     select: permits("master_data.read"),
     insert: permits("master_data.manage"),
     update: permits("master_data.manage"),

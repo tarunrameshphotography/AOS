@@ -38,7 +38,7 @@ function baseDb(): Database {
     loanProducts: LOAN_PRODUCTS,
     documentTypes: DOCUMENT_TYPES,
     rejectionReasons: [],
-    loanCategories: [],
+    customerProducts: [],
     employmentTypes: [],
     businessConstitutions: [],
     propertyTypes: [],

@@ -35,7 +35,7 @@
  * "Coimbatore Bank & NBFC Catalogue" milestone), and lending products
  * themselves, which since Milestone 7 have their own screen (Products in the
  * top bar, ADR-032) because a product is far richer than a code/name row.
- * The vocabulary that screen is built from — Loan Category, Borrower Type,
+ * The vocabulary that screen is built from — Customer Product, Borrower Type,
  * Security Type, Requirement Applicability — is managed here, which is the
  * division this screen has always drawn.
  */
@@ -124,7 +124,7 @@ const SECTIONS: Section[] = [
   { kind: "simple", key: "requirementApplicabilities", label: "Requirement Applicability", hint: "Mandatory, optional, not applicable. Used wherever a product says how strongly it needs something.", category: "system" },
 
   // Business — business-controlled, defines Amaze's lending ecosystem.
-  { kind: "simple", key: "loanCategories", label: "Loan Categories", hint: "The commercial grouping lending products hang off — Home Loan, Business Loan, LAP.", category: "business" },
+  { kind: "simple", key: "customerProducts", label: "Customer Products", hint: "What a telecaller thinks of first — Home Loan, Business Loan, LAP — grouping the lending products underneath it.", category: "business" },
   { kind: "simple", key: "borrowerTypes", label: "Borrower Types", hint: "Who can borrow — resident individual, NRI, or a firm in its own name.", category: "business" },
   { kind: "simple", key: "securityTypes", label: "Security Types", hint: "What secures a lending product — a mortgage, pledged gold, hypothecated stock, a guarantee.", category: "business" },
   { kind: "simple", key: "referralSources", label: "Referral Sources", hint: "How a lead reached Amaze. Populates the Source field on case creation.", category: "business" },

@@ -73,17 +73,18 @@ export function partyName(db: Database, partyId?: Id): string {
 /**
  * "Home Loan · Home Loan — Purchase".
  *
- * Prefers the product's own `name` and its loan category (Milestone 7,
- * Database/migrations/0015), falling back to the legacy (category, variant)
- * text pair for any row created before the catalogue existed. Both are kept
- * populated, so the fallback is belt-and-braces rather than a live path.
+ * Prefers the product's own `name` and its customer product (Milestone 7,
+ * Database/migrations/0015; renamed from loan category in Milestone 7.1,
+ * ADR-033), falling back to the legacy (category, variant) text pair for any
+ * row created before the catalogue existed. Both are kept populated, so the
+ * fallback is belt-and-braces rather than a live path.
  */
 export function productLabel(db: Database, loanCase: LoanCase): string {
   const product = db.loanProducts.find((p) => p.id === loanCase.loanProductId);
   if (!product) return "—";
-  const category =
-    db.loanCategories.find((c) => c.id === product.loanCategoryId)?.name ?? product.category;
-  return `${category} · ${product.name ?? product.variant}`;
+  const customerProduct =
+    db.customerProducts.find((c) => c.id === product.customerProductId)?.name ?? product.category;
+  return `${customerProduct} · ${product.name ?? product.variant}`;
 }
 
 export function ownerName(db: Database, loanCase: LoanCase): string {

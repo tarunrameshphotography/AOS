@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
   CASE_STAGE_LABELS,
@@ -21,12 +21,19 @@ import {
   type LostReason,
 } from "@domain/case/stages.js";
 import { evaluateTransition } from "@domain/case/transitions.js";
+import {
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_HINTS,
+  DOCUMENT_CATEGORY_LABELS,
+  type DocumentCategory,
+} from "@domain/requirements/document-catalogue.js";
 import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
 import { CONSTRUCTION_STAGES } from "@domain/requirements/rules.js";
 
 import {
   acceptOffer,
   addCaseProperty,
+  addCustomRequirement,
   addFinancialYearRequirement,
   addNote,
   addParty,
@@ -40,17 +47,21 @@ import {
   progressFor,
   reevaluateRequirements,
   rejectDocument,
+  removeCaseProperty,
+  removeCustomRequirement,
   ruleBehind,
   selectableFinancialYears,
   setHold,
   snapshotOf,
   updateCaseFacts,
+  updateCaseProperty,
   updatePartyProfile,
   updateSubmissionStatus,
   uploadDocument,
   verifyDocument,
   waiveRequirement,
 } from "../fake/store.js";
+import { clearDrafts, useDraft } from "../fake/drafts.js";
 import { storageAdapter } from "../fake/storage.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import type { CasePartyRole, Id, SubmissionStatus } from "../fake/types.js";
@@ -90,13 +101,34 @@ import {
 import { OrganisationSearchField, PersonSearchField } from "../ui/pickers.js";
 import { StorageLocation } from "../ui/storage-location.js";
 
-type Tab = "overview" | "documents" | "banks" | "timeline";
+const TABS = ["overview", "documents", "banks", "timeline"] as const;
+type Tab = (typeof TABS)[number];
 
 export function CaseDetail(): ReactNode {
   const { caseId = "" } = useParams();
   const db = useDatabase();
   const session = useSession();
-  const [tab, setTab] = useState<Tab>("overview");
+
+  /**
+   * Which tab, in the URL rather than in component state (Part 7).
+   *
+   * Three things fall out of that and all three were asked for: the browser's
+   * back button walks back through the tabs instead of leaving the case; a
+   * refresh returns to where the user was; and a link to "this case's
+   * documents" is a link somebody can send. Component state gave none of the
+   * three, and the tab is exactly the kind of thing a user assumes is
+   * remembered.
+   */
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(requested ?? "")
+    ? (requested as Tab)
+    : "overview";
+  const setTab = (next: Tab): void => {
+    const merged = new URLSearchParams(params);
+    merged.set("tab", next);
+    setParams(merged, { replace: false });
+  };
 
   const loanCase = db.cases.find((c) => c.id === caseId);
 
@@ -437,9 +469,13 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
   const session = useSession();
   const toast = useToast();
   const [addOpen, setAddOpen] = useState(false);
-  const [note, setNote] = useState("");
+  // Persisted: switching to Documents and back must not eat a half-written
+  // note (Part 7).
+  const [note, setNote] = useDraft(`case:${caseId}:note`);
   const [logOpen, setLogOpen] = useState(false);
   const [profileFor, setProfileFor] = useState<string | null>(null);
+  const [propertyFor, setPropertyFor] = useState<string | null>(null);
+  const [addPropertyOpen, setAddPropertyOpen] = useState(false);
 
   const parties = db.caseParties.filter((p) => p.caseId === caseId && !p.removedAt);
   const caseProperties = db.caseProperties.filter((p) => p.caseId === caseId);
@@ -456,6 +492,12 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <div className="space-y-6 lg:col-span-2">
+        {/* Every fact the document rules read, on the page that shows them,
+            each one with an input behind it (Part 5). Before this milestone
+            the Overview listed facts a user could read and not change, which
+            is the most frustrating possible state for a screen to be in. */}
+        <CaseFacts caseId={caseId} />
+
         <Card
           title="People on this case"
           subtitle="Only the primary applicant is mandatory — everything else exists because reality supplied it"
@@ -471,6 +513,22 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
                 (e) => e.personId === party.personId && e.isCurrent,
               );
               const employer = db.organisations.find((o) => o.id === employment?.organisationId);
+
+              // Occupation and business type as the DOCUMENT RULES read them
+              // (Part 5): the case-party override first, the shared person or
+              // organisation record behind it. Shown because they change the
+              // checklist, and shown with "Not set" spelled out rather than a
+              // dash, because a telecaller needs to know there is a question
+              // still to ask.
+              const occupation =
+                db.employmentTypes.find((t) => t.id === party.employmentTypeId)?.name ??
+                (employment ? titleCase(employment.employmentType) : undefined);
+              const businessType = db.businessConstitutions.find(
+                (t) =>
+                  t.id ===
+                  (party.businessConstitutionId ?? organisation?.businessConstitutionId),
+              )?.name;
+              const borrowerType = db.borrowerTypes.find((t) => t.id === party.borrowerTypeId)?.name;
 
               return (
                 <li key={party.id} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
@@ -496,12 +554,31 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
                         <>
                           {" · "}
                           {employment.designation} at {employer.canonicalName}
-                          {" · "}
-                          {titleCase(employment.employmentType)}
                           {employment.monthlyIncome && ` · ${money(employment.monthlyIncome)}/mo`}
                         </>
                       )}
                     </p>
+                    {party.role !== "referrer" && (
+                      <p className="mt-0.5 text-xs text-ink-500">
+                        {person && (
+                          <>
+                            Occupation:{" "}
+                            <span className={occupation ? "text-ink-700" : "text-amber-700"}>
+                              {occupation ?? "Not set"}
+                            </span>
+                          </>
+                        )}
+                        {(organisation || businessType) && (
+                          <>
+                            {person ? " · " : ""}Business type:{" "}
+                            <span className={businessType ? "text-ink-700" : "text-amber-700"}>
+                              {businessType ?? "Not set"}
+                            </span>
+                          </>
+                        )}
+                        {borrowerType && ` · ${borrowerType}`}
+                      </p>
+                    )}
                   </div>
                   {person && (
                     <span className="tnum shrink-0 text-xs text-ink-500">
@@ -526,26 +603,52 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
         </Card>
 
         {/* No empty section for a property that does not exist. Absence is
-            silence (Principle #1). */}
-        {caseProperties.length > 0 && (
-          <Card title="Property">
-            <ul className="divide-y divide-ink-100">
-              {caseProperties.map((link) => {
-                const property = db.properties.find((p) => p.id === link.propertyId);
-                return (
-                  <li key={link.id} className="py-2.5 first:pt-0 last:pb-0">
-                    <p className="text-sm font-medium">
-                      {[property?.buildingName, property?.doorNumber].filter(Boolean).join(" ") ||
-                        "Property"}
-                    </p>
-                    <p className="text-xs text-ink-500">
-                      {property?.locality}, {property?.city} · {property?.propertyType} ·{" "}
-                      {lakhs(property?.estimatedValue)} · {titleCase(link.role)}
-                    </p>
-                  </li>
-                );
-              })}
-            </ul>
+            silence (Principle #1) — but the way to CREATE one has to be
+            reachable, so the card appears with an empty state once a user may
+            edit the case (Part 5). */}
+        {(caseProperties.length > 0 || canEdit) && (
+          <Card
+            title="Property"
+            subtitle="Property documents exist only because a property does — Patta, Chitta, EC and the rest appear the moment one is added, and stop being asked for the moment it is removed"
+            actions={canEdit && <Button onClick={() => setAddPropertyOpen(true)}>Add property</Button>}
+          >
+            {caseProperties.length === 0 ? (
+              <Empty>
+                No property on this case, so no property documents are being asked for.
+              </Empty>
+            ) : (
+              <ul className="divide-y divide-ink-100">
+                {caseProperties.map((link) => {
+                  const property = db.properties.find((p) => p.id === link.propertyId);
+                  return (
+                    <li key={link.id} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">
+                          {[property?.buildingName, property?.doorNumber]
+                            .filter(Boolean)
+                            .join(" ") || property?.locality || "Property"}
+                        </p>
+                        <p className="text-xs text-ink-500">
+                          {[property?.locality, property?.city].filter(Boolean).join(", ")}
+                          {" · "}
+                          <span className={property?.propertyType ? "" : "text-amber-700"}>
+                            {property?.propertyType ?? "Type not set"}
+                          </span>
+                          {property?.estimatedValue ? ` · ${lakhs(property.estimatedValue)}` : ""}
+                          {" · "}
+                          {titleCase(link.role)}
+                        </p>
+                      </div>
+                      {canEdit && (
+                        <Button variant="ghost" onClick={() => setPropertyFor(link.id)}>
+                          Edit
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </Card>
         )}
 
@@ -634,7 +737,139 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
       <AddPartyDialog open={addOpen} caseId={caseId} onClose={() => setAddOpen(false)} />
       <LogCallDialog open={logOpen} caseId={caseId} onClose={() => setLogOpen(false)} />
       <PartyProfileDialog casePartyId={profileFor} onClose={() => setProfileFor(null)} />
+      <AddPropertyDialog
+        open={addPropertyOpen}
+        caseId={caseId}
+        onClose={() => setAddPropertyOpen(false)}
+      />
+      <EditPropertyDialog casePropertyId={propertyFor} onClose={() => setPropertyFor(null)} />
     </div>
+  );
+}
+
+/**
+ * Correct or remove a property already on the case (Part 5).
+ *
+ * The property TYPE is the point of this dialog: it decides whether Patta &
+ * Chitta is asked for (an apartment on undivided share has none of its own)
+ * and whether layout approval is. Before this existed the type could be set
+ * once, wrongly, at creation and never corrected — and the only way out was
+ * to abandon the case.
+ */
+function EditPropertyDialog({
+  casePropertyId,
+  onClose,
+}: {
+  casePropertyId: string | null;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+
+  const link = db.caseProperties.find((p) => p.id === casePropertyId);
+  const property = db.properties.find((p) => p.id === link?.propertyId);
+
+  const [locality, setLocality] = useState("");
+  const [city, setCity] = useState("");
+  const [typeId, setTypeId] = useState("");
+  const [role, setRole] = useState<"collateral" | "purchase" | "both">("collateral");
+  const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+
+  useEffect(() => {
+    if (!link || !property) return;
+    setLocality(property.locality ?? "");
+    setCity(property.city ?? "");
+    setTypeId(property.propertyTypeId ?? "");
+    setRole(link.role);
+    setConfirmingRemoval(false);
+  }, [link, property]);
+
+  if (!link || !property) return null;
+
+  return (
+    <Modal open={casePropertyId !== null} title="Property on this case" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Locality">
+          <Input value={locality} onChange={(event) => setLocality(event.target.value)} />
+        </Field>
+        <Field label="City">
+          <Input value={city} onChange={(event) => setCity(event.target.value)} />
+        </Field>
+        <Field
+          label="Property type"
+          hint="Changes the checklist: an apartment on undivided share has no Patta of its own, and a plot needs DTCP or CMDA layout approval."
+        >
+          <Select value={typeId} onChange={(event) => setTypeId(event.target.value)}>
+            <option value="">Not set</option>
+            {db.propertyTypes
+              .filter((type) => type.isActive)
+              .map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+        <Field label="Role on this case">
+          <Select value={role} onChange={(event) => setRole(event.target.value as typeof role)}>
+            <option value="collateral">Collateral</option>
+            <option value="purchase">Purchase</option>
+            <option value="both">Both</option>
+          </Select>
+        </Field>
+
+        {confirmingRemoval && (
+          <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            Removing this property stops every property document being asked for. Nothing already
+            collected is deleted — those requirements become "no longer applicable" and stay in the
+            case's history.
+          </p>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          {confirmingRemoval ? (
+            <Button
+              variant="danger"
+              onClick={() => {
+                const result = removeCaseProperty(link.id, session.user.id);
+                toast.show(
+                  result.ok ? "Property removed. Its documents are no longer applicable." : (result.message ?? ""),
+                  result.ok ? "good" : "bad",
+                );
+                if (result.ok) onClose();
+              }}
+            >
+              Confirm removal
+            </Button>
+          ) : (
+            <Button variant="danger" onClick={() => setConfirmingRemoval(true)}>
+              Remove from case
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            onClick={() => {
+              const result = updateCaseProperty(
+                link.id,
+                { role, locality, city, ...(typeId ? { propertyTypeId: typeId } : {}) },
+                session.user.id,
+              );
+              toast.show(
+                result.ok ? "Saved. The documents list has already changed." : (result.message ?? ""),
+                result.ok ? "good" : "bad",
+              );
+              if (result.ok) onClose();
+            }}
+          >
+            Save &amp; continue
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -753,7 +988,7 @@ function PartyProfileDialog({
 
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            Back
           </Button>
           <Button
             variant="primary"
@@ -771,11 +1006,11 @@ function PartyProfileDialog({
                 toast.show(result.message ?? "", "bad");
                 return;
               }
-              toast.show("Profile updated. The documents list has already changed.");
+              toast.show("Saved. The documents list has already changed.");
               onClose();
             }}
           >
-            Save
+            Save &amp; continue
           </Button>
         </div>
       </div>
@@ -992,9 +1227,14 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [waiveFor, setWaiveFor] = useState<string | null>(null);
-  const [waiveReason, setWaiveReason] = useState("");
+  // Persisted: a waiver reason is the kind of sentence people compose slowly,
+  // and losing it to an accidental tab change is exactly the frustration
+  // Part 7 is about.
+  const [waiveReason, setWaiveReason] = useDraft(`case:${caseId}:waive-reason`);
   const [addingYearFor, setAddingYearFor] = useState<FyGroup | null>(null);
   const [verifyFor, setVerifyFor] = useState<string | null>(null);
+  const [addCustomOpen, setAddCustomOpen] = useState(false);
+  const [removeCustomFor, setRemoveCustomFor] = useState<string | null>(null);
 
   if (!session.can("document.read", "own")) {
     return (
@@ -1060,11 +1300,53 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     });
   };
 
+  /**
+   * How one requirement presents itself: what we call it to the customer,
+   * what it is called locally, the one-line explanation, and which block of
+   * the checklist it belongs in (Parts 8 and 9).
+   *
+   * A hand-added requirement carries its own answers to all four (Part 6);
+   * everything else reads them from the document type, which is master data
+   * and editable.
+   */
+  const presentationOf = (
+    requirement: (typeof requirements)[number],
+  ): {
+    name: string;
+    localName?: string | undefined;
+    description?: string | undefined;
+    category: DocumentCategory;
+  } => {
+    const type = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+    if (requirement.isCustom) {
+      return {
+        name: requirement.customName ?? type?.name ?? "Document",
+        description: requirement.customDescription,
+        category: requirement.customCategory ?? "additional",
+      };
+    }
+    return {
+      name: type?.name ?? "Document",
+      localName: type?.localName,
+      description: type?.description,
+      category: type?.category ?? "additional",
+    };
+  };
+
+  /** Group a list of requirements into the six blocks, dropping empty ones. */
+  const byCategory = (
+    rows: typeof requirements,
+  ): Array<{ category: DocumentCategory; rows: typeof requirements }> =>
+    DOCUMENT_CATEGORIES.map((category) => ({
+      category,
+      rows: rows.filter((row) => presentationOf(row).category === category),
+    })).filter((group) => group.rows.length > 0);
+
   const Row = ({ requirementId }: { requirementId: string }): ReactNode => {
     const requirement = requirements.find((r) => r.id === requirementId);
     if (!requirement) return null;
 
-    const type = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+    const presentation = presentationOf(requirement);
     const document = db.documents.find((d) => d.id === requirement.satisfiedByDocumentId);
     const subject = requirement.requiredOfCasePartyId
       ? partyName(db, requirement.requiredOfCasePartyId)
@@ -1094,10 +1376,22 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
       <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5 first:pt-0 last:pb-0">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">
-            {type?.name}
+            {presentation.name}
+            {/* The local name, quietly, on the same line. The customer says
+                "Villangam" and the bank writes "Encumbrance Certificate", and
+                a telecaller who only has one of the two is stuck (Part 3). */}
+            {presentation.localName && (
+              <span className="ml-1.5 text-xs font-normal text-ink-400">
+                ({presentation.localName})
+              </span>
+            )}
             {requirement.periodStart && ` · FY ${financialYearOf(new Date(requirement.periodStart)).label}`}
           </p>
-          <p className="text-xs text-ink-500">
+          {/* What to say when the customer asks "what is that?" (Part 9). */}
+          {presentation.description && (
+            <p className="mt-0.5 text-xs text-ink-500">{presentation.description}</p>
+          )}
+          <p className="mt-0.5 text-xs text-ink-500">
             {subject}
             {document && ` · ${document.fileName} · ${bytes(document.fileSizeBytes)}`}
             {requirement.status === "waived" && ` · waived: ${requirement.reason}`}
@@ -1109,6 +1403,9 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
             <p className="mt-0.5 text-xs text-ink-400" title={rule.notes ?? rule.code}>
               Asked for by: {rule.name}
             </p>
+          )}
+          {requirement.isCustom && (
+            <p className="mt-0.5 text-xs text-ink-400">Added by hand, for this case only</p>
           )}
         </div>
 
@@ -1138,16 +1435,55 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
                 variant="ghost"
                 onClick={() => {
                   setWaiveFor(requirement.id);
-                  setWaiveReason("");
                 }}
               >
                 Waive
+              </Button>
+            )}
+          {requirement.isCustom &&
+            requirement.status !== "not_applicable" &&
+            session.can("requirement.waive", "own") && (
+              <Button variant="ghost" onClick={() => setRemoveCustomFor(requirement.id)}>
+                Remove
               </Button>
             )}
         </div>
       </li>
     );
   };
+
+  /**
+   * One block of the checklist — "KYC Documents", "Business Documents", and
+   * so on (Part 8).
+   *
+   * The flat list this replaces was accurate and unusable: forty rows in rule
+   * order, with a PAN card three lines above a stock statement. A telecaller
+   * reads a checklist ALOUD, one topic at a time, and the grouping is what
+   * lets them say "now the business papers" instead of reading a list back
+   * item by item.
+   */
+  const GroupedRows = ({ rows }: { rows: typeof requirements }): ReactNode => (
+    <div className="space-y-5">
+      {byCategory(rows).map((group) => (
+        <div key={group.category}>
+          <div className="mb-1 flex items-baseline gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
+              {DOCUMENT_CATEGORY_LABELS[group.category]}
+            </h4>
+            <span className="tnum text-xs text-ink-400">{group.rows.length}</span>
+          </div>
+          <p className="mb-1.5 text-xs text-ink-400">
+            {DOCUMENT_CATEGORY_HINTS[group.category]}
+          </p>
+          <ul className="divide-y divide-ink-100 border-t border-ink-100 pt-1">
+            {group.rows.map((requirement) => (
+              <Row key={requirement.id} requirementId={requirement.id} />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -1172,15 +1508,16 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
                 .filter(Boolean)
                 .join(" · ")
         }
+        actions={
+          session.can("document.upload", "own") && (
+            <Button onClick={() => setAddCustomOpen(true)}>+ Add document</Button>
+          )
+        }
       >
         {outstanding.length === 0 ? (
           <Empty>Nothing is missing before this file can go to a bank.</Empty>
         ) : (
-          <ul className="divide-y divide-ink-100">
-            {outstanding.map((requirement) => (
-              <Row key={requirement.id} requirementId={requirement.id} />
-            ))}
-          </ul>
+          <GroupedRows rows={outstanding} />
         )}
       </Card>
 
@@ -1230,10 +1567,17 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         >
           <ul className="divide-y divide-ink-100">
             {upcoming.map((requirement) => {
-              const type = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+              const presentation = presentationOf(requirement);
               return (
                 <li key={requirement.id} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
-                  <span className="flex-1 text-sm text-ink-700">{type?.name}</span>
+                  <span className="flex-1 text-sm text-ink-700">
+                    {presentation.name}
+                    {presentation.localName && (
+                      <span className="ml-1.5 text-xs text-ink-400">
+                        ({presentation.localName})
+                      </span>
+                    )}
+                  </span>
                   <Badge>from {titleCase(requirement.applicableFromStage)}</Badge>
                 </li>
               );
@@ -1244,11 +1588,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
 
       {settled.length > 0 && (
         <Card title="Settled" subtitle="Verified, waived, or no longer applicable">
-          <ul className="divide-y divide-ink-100">
-            {settled.map((requirement) => (
-              <Row key={requirement.id} requirementId={requirement.id} />
-            ))}
-          </ul>
+          <GroupedRows rows={settled} />
         </Card>
       )}
 
@@ -1267,14 +1607,17 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
             />
           </Field>
           <div className="flex justify-end gap-2">
-            <Button onClick={() => setWaiveFor(null)}>Cancel</Button>
+            <Button onClick={() => setWaiveFor(null)}>Back</Button>
             <Button
               variant="primary"
               onClick={() => {
                 if (!waiveFor) return;
                 const result = waiveRequirement(waiveFor, waiveReason, session.user.id);
                 toast.show(result.ok ? "Waived" : (result.message ?? ""), result.ok ? "good" : "bad");
-                if (result.ok) setWaiveFor(null);
+                if (result.ok) {
+                  setWaiveReason("");
+                  setWaiveFor(null);
+                }
               }}
             >
               Waive
@@ -1282,6 +1625,43 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
           </div>
         </div>
       </Modal>
+
+      <Modal
+        open={removeCustomFor !== null}
+        title="Stop asking for this document"
+        onClose={() => setRemoveCustomFor(null)}
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-ink-700">
+            This document was added by hand for this case, so removing it changes nothing anywhere
+            else — no rule is touched. It is marked "no longer applicable" rather than deleted:
+            somebody asked the customer for it, and that they did is part of what happened here.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setRemoveCustomFor(null)}>Back</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (!removeCustomFor) return;
+                const result = removeCustomRequirement(removeCustomFor, session.user.id);
+                toast.show(
+                  result.ok ? "No longer asked for" : (result.message ?? ""),
+                  result.ok ? "good" : "bad",
+                );
+                if (result.ok) setRemoveCustomFor(null);
+              }}
+            >
+              Remove
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <AddCustomDocumentDialog
+        open={addCustomOpen}
+        caseId={caseId}
+        onClose={() => setAddCustomOpen(false)}
+      />
 
       <AddFinancialYearDialog
         caseId={caseId}
@@ -1291,6 +1671,142 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
 
       <VerifyDialog requirementId={verifyFor} onClose={() => setVerifyFor(null)} />
     </div>
+  );
+}
+
+/**
+ * Add a document requirement to this case by hand (Part 6).
+ *
+ * The workflow the milestone asks for, in order: category, name, mandatory or
+ * optional, description — then Save, after which the document appears in its
+ * group and is uploaded, verified and versioned exactly like a generated one.
+ * That last part is the requirement that matters: a custom document that
+ * cannot be verified is a sticky note, and a sticky note is what this feature
+ * exists to replace.
+ *
+ * Everything typed here is drafted (Part 7), so closing the dialog to go and
+ * check something does not cost the user their description.
+ *
+ * NO MASTER RULE IS TOUCHED. The row lands on this case and nowhere else.
+ */
+function AddCustomDocumentDialog({
+  open,
+  caseId,
+  onClose,
+}: {
+  open: boolean;
+  caseId: string;
+  onClose: () => void;
+}): ReactNode {
+  const session = useSession();
+  const toast = useToast();
+
+  const prefix = `case:${caseId}:custom-doc`;
+  const [category, setCategory] = useDraft(`${prefix}:category`);
+  const [name, setName] = useDraft(`${prefix}:name`);
+  const [applicability, setApplicability] = useDraft(`${prefix}:applicability`);
+  const [description, setDescription] = useDraft(`${prefix}:description`);
+
+  const chosenCategory = (category || "additional") as DocumentCategory;
+  const chosenApplicability = applicability === "optional" ? "optional" : "mandatory";
+  const ready = name.trim().length > 1;
+
+  const save = (): void => {
+    const result = addCustomRequirement(
+      caseId,
+      {
+        category: chosenCategory,
+        name,
+        applicability: chosenApplicability,
+        ...(description.trim() ? { description } : {}),
+      },
+      session.user.id,
+    );
+    if (!result.ok) {
+      toast.show(result.message ?? "", "bad");
+      return;
+    }
+    toast.show(`"${name.trim()}" added to this case's list.`);
+    clearDrafts(prefix);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} title="Add a document to this case" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          For the exception the rules could not have known about — one bank asking for one extra
+          letter on one file. This is added to <em>this case only</em>. No rule changes, and no
+          other case is affected.
+        </p>
+
+        <Field label="Category" hint="Which block of the checklist it belongs in.">
+          <Select value={chosenCategory} onChange={(event) => setCategory(event.target.value)}>
+            {DOCUMENT_CATEGORIES.map((value) => (
+              <option key={value} value={value}>
+                {DOCUMENT_CATEGORY_LABELS[value]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label="Document name"
+          hint="What you would call it on the phone — the customer has to recognise it."
+        >
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Bank's NOC for the second charge"
+          />
+        </Field>
+
+        <Field
+          label="Mandatory or optional"
+          hint="Optional documents are collected and verified like any other, but never counted against the case's completeness."
+        >
+          <Select
+            value={chosenApplicability}
+            onChange={(event) => setApplicability(event.target.value)}
+          >
+            <option value="mandatory">Mandatory</option>
+            <option value="optional">Optional</option>
+          </Select>
+        </Field>
+
+        <Field
+          label="Description"
+          hint="Optional. One sentence somebody in their first week could read out to the customer."
+        >
+          <Textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Letter from the existing bank agreeing to a second charge on the property."
+          />
+        </Field>
+
+        <p className="text-xs text-ink-500">
+          After saving, upload and verify it from the list like any other document.
+        </p>
+
+        <div className="flex flex-wrap justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          <Button
+            onClick={() => {
+              toast.show("Draft kept. It will be here when you come back.");
+              onClose();
+            }}
+          >
+            Save draft
+          </Button>
+          <Button variant="primary" disabled={!ready} onClick={save}>
+            Save &amp; continue
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1352,6 +1868,10 @@ function CaseFacts({ caseId }: { caseId: string }): ReactNode {
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
           <Fact label="Lending product" value={product?.name ?? product?.variant ?? "—"} />
           <Fact
+            label="Amount asked for"
+            value={loanCase.requestedAmount ? money(loanCase.requestedAmount) : "Not asked"}
+          />
+          <Fact
             label="Property on file"
             value={properties.length === 0 ? "None" : `${properties.length}`}
             hint={
@@ -1375,6 +1895,7 @@ function CaseFacts({ caseId }: { caseId: string }): ReactNode {
               .filter((p) => p.role !== "referrer")
               .map((p) => titleCase(p.role))
               .join(", ")}
+            hint="Occupation and business type are set per person, under People on this case"
           />
         </dl>
 
@@ -1448,6 +1969,7 @@ function EditFactsDialog({
   const [obligations, setObligations] = useState("");
   const [stage, setStage] = useState("");
   const [productId, setProductId] = useState("");
+  const [amount, setAmount] = useState("");
 
   useEffect(() => {
     if (!open || !loanCase) return;
@@ -1459,12 +1981,44 @@ function EditFactsDialog({
     );
     setStage(loanCase.constructionStage ?? "");
     setProductId(loanCase.loanProductId);
+    setAmount(loanCase.requestedAmount === undefined ? "" : String(loanCase.requestedAmount));
   }, [open, loanCase]);
 
   if (!loanCase) return null;
 
   const parse = (value: string): boolean | undefined =>
     value === "" ? undefined : value === "true";
+
+  const parsedAmount = amount.trim() === "" ? undefined : Number(amount);
+  const amountIsBad = parsedAmount !== undefined && !Number.isFinite(parsedAmount);
+
+  /**
+   * Save without closing (Part 7). The facts are saved the instant this
+   * runs — the whole card regenerates behind the dialog — so "Save draft"
+   * here means "keep it saved and stay put", which is what a user working
+   * through several answers actually wants. Nothing is held back and there is
+   * nothing to lose by navigating away.
+   */
+  const commitFacts = (): boolean => {
+    if (amountIsBad) {
+      toast.show("The amount has to be a number.", "bad");
+      return false;
+    }
+    if (productId !== loanCase.loanProductId) {
+      const result = changeLoanProduct(caseId, productId, session.user.id);
+      if (!result.ok) {
+        toast.show(result.message ?? "", "bad");
+        return false;
+      }
+    }
+    onSave({
+      isGstRegistered: parse(gst),
+      hasExistingObligations: parse(obligations),
+      ...(parsedAmount !== undefined ? { requestedAmount: parsedAmount } : {}),
+      ...(stage ? { constructionStage: stage as (typeof CONSTRUCTION_STAGES)[number] } : {}),
+    });
+    return true;
+  };
 
   return (
     <Modal open={open} title="What this case is" onClose={onClose}>
@@ -1482,6 +2036,18 @@ function EditFactsDialog({
                 </option>
               ))}
           </Select>
+        </Field>
+
+        <Field
+          label="Amount asked for"
+          hint="In rupees. Shown at the top of the case, and some rules ask about it."
+        >
+          <Input
+            type="number"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            placeholder="1500000"
+          />
         </Field>
 
         <Field
@@ -1520,29 +2086,24 @@ function EditFactsDialog({
           </Select>
         </Field>
 
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex flex-wrap justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            Back
+          </Button>
+          <Button
+            onClick={() => {
+              if (commitFacts()) toast.show("Saved. The documents list has already changed.");
+            }}
+          >
+            Save draft
           </Button>
           <Button
             variant="primary"
             onClick={() => {
-              if (productId !== loanCase.loanProductId) {
-                const result = changeLoanProduct(caseId, productId, session.user.id);
-                if (!result.ok) {
-                  toast.show(result.message ?? "", "bad");
-                  return;
-                }
-              }
-              onSave({
-                isGstRegistered: parse(gst),
-                hasExistingObligations: parse(obligations),
-                ...(stage ? { constructionStage: stage as (typeof CONSTRUCTION_STAGES)[number] } : {}),
-              });
-              onClose();
+              if (commitFacts()) onClose();
             }}
           >
-            Save
+            Save &amp; continue
           </Button>
         </div>
       </div>
@@ -1610,7 +2171,7 @@ function AddPropertyDialog({
 
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            Back
           </Button>
           <Button
             variant="primary"
@@ -1629,13 +2190,14 @@ function AddPropertyDialog({
                 toast.show(result.message ?? "", "bad");
                 return;
               }
+              toast.show("Property added. The property documents are on the list already.");
               setLocality("");
               setCity("");
               setTypeId("");
               onClose();
             }}
           >
-            Add property
+            Save &amp; continue
           </Button>
         </div>
       </div>

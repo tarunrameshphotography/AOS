@@ -8,7 +8,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { allDocumentTypeCodes, ENGINE_DOCUMENT_TYPES } from "./document-catalogue.js";
+import {
+  ALL_DOCUMENT_TYPES,
+  DOCUMENT_CATEGORIES,
+  allDocumentTypeCodes,
+  ENGINE_DOCUMENT_TYPES,
+} from "./document-catalogue.js";
 import { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
 import { isFinancialYearScoped } from "./financial-year.js";
 import { evaluateRules, type CaseFacts, type PartyFacts } from "./rules.js";
@@ -656,6 +661,181 @@ describe("the default pack — integrity", () => {
   it("has no duplicate document type codes or display orders in the engine catalogue", () => {
     const codes = ENGINE_DOCUMENT_TYPES.map((type) => type.code);
     const orders = ENGINE_DOCUMENT_TYPES.map((type) => type.displayOrder);
+
+    expect(new Set(codes).size).toBe(codes.length);
+    expect(new Set(orders).size).toBe(orders.length);
+  });
+});
+
+/**
+ * The Telecaller Workflow milestone. Every test here is a complaint from
+ * someone using AOS on the phone, turned into an assertion.
+ */
+describe("the checklist a telecaller actually reads out", () => {
+  it("asks a brand-new business loan for the business documents, without waiting for anyone to record what kind of business it is", () => {
+    // The exact shape of a case created during the first call: one applicant,
+    // no firm, no employment type, nothing else answered yet. This was the
+    // gap — the newest business loan in the system had the emptiest list.
+    const asked = evaluate({
+      productCode: "bl_working_capital",
+      customerProductCode: "business_loan",
+      gstRequirement: "mandatory",
+    });
+
+    expect(asked).toContain("business_proof");
+    expect(asked).toContain("org_bank_statement");
+    expect(asked).toContain("itr");
+    expect(asked).toContain("balance_sheet");
+    expect(asked).toContain("profit_and_loss");
+    expect(asked).toContain("gst_certificate");
+    expect(asked).toContain("gst_returns");
+    expect(asked).toContain("udyam_certificate");
+    // And the KYC that goes with it.
+    expect(asked).toContain("pan_card");
+    expect(asked).toContain("aadhaar_card");
+    expect(asked).toContain("address_proof");
+    expect(asked).toContain("photograph");
+  });
+
+  it("stands the by-product business rules down once a real firm is on the file, so nothing is asked for twice", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "bl_working_capital",
+      customerProductCode: "business_loan",
+      parties: [individual(), firm({ businessConstitutionCode: "partnership" })],
+      properties: [],
+    });
+
+    // The applicant is asked for KYC, not for the firm's books.
+    const applicantDocs = rows
+      .filter((row) => row.casePartyId === "cpt_applicant")
+      .map((row) => row.documentTypeCode);
+    expect(applicantDocs).not.toContain("business_proof");
+    expect(applicantDocs).not.toContain("org_bank_statement");
+
+    // The firm is.
+    const firmDocs = rows
+      .filter((row) => row.casePartyId === "cpt_firm")
+      .map((row) => row.documentTypeCode);
+    expect(firmDocs).toContain("business_proof");
+    expect(firmDocs).toContain("org_bank_statement");
+    expect(firmDocs).toContain("partnership_deed");
+  });
+
+  it("asks for two financial years of GST returns, because one year shows a number and two show a trend", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "bl_working_capital",
+      customerProductCode: "business_loan",
+      gstRequirement: "mandatory",
+      parties: [individual(), firm()],
+      properties: [],
+    });
+
+    const gstReturns = rows.find(
+      (row) => row.documentTypeCode === "gst_returns" && row.casePartyId === "cpt_firm",
+    );
+    expect(gstReturns?.financialYears).toBe(2);
+  });
+
+  it("asks for the Tamil Nadu property core the moment a property exists, and not a moment before", () => {
+    const withoutProperty = evaluate({
+      productCode: "hl_purchase",
+      customerProductCode: "home_loan",
+    });
+    expect(withoutProperty).not.toContain("patta_chitta");
+    expect(withoutProperty).not.toContain("encumbrance_cert");
+    expect(withoutProperty).not.toContain("parent_document");
+
+    const withProperty = evaluate({
+      productCode: "hl_purchase",
+      customerProductCode: "home_loan",
+      properties: [
+        { casePropertyId: "cpr_1", role: "purchase", propertyTypeCode: "independent_house" },
+      ],
+    });
+    expect(withProperty).toContain("patta_chitta");
+    expect(withProperty).toContain("encumbrance_cert");
+    expect(withProperty).toContain("parent_document");
+    expect(withProperty).toContain("sale_deed");
+    expect(withProperty).toContain("property_tax_receipt");
+    expect(withProperty).toContain("approved_plan");
+  });
+
+  /**
+   * The rule NAME is what appears under "Asked for by" on the case screen. A
+   * name only a credit manager understands is a name the telecaller has to
+   * translate live, differently every time.
+   */
+  it("names no rule after the internal banking vocabulary the milestone set out to remove", () => {
+    const banned = [/credit bureau/i, /title chain/i, /book debts/i, /lease rental discounting/i];
+    const offenders = DEFAULT_REQUIREMENT_RULES.filter((rule) =>
+      banned.some((pattern) => pattern.test(rule.name)),
+    ).map((rule) => rule.code);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("the document catalogue as a telecaller reads it", () => {
+  it("gives every document type a category, so nothing lands in a flat unsorted list", () => {
+    const uncategorised = ALL_DOCUMENT_TYPES.filter(
+      (type) => !(DOCUMENT_CATEGORIES as readonly string[]).includes(type.category),
+    ).map((type) => type.code);
+
+    expect(uncategorised).toEqual([]);
+  });
+
+  it("gives every document type a helper description, because the person asking may be in their first week", () => {
+    const undescribed = ALL_DOCUMENT_TYPES.filter(
+      (type) => type.description.trim().length < 20,
+    ).map((type) => type.code);
+
+    expect(undescribed).toEqual([]);
+  });
+
+  it("carries the local name alongside the official one for the documents Tamil Nadu calls something else", () => {
+    const localNameOf = (code: string): string | undefined =>
+      ALL_DOCUMENT_TYPES.find((type) => type.code === code)?.localName;
+
+    expect(localNameOf("encumbrance_cert")).toMatch(/villangam/i);
+    expect(localNameOf("udyam_certificate")).toMatch(/udyog aadhaar/i);
+    expect(localNameOf("credit_bureau_consent")).toMatch(/cibil/i);
+  });
+
+  /**
+   * A local name that is only the official name reworded tells the telecaller
+   * nothing and reads as noise on the row ("GST Returns (GSTR-3B) (GST 3B)").
+   * Where the form number IS the recognisable name, it belongs in the name.
+   */
+  it("never repeats the official name back as the local name", () => {
+    const noisy = ALL_DOCUMENT_TYPES.filter(
+      (type) => type.localName && type.name.toLowerCase().includes(type.localName.toLowerCase()),
+    ).map((type) => type.code);
+
+    expect(noisy).toEqual([]);
+  });
+
+  it("calls documents what the customer calls them", () => {
+    const nameOf = (code: string): string | undefined =>
+      ALL_DOCUMENT_TYPES.find((type) => type.code === code)?.name;
+
+    expect(nameOf("credit_bureau_consent")).toBe("Loan Consent Form");
+    expect(nameOf("application_form")).toBe("Loan Application Form");
+    expect(nameOf("photograph")).toBe("Passport Size Photograph");
+    expect(nameOf("gst_certificate")).toBe("GST Registration Certificate (GST REG-06)");
+    expect(nameOf("patta_chitta")).toBe("Patta & Chitta");
+  });
+
+  it("lists what counts as address proof, because that is the question every collection call gets", () => {
+    const addressProof = ALL_DOCUMENT_TYPES.find((type) => type.code === "address_proof");
+
+    for (const example of ["EB bill", "gas bill", "ration card", "passport", "driving licence"]) {
+      expect(addressProof?.description.toLowerCase()).toContain(example.toLowerCase());
+    }
+  });
+
+  it("has no duplicate codes or display orders across the whole catalogue", () => {
+    const codes = ALL_DOCUMENT_TYPES.map((type) => type.code);
+    const orders = ALL_DOCUMENT_TYPES.map((type) => type.displayOrder);
 
     expect(new Set(codes).size).toBe(codes.length);
     expect(new Set(orders).size).toBe(orders.length);

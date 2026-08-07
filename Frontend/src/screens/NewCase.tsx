@@ -15,6 +15,7 @@ import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { createCase } from "../fake/store.js";
+import { clearDrafts, useDraft } from "../fake/drafts.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import { useSession } from "../session.js";
 import { Button, Card, Field, Input, Select, cx, useToast } from "../ui/index.js";
@@ -30,12 +31,30 @@ export function NewCase(): ReactNode {
     .filter((r) => r.isActive)
     .sort((a, b) => a.displayOrder - b.displayOrder);
 
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [productId, setProductId] = useState(db.loanProducts[0]?.id ?? "");
-  const [amount, setAmount] = useState("");
-  const [referralSourceId, setReferralSourceId] = useState(activeReferralSources[0]?.id ?? "");
+  /**
+   * Drafted, not merely typed (Telecaller Workflow milestone, Part 7).
+   *
+   * This form is filled DURING a phone call, and a call is exactly when
+   * somebody navigates away mid-form to look something up. Losing the
+   * applicant's name at that moment teaches a telecaller to write the details
+   * on paper first and type them in afterwards, which is how a system stops
+   * being used live.
+   */
+  const [name, setName] = useDraft("new-case:name");
+  const [phone, setPhone] = useDraft("new-case:phone");
+  const [draftProductId, setProductId] = useDraft("new-case:product");
+  const [amount, setAmount] = useDraft("new-case:amount");
+  const [draftSourceId, setReferralSourceId] = useDraft("new-case:source");
   const [chosenPersonId, setChosenPersonId] = useState<string | null>(null);
+
+  // A drafted id that master data no longer contains is ignored rather than
+  // selected — a deactivated product must not be revived by an old draft.
+  const productId = db.loanProducts.some((p) => p.id === draftProductId)
+    ? draftProductId
+    : (db.loanProducts[0]?.id ?? "");
+  const referralSourceId = activeReferralSources.some((s) => s.id === draftSourceId)
+    ? draftSourceId
+    : (activeReferralSources[0]?.id ?? "");
 
   if (!session.can("case.create", "all")) {
     return (
@@ -58,6 +77,9 @@ export function NewCase(): ReactNode {
       },
       session.user.id,
     );
+    // The draft has become a case. Leaving it behind would greet the next new
+    // case with the last one's applicant already typed in.
+    clearDrafts("new-case:");
     toast.show("Case opened. Its number was allocated straight away — quotable on this call.");
     navigate(`/cases/${caseId}`);
   };
@@ -125,13 +147,28 @@ export function NewCase(): ReactNode {
         </div>
       </Card>
 
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <p className="text-xs text-ink-500">
           No co-applicant, guarantor or property here. Add them later, in one action, if they exist.
+          <br />
+          Nothing typed here is lost if you navigate away — it is kept until the case is opened.
         </p>
-        <Button variant="primary" disabled={!ready} onClick={submit} className={cx(!ready && "opacity-60")}>
-          Open case
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" onClick={() => navigate(-1)}>
+            Back
+          </Button>
+          <Button
+            onClick={() => {
+              clearDrafts("new-case:");
+              toast.show("Cleared.");
+            }}
+          >
+            Clear
+          </Button>
+          <Button variant="primary" disabled={!ready} onClick={submit} className={cx(!ready && "opacity-60")}>
+            Open case
+          </Button>
+        </div>
       </div>
     </div>
   );

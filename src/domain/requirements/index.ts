@@ -42,9 +42,17 @@ export {
 } from "./default-rules.js";
 
 export {
+  ALL_DOCUMENT_TYPES,
+  BASE_DOCUMENT_TYPES,
+  CUSTOM_DOCUMENT_TYPE_CODE,
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_HINTS,
+  DOCUMENT_CATEGORY_LABELS,
   ENGINE_DOCUMENT_TYPES,
   PRE_ENGINE_DOCUMENT_TYPES,
   allDocumentTypeCodes,
+  documentTypeByCode,
+  type DocumentCategory,
   type DocumentTypeDefinition,
 } from "./document-catalogue.js";
 

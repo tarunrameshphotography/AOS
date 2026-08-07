@@ -36,13 +36,16 @@ installLocalStoragePolyfill();
 vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
 
 const {
+  addCustomRequirement,
   counterpartyOf,
   createCase,
   createSubmission,
   getDb,
   recipientsOf,
+  removeCustomRequirement,
   resetDatabase,
   updateBranch,
+  updateCaseFacts,
   uploadDocument,
 } = await import("./store.js");
 const { storageAdapter } = await import("./storage.js");
@@ -396,5 +399,152 @@ describe("adding a bank to a case", () => {
     if (!seeded) throw new Error("the seed has no submissions");
     expect(seeded.branchNameAtSubmission).toBeDefined();
     expect(seeded.snapshotTakenAt).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Telecaller Workflow milestone.
+// ---------------------------------------------------------------------------
+
+describe("custom requirements — the exception the rules could not have known about", () => {
+  function setup(): { caseId: string; userId: string } {
+    resetDatabase();
+    const db = getDb();
+    const productId = db.loanProducts[0]?.id;
+    const userId = db.users[0]?.id;
+    if (!productId || !userId) throw new Error("test setup: expected a seeded product and user");
+    return {
+      caseId: createCase({ newApplicantName: "Selvi Murugan", loanProductId: productId }, userId),
+      userId,
+    };
+  }
+
+  it("adds the document to that case and to no rule", () => {
+    const { caseId, userId } = setup();
+    const rulesBefore = JSON.stringify(getDb().documentRequirementRules);
+
+    const result = addCustomRequirement(
+      caseId,
+      {
+        category: "property",
+        name: "Bank NOC for the second charge",
+        description: "Letter from the existing bank agreeing to a second charge.",
+        applicability: "mandatory",
+      },
+      userId,
+    );
+
+    expect(result.ok).toBe(true);
+    // MASTER RULES UNTOUCHED. This is the whole promise of Part 6: a document
+    // added for one file must not change what every other open case asks for.
+    expect(JSON.stringify(getDb().documentRequirementRules)).toBe(rulesBefore);
+
+    const added = getDb().requirements.find((r) => r.caseId === caseId && r.isCustom);
+    expect(added?.customName).toBe("Bank NOC for the second charge");
+    expect(added?.customCategory).toBe("property");
+    expect(added?.status).toBe("pending");
+  });
+
+  it("survives a regeneration, because no rule produced it and so no rule can withdraw it", () => {
+    const { caseId, userId } = setup();
+    addCustomRequirement(
+      caseId,
+      { category: "additional", name: "Employer's NOC", applicability: "optional" },
+      userId,
+    );
+
+    // Anything that changes a case fact regenerates the whole requirement set.
+    updateCaseFacts(caseId, { hasExistingObligations: true }, userId);
+
+    const survivor = getDb().requirements.find(
+      (r) => r.caseId === caseId && r.customName === "Employer's NOC",
+    );
+    expect(survivor?.status).toBe("pending");
+    expect(survivor?.applicability).toBe("optional");
+  });
+
+  it("refuses the same document twice on one case", () => {
+    const { caseId, userId } = setup();
+    const input = {
+      category: "kyc" as const,
+      name: "Ration card",
+      applicability: "mandatory" as const,
+    };
+
+    expect(addCustomRequirement(caseId, input, userId).ok).toBe(true);
+    expect(addCustomRequirement(caseId, input, userId).ok).toBe(false);
+  });
+
+  it("refuses to delete a rule-generated requirement, because that would hide why it was asked for", () => {
+    const { caseId, userId } = setup();
+    const generated = getDb().requirements.find((r) => r.caseId === caseId && !r.isCustom);
+    if (!generated) throw new Error("test setup: expected a generated requirement");
+
+    const result = removeCustomRequirement(generated.id, userId);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/waive/i);
+  });
+
+  it("marks a withdrawn custom requirement not applicable rather than deleting it", () => {
+    const { caseId, userId } = setup();
+    addCustomRequirement(
+      caseId,
+      { category: "additional", name: "Site photo", applicability: "optional" },
+      userId,
+    );
+    const added = getDb().requirements.find((r) => r.caseId === caseId && r.isCustom);
+    if (!added) throw new Error("test setup: expected the custom requirement");
+
+    expect(removeCustomRequirement(added.id, userId).ok).toBe(true);
+
+    const after = getDb().requirements.find((r) => r.id === added.id);
+    expect(after).toBeDefined();
+    expect(after?.status).toBe("not_applicable");
+  });
+});
+
+describe("uploading against a requirement whose document type belongs to a business", () => {
+  /**
+   * The bug: a proprietor borrowing in their own name is asked for a balance
+   * sheet and a current account statement — both types declared
+   * `organisation`, both attached to a PERSON, because on that file the
+   * business IS the person. Resolving ownership from the TYPE looked for an
+   * organisation id that did not exist and threw BR-030, so the checklist
+   * asked for a document the user could then not upload.
+   */
+  it("stores it against the person the requirement is for, rather than throwing", async () => {
+    resetDatabase();
+    const db = getDb();
+    const userId = db.users[0]?.id;
+    const businessProduct = db.loanProducts.find((p) => p.code?.startsWith("bl_"));
+    if (!userId || !businessProduct) {
+      throw new Error("test setup: expected a seeded user and a business lending product");
+    }
+
+    const caseId = createCase(
+      { newApplicantName: "Anand Kumar", loanProductId: businessProduct.id },
+      userId,
+    );
+
+    const balanceSheetTypeId = getDb().documentTypes.find((t) => t.code === "balance_sheet")?.id;
+    const requirement = getDb().requirements.find(
+      (r) => r.caseId === caseId && r.documentTypeId === balanceSheetTypeId,
+    );
+    if (!requirement) {
+      throw new Error("test setup: expected a balance sheet requirement on a business loan");
+    }
+    expect(requirement.requiredOfCasePartyId).toBeDefined();
+
+    const result = await uploadDocument(
+      requirement.id,
+      { name: "balance-sheet.pdf", size: 4, bytes: new Uint8Array([1, 2, 3, 4]) },
+      userId,
+    );
+
+    expect(result.ok).toBe(true);
+    const stored = getDb().documents.find((d) => d.fileName === "balance-sheet.pdf");
+    expect(stored?.ownerKind).toBe("person");
+    expect(stored?.personId).toBeDefined();
+    expect(stored?.filePath).toContain("balance_sheet");
   });
 });

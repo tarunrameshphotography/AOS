@@ -75,6 +75,23 @@
  *
  * Every one of those is a rule row. No application code branches on any of it.
  *
+ * WHAT THE TELECALLER WORKFLOW MILESTONE CHANGED
+ *
+ *  1. EVERY RULE NAME IS NOW A SENTENCE A TELECALLER WOULD SAY. "Credit
+ *     bureau consent" became "Loan consent form (CIBIL check)"; "Parent
+ *     document (title chain)" became "Parent documents (previous sale
+ *     deeds)". The rule name is what appears under "Asked for by" on the case
+ *     screen, and a name only a credit manager understands is a name the
+ *     person on the phone has to translate live, differently every time.
+ *  2. A BUSINESS LOAN NOW ASKS FOR BUSINESS DOCUMENTS ON DAY ONE. Every
+ *     business rule waited for a borrowing firm to be added or an employment
+ *     type to be set, and both start empty — so the newest business loan in
+ *     the system had the emptiest checklist. Six rules keyed on the customer
+ *     product itself close that gap; see the block below.
+ *  3. GST RETURNS ARE ASKED FOR ACROSS TWO FINANCIAL YEARS, not one. Lenders
+ *     read GSTR-3B to see whether turnover is growing, and one year shows no
+ *     trend.
+ *
  * HOW TO ADD A RULE: see Docs/Document Requirement Engine.md. Short version —
  * add a row here (or in the admin screen), name the document type, choose the
  * scope, and write the conditions. No other file changes.
@@ -237,7 +254,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "kyc_pan",
-    name: "PAN card — every individual signing",
+    name: "PAN card — everyone signing",
     documentTypeCode: "pan_card",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -247,7 +264,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "kyc_aadhaar",
-    name: "Aadhaar card — every individual signing",
+    name: "Aadhaar card — everyone signing",
     documentTypeCode: "aadhaar_card",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -257,7 +274,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "kyc_address_proof",
-    name: "Address proof — every individual signing",
+    name: "Address proof — everyone signing",
     documentTypeCode: "address_proof",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -266,7 +283,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "kyc_photograph",
-    name: "Photograph — every individual signing",
+    name: "Passport size photograph — everyone signing",
     documentTypeCode: "photograph",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -286,7 +303,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "kyc_credit_bureau_consent",
-    name: "Credit bureau consent",
+    name: "Loan consent form (CIBIL check)",
     documentTypeCode: "credit_bureau_consent",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -304,7 +321,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "nri_passport",
-    name: "Passport — NRI applicant",
+    name: "Passport — customer living abroad",
     documentTypeCode: "passport",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -314,7 +331,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "nri_visa",
-    name: "Visa or work permit — NRI applicant",
+    name: "Visa or work permit — customer living abroad",
     documentTypeCode: "visa",
     scope: "party",
     partyRoles: SIGNING_ROLES,
@@ -324,7 +341,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "nri_overseas_income",
-    name: "Overseas income proof — NRI applicant",
+    name: "Overseas income proof — customer living abroad",
     documentTypeCode: "overseas_income_proof",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -335,7 +352,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "nri_power_of_attorney",
-    name: "Power of attorney — NRI applicant",
+    name: "Power of attorney — customer living abroad",
     documentTypeCode: "power_of_attorney",
     scope: "party",
     partyRoles: ["applicant"],
@@ -355,7 +372,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "income_salary_slip",
-    name: "Salary slips — salaried",
+    name: "Salary slips — salaried customer",
     documentTypeCode: "salary_slip",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -366,7 +383,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_form_16",
-    name: "Form 16 — salaried",
+    name: "Form 16 — salaried customer",
     documentTypeCode: "form_16",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -377,7 +394,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_salaried_banking",
-    name: "Bank statement — salary credit account",
+    name: "Bank statement — the account salary comes into",
     documentTypeCode: "bank_statement",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -416,7 +433,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "income_itr",
-    name: "Income tax return — self-employed",
+    name: "ITR — self-employed customer",
     documentTypeCode: "itr",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -431,7 +448,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_self_employed_banking",
-    name: "Bank statement — self-employed",
+    name: "Bank statement — self-employed customer",
     documentTypeCode: "bank_statement",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -452,7 +469,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
    */
   rule({
     code: "income_form_26as",
-    name: "Form 26AS / AIS — self-employed",
+    name: "Form 26AS / AIS — self-employed customer",
     documentTypeCode: "form_26as",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -467,7 +484,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_form_26as_salaried",
-    name: "Form 26AS / AIS — salaried",
+    name: "Form 26AS / AIS — salaried customer",
     documentTypeCode: "form_26as",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -491,7 +508,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
    */
   rule({
     code: "income_balance_sheet_individual",
-    name: "Balance sheet — business borrower without a firm on the file",
+    name: "Balance sheet — business run in the customer's own name",
     documentTypeCode: "balance_sheet",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -507,7 +524,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_profit_and_loss_individual",
-    name: "Profit and loss — business borrower without a firm on the file",
+    name: "Profit & loss statement — business run in the customer's own name",
     documentTypeCode: "profit_and_loss",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -533,7 +550,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_practice_proof",
-    name: "Professional practice proof",
+    name: "Practice proof",
     documentTypeCode: "professional_practice_proof",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -545,7 +562,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_practice_proof_professional",
-    name: "Professional practice proof — professional loan",
+    name: "Practice proof — professional loan",
     documentTypeCode: "professional_practice_proof",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -559,7 +576,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "income_business_proof_individual",
-    name: "Business proof — business owner without a firm on the file",
+    name: "Business proof — business run in the customer's own name",
     documentTypeCode: "business_proof",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -580,7 +597,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "guarantor_itr",
-    name: "Income tax return — guarantor",
+    name: "ITR — guarantor",
     documentTypeCode: "itr",
     scope: "party",
     partyRoles: ["guarantor"],
@@ -624,7 +641,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "takeover_loan_statement",
-    name: "Existing loan statement — takeover",
+    name: "Existing loan statement — loan being transferred",
     documentTypeCode: "existing_loan_statement",
     scope: "party",
     partyRoles: ["applicant"],
@@ -634,7 +651,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "takeover_foreclosure_letter",
-    name: "Foreclosure letter — takeover",
+    name: "Foreclosure letter — loan being transferred",
     documentTypeCode: "foreclosure_letter",
     scope: "case",
     stage: "ready_for_submission",
@@ -648,7 +665,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "firm_pan",
-    name: "Business PAN",
+    name: "Business PAN card",
     documentTypeCode: "org_pan",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -667,7 +684,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "firm_business_proof",
-    name: "Business registration proof",
+    name: "Business proof",
     documentTypeCode: "business_proof",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -677,7 +694,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "firm_bank_statement",
-    name: "Business bank statement",
+    name: "Business bank statement (current account)",
     documentTypeCode: "org_bank_statement",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -688,7 +705,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "firm_itr",
-    name: "Business income tax return",
+    name: "Business ITR",
     documentTypeCode: "org_itr",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -708,7 +725,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "firm_profit_and_loss",
-    name: "Profit and loss statement",
+    name: "Profit & loss statement",
     documentTypeCode: "profit_and_loss",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -718,7 +735,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "firm_audit_report",
-    name: "Audit report — audited constitutions",
+    name: "Audit report — companies and LLPs",
     documentTypeCode: "audit_report",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -735,7 +752,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "gst_certificate_firm",
-    name: "GST registration certificate",
+    name: "GST registration certificate (GST REG-06)",
     documentTypeCode: "gst_certificate",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -745,19 +762,19 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "gst_returns_firm",
-    name: "GST returns",
+    name: "GST returns (GSTR-3B)",
     documentTypeCode: "gst_returns",
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    financialYears: 1,
+    financialYears: 2,
     conditions: [isTrue("party.is_gst_registered")],
     order: ORDER.firm,
     notes: "GSTR-3B and GSTR-1 for the last financial year — the turnover the NBFC prices off.",
   }),
   rule({
     code: "gst_certificate_individual",
-    name: "GST registration certificate — GST-registered individual borrower",
+    name: "GST registration certificate (GST REG-06) — business in the customer's own name",
     documentTypeCode: "gst_certificate",
     scope: "party",
     partyRoles: INCOME_ROLES,
@@ -772,12 +789,12 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "gst_returns_individual",
-    name: "GST returns — GST-registered individual borrower",
+    name: "GST returns (GSTR-3B) — business in the customer's own name",
     documentTypeCode: "gst_returns",
     scope: "party",
     partyRoles: INCOME_ROLES,
     partyKind: "person",
-    financialYears: 1,
+    financialYears: 2,
     conditions: [
       isTrue("case.is_gst_registered"),
       fact("case.has_borrower_firm", "is_false"),
@@ -812,7 +829,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "gst_certificate_firm_by_product",
-    name: "GST registration certificate — product requires GST",
+    name: "GST registration certificate (GST REG-06) — loan needs GST",
     documentTypeCode: "gst_certificate",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -823,45 +840,142 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "gst_returns_firm_by_product",
-    name: "GST returns — product requires GST",
+    name: "GST returns (GSTR-3B) — loan needs GST",
     documentTypeCode: "gst_returns",
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    financialYears: 1,
+    financialYears: 2,
     conditions: [gstRequiredByProduct()],
     order: ORDER.firm,
     notes: "GSTR-3B and GSTR-1 for the last financial year — the turnover the NBFC prices off.",
   }),
   rule({
     code: "gst_certificate_individual_by_product",
-    name: "GST registration certificate — product requires GST, no firm on the file",
+    name: "GST registration certificate (GST REG-06) — loan needs GST, business in the customer's own name",
     documentTypeCode: "gst_certificate",
     scope: "party",
-    partyRoles: INCOME_ROLES,
+    // The APPLICANT, not every income-supplying party. A salaried co-applicant
+    // on a Commercial LAP has no GSTIN and should never be asked for one.
+    partyRoles: ["applicant"],
     partyKind: "person",
-    conditions: [
-      gstRequiredByProduct(),
-      fact("case.has_borrower_firm", "is_false"),
-      employmentIn("self_employed", "business_owner"),
-    ],
+    conditions: [gstRequiredByProduct(), fact("case.has_borrower_firm", "is_false")],
     order: ORDER.firm,
-    notes: "The proprietor case: the business is the person, and the product still needs GST.",
+    notes:
+      "The proprietor case: the business is the person, and the product still needs GST. " +
+      "The Telecaller Workflow milestone dropped the employment-type condition that used to " +
+      "sit here — it starts undefined, so the rule fired on nothing at the one moment the " +
+      "telecaller needed it, and a product that declares GST mandatory has already said " +
+      "everything the employment type would have said.",
   }),
   rule({
     code: "gst_returns_individual_by_product",
-    name: "GST returns — product requires GST, no firm on the file",
+    name: "GST returns (GSTR-3B) — loan needs GST, business in the customer's own name",
     documentTypeCode: "gst_returns",
     scope: "party",
-    partyRoles: INCOME_ROLES,
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [gstRequiredByProduct(), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.firm,
+  }),
+
+  // -------------------------------------------------------------------------
+  // BUSINESS LOAN — the set every DSA in this market collects, asked for
+  // because the product is a business loan and for no other reason.
+  //
+  // WHY THIS BLOCK EXISTS
+  //
+  // Every business rule above waits for something to have been recorded:
+  // either a borrowing firm added as a party, or an employment type set to
+  // self-employed / business owner on the applicant. Both start empty. So a
+  // Business Loan created on the phone this morning — one applicant, nothing
+  // else filled in yet — showed a telecaller a checklist of PAN, Aadhaar,
+  // address proof and a photo, and no business documents at all. That is the
+  // exact moment the telecaller needs the list, and it was the moment the
+  // list was emptiest.
+  //
+  // The fix is to read the one fact that IS known at that moment: the
+  // customer product. If someone opened a business loan, there is a business.
+  // These rules attach to the applicant, and stand down the moment a real firm
+  // is added, because from then on the firm's own rules ask for the same
+  // papers in the firm's name.
+  //
+  // The engine merges rules landing on the same document for the same subject
+  // to the stricter reading, so a self-employed applicant matched by both
+  // these and the employment-conditioned rules above gets one row, not two.
+  // -------------------------------------------------------------------------
+  rule({
+    code: "business_proof_by_product",
+    name: "Business proof — business loan",
+    documentTypeCode: "business_proof",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+    notes:
+      "Shop & Establishment licence, trade licence or the registration deed. Asked because " +
+      "the loan is a business loan, not because anyone has yet said what kind of business it is.",
+  }),
+  rule({
+    code: "business_address_proof_by_product",
+    name: "Business address proof — business loan",
+    documentTypeCode: "org_address_proof",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+    notes: "EB bill or rental agreement for the shop or office, dated within three months.",
+  }),
+  rule({
+    code: "business_banking_by_product",
+    name: "Business bank statement (current account) — business loan",
+    documentTypeCode: "org_bank_statement",
+    scope: "party",
+    partyRoles: ["applicant"],
     partyKind: "person",
     financialYears: 1,
-    conditions: [
-      gstRequiredByProduct(),
-      fact("case.has_borrower_firm", "is_false"),
-      employmentIn("self_employed", "business_owner"),
-    ],
-    order: ORDER.firm,
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+    notes:
+      "Twelve months of the business account. On a proprietorship this is often the same " +
+      "account as the personal one, and the telecaller should ask for whichever the takings go into.",
+  }),
+  rule({
+    code: "business_itr_by_product",
+    name: "ITR — business loan",
+    documentTypeCode: "itr",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+    notes: "Two assessment years with computation. On a proprietorship the business ITR is the owner's ITR.",
+  }),
+  rule({
+    code: "business_balance_sheet_by_product",
+    name: "Balance sheet — business loan",
+    documentTypeCode: "balance_sheet",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+  }),
+  rule({
+    code: "business_profit_and_loss_by_product",
+    name: "Profit & loss statement — business loan",
+    documentTypeCode: "profit_and_loss",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
   }),
 
   // -------------------------------------------------------------------------
@@ -900,7 +1014,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "constitution_moa_aoa",
-    name: "MOA and AOA",
+    name: "MOA & AOA",
     documentTypeCode: "moa_aoa",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -910,7 +1024,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "constitution_board_resolution",
-    name: "Board resolution to borrow",
+    name: "Board resolution to take the loan",
     documentTypeCode: "board_resolution",
     scope: "party",
     partyRoles: ["borrower_firm"],
@@ -972,7 +1086,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "business_udyam_scheme",
-    name: "Udyam registration — scheme-linked products",
+    name: "Udyam registration (MSME) — MUDRA and CGTMSE",
     documentTypeCode: "udyam_certificate",
     scope: "case",
     conditions: [productIn("bl_msme_cgtmse", "bl_mudra", "bl_machinery")],
@@ -981,7 +1095,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_udyam_general",
-    name: "Udyam registration — other business products",
+    name: "Udyam registration (MSME) — other business loans",
     documentTypeCode: "udyam_certificate",
     scope: "case",
     applicability: "optional",
@@ -993,7 +1107,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_stock_statement",
-    name: "Stock and book debts statement",
+    name: "Stock statement",
     documentTypeCode: "stock_statement",
     scope: "case",
     conditions: [fact("case.security_type_code", "equals", "stock_book_debts")],
@@ -1002,7 +1116,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_debtors_creditors",
-    name: "Debtors and creditors statement",
+    name: "Debtors & creditors list",
     documentTypeCode: "debtors_creditors_statement",
     scope: "case",
     conditions: [productIn("bl_working_capital", "bl_overdraft")],
@@ -1028,7 +1142,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_contract_or_tender",
-    name: "Contract or tender document",
+    name: "Contract or work order",
     documentTypeCode: "contract_or_tender",
     scope: "case",
     conditions: [productIn("bl_non_fund_based")],
@@ -1045,7 +1159,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_buyer_acceptance",
-    name: "Buyer acceptance",
+    name: "Buyer acceptance letter",
     documentTypeCode: "buyer_acceptance",
     scope: "case",
     conditions: [productIn("bl_bill_discounting")],
@@ -1063,14 +1177,14 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "property_sale_deed",
-    name: "Sale deed / title deed",
+    name: "Sale deed (title deed)",
     documentTypeCode: "sale_deed",
     scope: "property",
     order: ORDER.property,
   }),
   rule({
     code: "property_parent_document",
-    name: "Parent document (title chain)",
+    name: "Parent documents (previous sale deeds)",
     documentTypeCode: "parent_document",
     scope: "property",
     order: ORDER.property,
@@ -1078,7 +1192,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_patta_chitta",
-    name: "Patta / Chitta",
+    name: "Patta & Chitta",
     documentTypeCode: "patta_chitta",
     scope: "property",
     conditions: [fact("property.type", "not_in", "apartment")],
@@ -1089,7 +1203,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_encumbrance_certificate",
-    name: "Encumbrance certificate",
+    name: "Encumbrance certificate (EC / Villangam)",
     documentTypeCode: "encumbrance_cert",
     scope: "property",
     order: ORDER.property,
@@ -1104,7 +1218,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_approved_plan",
-    name: "Approved building plan",
+    name: "Building approval plan",
     documentTypeCode: "approved_plan",
     scope: "property",
     conditions: [productIn(...PLAN_PRODUCTS)],
@@ -1112,7 +1226,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_layout_approval",
-    name: "Layout approval (DTCP / CMDA / local body)",
+    name: "Layout approval (DTCP / CMDA)",
     documentTypeCode: "layout_approval",
     scope: "property",
     conditions: [fact("property.type", "in", "plot"), productIn("hl_plot_purchase", "hl_plot_construction")],
@@ -1138,7 +1252,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_occupancy_certificate",
-    name: "Occupancy certificate",
+    name: "Occupancy certificate (OC)",
     documentTypeCode: "occupancy_certificate",
     scope: "property",
     applicability: "optional",
@@ -1147,7 +1261,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_own_contribution",
-    name: "Own contribution / margin money proof",
+    name: "Own contribution (margin money) proof",
     documentTypeCode: "own_contribution_proof",
     scope: "case",
     stage: "ready_for_submission",
@@ -1170,7 +1284,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_valuation_report",
-    name: "Valuation report",
+    name: "Property valuation report",
     documentTypeCode: "valuation_report",
     scope: "property",
     stage: "ready_for_submission",
@@ -1181,7 +1295,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_lease_deed",
-    name: "Registered lease deed — lease rental discounting",
+    name: "Registered lease deed — rent-based loan",
     documentTypeCode: "lease_deed",
     scope: "property",
     conditions: [productIn("lap_lrd")],
@@ -1189,7 +1303,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "property_tenant_kyc",
-    name: "Tenant KYC — lease rental discounting",
+    name: "Tenant KYC — rent-based loan",
     documentTypeCode: "tenant_kyc",
     scope: "case",
     conditions: [productIn("lap_lrd")],
@@ -1231,7 +1345,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "vehicle_quotation",
-    name: "Vehicle quotation / proforma invoice",
+    name: "Vehicle quotation",
     documentTypeCode: "vehicle_quotation",
     scope: "case",
     conditions: [productIn("vl_new_car", "vl_two_wheeler", "vl_commercial_vehicle")],
@@ -1239,7 +1353,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "vehicle_rc",
-    name: "Vehicle registration certificate — used vehicle",
+    name: "Vehicle RC book — second-hand vehicle",
     documentTypeCode: "vehicle_rc",
     scope: "case",
     conditions: [productIn("vl_used_car")],
@@ -1247,7 +1361,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "vehicle_valuation",
-    name: "Vehicle valuation — used vehicle",
+    name: "Vehicle valuation — second-hand vehicle",
     documentTypeCode: "vehicle_valuation",
     scope: "case",
     conditions: [productIn("vl_used_car")],
@@ -1307,7 +1421,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "education_academic_records",
-    name: "Academic records",
+    name: "Academic records (marksheets)",
     documentTypeCode: "academic_records",
     scope: "case",
     conditions: [customerProductIn("education_loan")],
@@ -1315,7 +1429,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "education_passport",
-    name: "Passport — overseas education",
+    name: "Passport — study abroad",
     documentTypeCode: "passport",
     scope: "party",
     partyRoles: ["applicant"],
@@ -1325,7 +1439,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "education_visa",
-    name: "Visa — overseas education",
+    name: "Visa — study abroad",
     documentTypeCode: "visa",
     scope: "party",
     partyRoles: ["applicant"],
@@ -1361,14 +1475,14 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   rule({
     code: "case_application_form",
-    name: "Application form",
+    name: "Loan application form",
     documentTypeCode: "application_form",
     scope: "case",
     order: ORDER.caseLevel,
   }),
   rule({
     code: "case_login_form",
-    name: "Login form",
+    name: "Bank login form",
     documentTypeCode: "login_form",
     scope: "case",
     stage: "ready_for_submission",

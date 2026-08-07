@@ -43,6 +43,12 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import {
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_LABELS,
+  type DocumentCategory,
+} from "@domain/requirements/document-catalogue.js";
+
+import {
   createMasterDataRecord,
   MASTER_DATA_LABELS,
   setDocumentTypeActive,
@@ -586,7 +592,13 @@ function DocumentTypeSectionView({
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
                     {type.name}
+                    {type.localName && (
+                      <span className="text-xs font-normal text-ink-400">({type.localName})</span>
+                    )}
                     {!type.isActive && <Badge tone="neutral">Inactive</Badge>}
+                    {type.category && (
+                      <Badge>{DOCUMENT_CATEGORY_LABELS[type.category]}</Badge>
+                    )}
                     <Badge tone="info">{type.ownerKind}</Badge>
                     {type.requiresPeriod && <Badge tone="warn">Period</Badge>}
                     {type.requiresExpiry && <Badge tone="warn">Expiry</Badge>}
@@ -622,10 +634,8 @@ function DocumentTypeSectionView({
       </div>
 
       {editing && (
-        <NameDescriptionModal
-          title="Edit Document Type"
-          name={editing.name}
-          description={editing.description ?? ""}
+        <DocumentTypeModal
+          type={editing}
           onClose={() => setEditing(null)}
           onSubmit={(patch) => {
             const result = updateDocumentTypeDetails(editing.id, patch, session.user.id);
@@ -638,6 +648,84 @@ function DocumentTypeSectionView({
         />
       )}
     </Card>
+  );
+}
+
+/**
+ * Editing what a document is CALLED and how it is EXPLAINED.
+ *
+ * Four fields, and all four exist for the person on the phone: the official
+ * name a bank will recognise, the local name a customer will recognise, one
+ * sentence explaining it, and which block of the checklist it belongs in.
+ * A separate modal from the generic name-and-description one because a
+ * document type is the one piece of master data where the wording is the
+ * feature (Telecaller Workflow milestone).
+ */
+function DocumentTypeModal({
+  type,
+  onClose,
+  onSubmit,
+}: {
+  type: DocumentType;
+  onClose: () => void;
+  onSubmit: (patch: {
+    name: string;
+    localName: string;
+    description: string;
+    category: DocumentCategory;
+  }) => void;
+}): ReactNode {
+  const [name, setName] = useState(type.name);
+  const [localName, setLocalName] = useState(type.localName ?? "");
+  const [description, setDescription] = useState(type.description ?? "");
+  const [category, setCategory] = useState<DocumentCategory>(type.category ?? "additional");
+
+  return (
+    <Modal open title="Edit Document Type" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Name" hint="What we call it to the customer.">
+          <Input value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
+        <Field
+          label="Common local name"
+          hint='Optional. What it is called locally — "Villangam Certificate", "GST 3B", "Udyog Aadhaar". Shown beside the official name, never instead of it.'
+        >
+          <Input value={localName} onChange={(event) => setLocalName(event.target.value)} />
+        </Field>
+        <Field
+          label="Description"
+          hint="One sentence somebody in their first week could read out to a customer."
+        >
+          <Textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </Field>
+        <Field label="Category" hint="Which block of the checklist this appears under.">
+          <Select
+            value={category}
+            onChange={(event) => setCategory(event.target.value as DocumentCategory)}
+          >
+            {DOCUMENT_CATEGORIES.map((value) => (
+              <option key={value} value={value}>
+                {DOCUMENT_CATEGORY_LABELS[value]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => onSubmit({ name, localName, description, category })}
+          >
+            Save &amp; continue
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

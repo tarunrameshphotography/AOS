@@ -318,7 +318,18 @@ export function regenerateRequirements(
     return [];
   }
 
-  const existing = db.requirements.filter((r) => r.caseId === caseId);
+  const all = db.requirements.filter((r) => r.caseId === caseId);
+
+  /**
+   * Requirements a Login Executive added by hand are not part of the plan and
+   * never were (Telecaller Workflow milestone, Part 6). No rule produced
+   * them, so no rule's absence may withdraw them — they pass through
+   * regeneration untouched, keeping their status, their document and their
+   * place on the case. Only `removeCustomRequirement` takes one off the list,
+   * and even that marks it not_applicable rather than deleting it.
+   */
+  const custom = all.filter((r) => r.isCustom);
+  const existing = all.filter((r) => !r.isCustom);
   const byKey = new Map(existing.map((row) => [keyOf(row), row]));
 
   const wanted = planFor(db, loanCase);
@@ -367,7 +378,7 @@ export function regenerateRequirements(
     }
   }
 
-  return result;
+  return [...result, ...custom];
 }
 
 /**

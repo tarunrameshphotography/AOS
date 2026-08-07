@@ -34,8 +34,9 @@ out of service, without a developer and without a deploy.
 ```
 src/domain/requirements/
   rules.ts               the evaluator — facts in, requirements out. No database.
-  default-rules.ts       the 86 researched default rules, seeded and then editable.
-  document-catalogue.ts  the document types the rules name.
+  default-rules.ts       the 103 researched default rules, seeded and then editable.
+  document-catalogue.ts  the document types the rules name — their customer-facing
+                         name, common local name, description and category.
   financial-year.ts      India's April–March year; which types recur.
   progress.ts            what the generated set means for the case's score.
 
@@ -177,10 +178,12 @@ loses the trust it needs to be useful.
 ### In the default pack (a new rule)
 
 1. If the rule names a document type that does not exist yet, add it to
-   `ENGINE_DOCUMENT_TYPES` in `src/domain/requirements/document-catalogue.ts`.
-   A rule naming a type nobody created generates *nothing*, which looks exactly
-   like a case that does not need the document — the test
-   `never names a document type that does not exist` exists to catch it.
+   `ENGINE_DOCUMENT_TYPES` in `src/domain/requirements/document-catalogue.ts`
+   — with its customer-facing name, its local name where Tamil Nadu has one, a
+   one-sentence description, and a category. A rule naming a type nobody
+   created generates *nothing*, which looks exactly like a case that does not
+   need the document — the test `never names a document type that does not
+   exist` exists to catch it.
 2. Add a `rule({ ... })` entry to `DEFAULT_REQUIREMENT_RULES` in
    `default-rules.ts`, in the block it belongs to.
 3. Add a test to `default-rules.test.ts` phrased as a sentence an office user
@@ -237,7 +240,7 @@ years of ITR is the single most common way a generic checklist embarrasses a
 branch, and the income rules carry an explicit exclusion for it.
 
 **Recurring documents are asked for in financial years**, and the market norms
-the pack seeds are: two years of ITR and financials, one year of GST returns,
+the pack seeds are: two years of ITR and financials, two years of GST returns,
 and a rolling six to twelve months of banking.
 
 **Scheme-linked products have hard prerequisites.** CGTMSE and PMMY are only
@@ -296,6 +299,69 @@ previously been asked for its agreement but never for the authority to sign. A
 partnership is deliberately still not asked — its deed names the authorised
 partners itself.
 
+### Corrections from the Telecaller Workflow milestone
+
+The engine was correct and the checklist was still hard to read out loud. Three
+business-rule changes came out of watching what a telecaller actually needs.
+
+**Documents are named the way a telecaller names them, and grouped.** Every
+document type now carries four things instead of two: the name we use *to the
+customer*, the **common local name** where Tamil Nadu calls it something else,
+a one-sentence description a first-week joiner can read out, and a **category**.
+So "Credit Bureau Consent" is now **Loan Consent Form** with the local name
+*CIBIL Consent*; "Application Form" is **Loan Application Form**; the EC keeps
+its official name and carries *EC / Villangam* beside it. Where a form number
+is what makes a document unambiguous, the form number is in the name itself —
+**GST Registration Certificate (GST REG-06)**, **GST Returns (GSTR-3B)** — and
+the local name is then dropped rather than repeated. Address proof's
+description *is* the list of substitutes (EB bill, gas bill, ration card,
+passport, driving licence), because "what counts as address proof?" is the
+single most-asked question on a collection call. All four fields remain master
+data a business user owns.
+
+The six categories, in the order a call runs: **KYC**, **Income**, **Business**,
+**Financial**, **Property**, **Additional**.
+
+**A business loan asks for business documents on day one.** Every business rule
+in the pack waited for something to have been recorded — a borrowing firm added
+as a party, or an employment type set to self-employed / business owner. Both
+start empty, so the newest business loan in the system had the emptiest
+checklist, at exactly the moment the telecaller needed it. Six new rules key on
+the one fact that *is* known then, the customer product: if someone opened a
+business loan, there is a business. They ask the applicant for business proof,
+business address proof, a current account statement, ITR ×2, balance sheet ×2
+and P&L ×2, and they stand down the moment a real firm is added, because from
+then on the firm's own rules ask for the same papers in the firm's name. The
+GST-by-product rules lost their employment-type condition for the same reason,
+and narrowed from all income-supplying parties to the applicant — a salaried
+co-applicant on a Commercial LAP has no GSTIN to produce.
+
+**Two years of GST returns, not one.** Lenders read GSTR-3B to see whether
+turnover is growing. One year shows a number; two show a trend.
+
+**A document type's declared owner no longer overrides the requirement's
+subject.** A proprietor is asked for a balance sheet and a current account
+statement — both types declared `organisation`, both attached to a *person*,
+because on that file the business is the person and no organisation row exists.
+Resolving ownership from the type looked for an organisation id that was not
+there and refused the upload under BR-030: the checklist asked for a document
+the user could then not provide. Ownership now follows the requirement's
+subject, and falls back to the case only when there is no subject at all.
+
+### Requirements added by hand
+
+A rule pack cannot anticipate everything: one bank asks for one extra letter on
+one file. A Login Executive can add a requirement to a single case — category,
+name, mandatory or optional, description — and it is then uploaded, verified and
+versioned exactly like a generated one.
+
+Two rules govern it. **No master rule is touched**, so nothing another case asks
+for changes. And **regeneration leaves it alone**: no rule produced it, so no
+rule's absence may withdraw it. Withdrawing one marks it `not_applicable` rather
+than deleting it, the same way a rule-generated row that stops being wanted is
+handled (BR-034) — somebody asked the customer for it, and that they did is part
+of what happened to the case.
+
 ---
 
 ## Worked examples
@@ -311,11 +377,17 @@ opinion, valuation, login form, NACH mandate.
 becomes ITR ×2, Form 26AS ×2, balance sheet ×2, P&L ×2 and twelve months'
 banking — and no payslips or Form 16 anywhere.
 
-**Business loan, proprietor, nothing yet recorded about them.** KYC, ITR ×2,
-Form 26AS ×2, balance sheet ×2, P&L ×2, twelve months' banking, business proof,
-GST certificate, GST returns — the GST rows because the *product* requires GST,
-before anyone has been asked whether the borrower is registered. This is the
-case the audit fixed.
+**Business loan, proprietor, nothing yet recorded about them.** Twenty-four
+rows, grouped: *KYC* — PAN, Aadhaar, address proof, passport size photograph,
+signature proof (optional), loan consent form; *Income* — ITR ×2; *Business* —
+GST registration certificate, GST returns ×2, business proof, business address
+proof, Udyam registration (optional), and whatever the specific facility adds
+(stock statement and debtors/creditors list on a cash credit limit);
+*Financial* — current account statement, balance sheet ×2, P&L ×2;
+*Additional* — loan application form, bank login form, NACH mandate. The GST
+rows and the business rows appear because the *product* says so, before anyone
+has been asked whether the borrower is registered or what kind of business it
+is. This is the case the last two milestones each fixed half of.
 
 **Working capital, GST-registered partnership.** The individual's KYC and ITR,
 plus for the firm: business PAN, address proof, business registration, twelve

@@ -155,7 +155,9 @@ describe("regenerateRequirements — financial-year scoping", () => {
       generated.filter((r) => r.documentTypeId === DOCUMENT_TYPES.find((t) => t.code === code)?.id).length;
 
     expect(byType("gst_certificate")).toBe(1); // not financial-year-scoped — one row, unchanged
-    expect(byType("gst_returns")).toBe(1); // 1 trailing year
+    // 2 trailing years since the Telecaller Workflow milestone: one year of
+    // GSTR-3B shows a turnover figure, two show whether it is growing.
+    expect(byType("gst_returns")).toBe(2);
     expect(byType("balance_sheet")).toBe(2); // 2 trailing years
     expect(byType("profit_and_loss")).toBe(2); // 2 trailing years
 

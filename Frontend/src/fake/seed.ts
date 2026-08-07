@@ -13,6 +13,7 @@
 
 import { buildStoragePath, type DocumentOwner } from "@domain/storage/index.js";
 import {
+  BASE_DOCUMENT_TYPES,
   DEFAULT_REQUIREMENT_RULES,
   ENGINE_DOCUMENT_TYPES,
 } from "@domain/requirements/index.js";
@@ -155,47 +156,60 @@ export function buildSeed(): Database {
   // The lending product catalogue itself is built further down, once the
   // master data it points at exists (Milestone 7).
 
+  /**
+   * The ids the eighteen pre-engine document types have always had. Frozen:
+   * seeded documents, requirements and storage paths all point at them, so
+   * the ids stay put even though the Telecaller Workflow milestone rewrote
+   * every one of their names.
+   *
+   * Numbering is not in list order because it is not in list order in the
+   * database either — 17, 18 and 19 were added by migration 0011 after 16.
+   */
+  const BASE_DOCUMENT_TYPE_IDS: Record<string, number> = {
+    pan_card: 1, aadhaar_card: 2, address_proof: 3, photograph: 4,
+    salary_slip: 5, form_16: 6, bank_statement: 7, itr: 8,
+    gst_certificate: 9, gst_returns: 17, balance_sheet: 18, profit_and_loss: 19,
+    sale_deed: 11, encumbrance_cert: 12, approved_plan: 13, valuation_report: 14,
+    login_form: 15, sanction_letter: 16,
+  };
+
+  /**
+   * Names, local names, descriptions and categories all come from
+   * @domain/requirements/document-catalogue.ts rather than being restated
+   * here. That is what lets one edit fix the wording everywhere: the seed, the
+   * SQL migration and the checklist a telecaller reads out are the same
+   * sentence, not three sentences that drifted.
+   *
+   * A rule naming a type nobody created generates NOTHING, which looks exactly
+   * like a case that does not need the document — so one definition, shared
+   * with Database/migrations/0022, is the only way to be sure.
+   */
+  const fromCatalogue = (type: (typeof BASE_DOCUMENT_TYPES)[number], typeId: string) => ({
+    id: typeId,
+    code: type.code,
+    name: type.name,
+    ...(type.localName ? { localName: type.localName } : {}),
+    description: type.description,
+    category: type.category,
+    ownerKind: type.ownerKind,
+    requiresPeriod: type.requiresPeriod,
+    requiresExpiry: type.requiresExpiry,
+    isActive: true,
+    displayOrder: type.displayOrder,
+  });
+
   const documentTypes: Database["documentTypes"] = [
-    { id: id("dty", 1), code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 10 },
-    { id: id("dty", 2), code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 20 },
-    { id: id("dty", 3), code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 30 },
-    { id: id("dty", 4), code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 40 },
-    { id: id("dty", 5), code: "salary_slip", name: "Salary Slip", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 50 },
-    { id: id("dty", 6), code: "form_16", name: "Form 16", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 60 },
-    { id: id("dty", 7), code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 70 },
-    { id: id("dty", 8), code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 80 },
-    { id: id("dty", 9), code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false, isActive: true, displayOrder: 90 },
+    ...BASE_DOCUMENT_TYPES.map((type) =>
+      fromCatalogue(type, id("dty", BASE_DOCUMENT_TYPE_IDS[type.code] ?? 0)),
+    ),
     // financial_statements is retained (not deleted, per BR-027's pattern) but
     // no longer generated — superseded by the two split-out, financial-year-
-    // scoped types below (Database/migrations/0011).
+    // scoped types (Database/migrations/0011). It has no catalogue entry
+    // because nothing may ask for it again.
     { id: id("dty", 10), code: "financial_statements", name: "Financial Statements", ownerKind: "organisation", requiresPeriod: true, isActive: false, displayOrder: 100 },
-    { id: id("dty", 17), code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 110 },
-    { id: id("dty", 18), code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 120 },
-    { id: id("dty", 19), code: "profit_and_loss", name: "Profit and Loss Statement", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 130 },
-    { id: id("dty", 11), code: "sale_deed", name: "Sale Deed", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 140 },
-    { id: id("dty", 12), code: "encumbrance_cert", name: "Encumbrance Certificate", ownerKind: "property", requiresPeriod: true, isActive: true, displayOrder: 150 },
-    { id: id("dty", 13), code: "approved_plan", name: "Approved Building Plan", ownerKind: "property", requiresPeriod: false, isActive: true, displayOrder: 160 },
-    { id: id("dty", 14), code: "valuation_report", name: "Valuation Report", ownerKind: "property", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 170 },
-    { id: id("dty", 15), code: "login_form", name: "Login Form", ownerKind: "case", requiresPeriod: false, isActive: true, displayOrder: 180 },
-    { id: id("dty", 16), code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false, requiresExpiry: true, isActive: true, displayOrder: 190 },
-    // The Document Requirement Engine's own types (Milestone 9), built from
-    // @domain/requirements/document-catalogue.ts rather than restated here —
-    // a rule naming a type nobody created generates NOTHING, which looks
-    // exactly like a case that does not need the document. One definition,
-    // shared with Database/migrations/0022, is the only way to be sure.
-    // Ids continue from 20 so the sixteen above keep the ids everything else
+    // Ids continue from 20 so the eighteen above keep the ids everything else
     // already points at.
-    ...ENGINE_DOCUMENT_TYPES.map((type, index) => ({
-      id: id("dty", 20 + index),
-      code: type.code,
-      name: type.name,
-      description: type.description,
-      ownerKind: type.ownerKind,
-      requiresPeriod: type.requiresPeriod,
-      requiresExpiry: type.requiresExpiry,
-      isActive: true,
-      displayOrder: type.displayOrder,
-    })),
+    ...ENGINE_DOCUMENT_TYPES.map((type, index) => fromCatalogue(type, id("dty", 20 + index))),
   ];
 
   /**

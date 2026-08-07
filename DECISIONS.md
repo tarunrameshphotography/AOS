@@ -1495,3 +1495,101 @@ can change what a historical file says it did.
 What stays hard, on purpose: getting AOS to choose the bank. Routing and
 eligibility remain ADR-016's territory, and this milestone gives them a
 catalogue to read without moving that line an inch.
+
+---
+
+## ADR-037 — A document type has two names; the checklist is grouped; one case may add its own row
+
+**Status.** Accepted, Telecaller Workflow Refinement.
+**Schema.** `Database/migrations/0026`.
+**Code.** `src/domain/requirements/document-catalogue.ts`, `default-rules.ts`,
+`Frontend/src/screens/CaseDetail.tsx`.
+**Guide.** `Docs/Document Requirement Engine.md`.
+
+**The problem.** ADR-035 made the checklist correct and ADR-035's audit made
+it complete. Neither made it *sayable*. The person who reads it out is a
+telecaller on a call to a customer in Coimbatore, and the list they were
+reading said "Credit Bureau Consent", "Parent Document (Title Chain)" and
+"Stock and Book Debts Statement" — forty rows of it, in rule order, with a
+PAN card three lines above a stock statement. So every call involved a live
+translation into ordinary language, done differently by each caller and
+differently again on each call, and the customer heard a different list
+depending on who rang them.
+
+Three further things showed up in the same watching. A business loan created
+during the first call generated almost no business documents, because every
+business rule waited on a fact — a borrowing firm, an employment type — that
+nobody had recorded yet: the newest case had the emptiest list, at the one
+moment the list was needed. The Overview showed facts (GST registered,
+construction stage, occupation, property) that a user could read and not
+change. And there was nowhere to put the one extra letter that one bank asks
+for on one file, so it went into WhatsApp.
+
+**The decision.**
+
+*A document type carries what we call it and what they call it.* `name` is the
+customer-facing name; `local_name` is what Tamil Nadu calls it where that
+differs — *EC / Villangam*, *Udyog Aadhaar*, *CIBIL Consent*. Both are shown,
+because the customer says one and the bank wants the other, and the person on
+the phone needs both. Where a form number is what makes a document
+unambiguous it goes in the name itself (*GST Registration Certificate (GST
+REG-06)*) and the local name is dropped rather than repeated — a local name
+that is only the official name reworded is noise on the row. A `description`
+is one sentence a first-week joiner can read out, and where a document has
+common substitutes the substitutes *are* the description: address proof reads
+"EB bill, gas bill, ration card, passport, driving licence", because that is
+the question every collection call gets.
+
+*A `category` groups the checklist into six blocks* — KYC, Income, Business,
+Financial, Property, Additional — in the order a call runs. A telecaller works
+one topic at a time; the grouping is what lets them say "now the business
+papers" instead of reading a list back item by item.
+
+All four fields stay master data. The right wording for a Coimbatore branch is
+something the branch knows and a developer does not.
+
+*Six rules key on the customer product rather than on a recorded fact.* If
+someone opened a business loan, there is a business, and that is knowable
+before anything else has been asked. They attach to the applicant and stand
+down the moment a real firm is added, because the firm's own rules then ask
+for the same papers in the firm's name. This is the same species of fix as
+ADR-035's audit finding 1, applied to the rest of the business set rather than
+to GST alone.
+
+*A requirement may be added by hand to one case.* Category, name, mandatory or
+optional, description — then uploaded, verified and versioned exactly like a
+generated one. Two constraints make it safe: no master rule is touched, and
+regeneration passes it through untouched, because no rule produced it and so
+no rule's absence may withdraw it. Withdrawing one marks it `not_applicable`
+rather than deleting it (BR-034) — somebody asked the customer for it.
+
+**What was rejected.**
+
+*A per-case `document_type` row.* It would have made a custom document
+indistinguishable from a real one, at the cost of master data that nobody owns
+and that grows by one row every time a bank has a whim. The requirement
+carries its own name instead and points at a single `other_document` type, so
+storage, versioning and verification need no special case.
+
+*Letting a Login Executive add a rule instead.* A rule added for one file
+changes every other open case. That is how a rules engine becomes something
+users are afraid of, and the whole value of ADR-035 is that they are not.
+
+*Translating names in the interface.* Keeping the technical name in the
+database and a friendly label in the UI puts the wording where a business user
+cannot edit it and where a report will not see it. The name IS the data.
+
+**Consequences.** Ownership of a document now follows the requirement's
+subject rather than the document type's declared `owner_kind` — a proprietor
+is asked for a balance sheet, a type declared `organisation`, attached to a
+person, and resolving from the type looked for an organisation that did not
+exist and refused the upload under BR-030. The type's declaration is now the
+fallback for a case-level row with no subject at all.
+
+Every fact the Overview displays has an input behind it, including the two
+that live on a party rather than the case (occupation, business type) and the
+property, which can now be corrected and removed rather than only added.
+
+What stays hard, on purpose: nothing here decides anything. A friendlier name
+does not make the checklist more or less right, and ADR-016's line on
+eligibility is untouched.

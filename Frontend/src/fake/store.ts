@@ -27,6 +27,10 @@ import {
 } from "@domain/case/transitions.js";
 import { type Requirement, summariseProgress } from "@domain/requirements/progress.js";
 import { recentFinancialYears } from "@domain/requirements/financial-year.js";
+import {
+  CUSTOM_DOCUMENT_TYPE_CODE,
+  type DocumentCategory,
+} from "@domain/requirements/document-catalogue.js";
 import type { ConstructionStage } from "@domain/requirements/rules.js";
 import {
   buildStoragePath,
@@ -756,6 +760,13 @@ export interface CaseFactsInput {
   isGstRegistered?: boolean | undefined;
   constructionStage?: ConstructionStage | undefined;
   hasExistingObligations?: boolean | undefined;
+  /**
+   * The amount asked for. A rule may condition on it (`case.requested_amount`
+   * with gte / lte), and until the Telecaller Workflow milestone it was
+   * displayed in the case header with no way to change it — a number the user
+   * could read and not correct.
+   */
+  requestedAmount?: number | undefined;
 }
 
 /**
@@ -782,12 +793,14 @@ export function updateCaseFacts(
   describe("GST registered", loanCase.isGstRegistered, input.isGstRegistered);
   describe("Construction stage", loanCase.constructionStage, input.constructionStage);
   describe("Existing obligations", loanCase.hasExistingObligations, input.hasExistingObligations);
+  describe("Requested amount", loanCase.requestedAmount, input.requestedAmount);
 
   if (changes.length === 0) return { ok: true };
 
   db.cases = db.cases.map((c) => {
     if (c.id !== caseId) return c;
-    const { isGstRegistered, constructionStage, hasExistingObligations, ...rest } = c;
+    const { isGstRegistered, constructionStage, hasExistingObligations, requestedAmount, ...rest } =
+      c;
     return {
       ...rest,
       ...(input.isGstRegistered !== undefined ? { isGstRegistered: input.isGstRegistered } : {}),
@@ -795,6 +808,7 @@ export function updateCaseFacts(
       ...(input.hasExistingObligations !== undefined
         ? { hasExistingObligations: input.hasExistingObligations }
         : {}),
+      ...(input.requestedAmount !== undefined ? { requestedAmount: input.requestedAmount } : {}),
     };
   });
 
@@ -934,6 +948,122 @@ export function addCaseProperty(
   });
 
   reconcileReadiness(caseId, "Property added");
+  commit();
+  return { ok: true };
+}
+
+export interface CasePropertyEditInput {
+  role?: "collateral" | "purchase" | "both";
+  propertyTypeId?: Id;
+  locality?: string;
+  city?: string;
+}
+
+/**
+ * Correct a property already on the case.
+ *
+ * The property type is the fact behind two live rules — an apartment on
+ * undivided share has no patta of its own, and layout approval is asked for
+ * on plots — so "I picked the wrong type" had to be fixable without deleting
+ * the property and losing every document already collected against it.
+ */
+export function updateCaseProperty(
+  casePropertyId: Id,
+  input: CasePropertyEditInput,
+  actorUserId: Id,
+): ActionResult {
+  const link = db.caseProperties.find((p) => p.id === casePropertyId);
+  if (!link) return { ok: false, message: "That property is not on this case." };
+
+  const property = db.properties.find((p) => p.id === link.propertyId);
+  if (!property) return { ok: false, message: "Property record not found." };
+
+  const changes: string[] = [];
+  if (input.role && input.role !== link.role) {
+    changes.push(`role: ${link.role} → ${input.role}`);
+    db.caseProperties = db.caseProperties.map((p) =>
+      p.id === casePropertyId ? { ...p, role: input.role as typeof p.role } : p,
+    );
+  }
+
+  const nextType = db.propertyTypes.find((t) => t.id === input.propertyTypeId);
+  const locality = input.locality?.trim();
+  const city = input.city?.trim();
+
+  if (
+    (nextType && nextType.id !== property.propertyTypeId) ||
+    (locality && locality !== property.locality) ||
+    (city && city !== property.city)
+  ) {
+    if (nextType && nextType.id !== property.propertyTypeId) {
+      changes.push(`type: ${property.propertyType ?? "not set"} → ${nextType.name}`);
+    }
+    if (locality && locality !== property.locality) changes.push(`locality: ${locality}`);
+    if (city && city !== property.city) changes.push(`city: ${city}`);
+
+    db.properties = db.properties.map((p) =>
+      p.id !== property.id
+        ? p
+        : {
+            ...p,
+            ...(locality ? { locality } : {}),
+            ...(city ? { city } : {}),
+            ...(nextType ? { propertyTypeId: nextType.id, propertyType: nextType.name } : {}),
+          },
+    );
+  }
+
+  if (changes.length === 0) return { ok: true };
+
+  const before = progressFor(link.caseId).percentComplete;
+  regenerate(link.caseId, "Property updated");
+  const after = progressFor(link.caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId: link.caseId,
+    entityType: "case_property",
+    entityId: casePropertyId,
+    eventType: "case.property_updated",
+    summary: `Property updated: ${changes.join("; ")} — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(link.caseId, "Property updated");
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Take a property off the case.
+ *
+ * The property record itself survives — it may be on another case, and a
+ * shared entity is never deleted from a case screen. What goes is the LINK,
+ * and with it every property requirement: absence is silence (ADR-010), so
+ * they become `not_applicable` through the ordinary regeneration path rather
+ * than being deleted, and any document already collected stays reachable in
+ * the case's history.
+ */
+export function removeCaseProperty(casePropertyId: Id, actorUserId: Id): ActionResult {
+  const link = db.caseProperties.find((p) => p.id === casePropertyId);
+  if (!link) return { ok: false, message: "That property is not on this case." };
+
+  const property = db.properties.find((p) => p.id === link.propertyId);
+  db.caseProperties = db.caseProperties.filter((p) => p.id !== casePropertyId);
+
+  const before = progressFor(link.caseId).percentComplete;
+  regenerate(link.caseId, "Property removed");
+  const after = progressFor(link.caseId).percentComplete;
+
+  record({
+    actorUserId,
+    caseId: link.caseId,
+    entityType: "case_property",
+    entityId: casePropertyId,
+    eventType: "case.property_removed",
+    summary: `Property removed: ${property?.locality ?? "property"} — its documents are no longer applicable — progress ${before}% → ${after}%`,
+  });
+
+  reconcileReadiness(link.caseId, "Property removed");
   commit();
   return { ok: true };
 }
@@ -1160,11 +1290,27 @@ export async function uploadDocument(
   const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
 
   // Ownership is never asked of the user — it follows from what the
-  // requirement is already known to be for (BR-030, ADR-007). This is the
-  // same resolution uploadDocument has always done; it is now also what
-  // decides the document's storage path, so "where does this file live" and
-  // "who does this file belong to" can never disagree.
-  const ownerKind = documentType?.ownerKind ?? "case";
+  // requirement is already known to be for (BR-030, ADR-007), and it is also
+  // what decides the document's storage path, so "where does this file live"
+  // and "who does this file belong to" can never disagree.
+  //
+  // THE SUBJECT WINS OVER THE TYPE'S DECLARED OWNER KIND. A proprietor
+  // borrowing in their own name is asked for a balance sheet and a current
+  // account statement — both types declared `organisation`, both attached to
+  // a PERSON, because on that file the business IS the person and there is no
+  // organisation row to own anything. Trusting the type's declaration there
+  // resolved to an organisation id that did not exist and threw BR-030 on
+  // upload: the checklist asked for a document the user then could not
+  // upload. The requirement already knows whose document this is; the type's
+  // ownerKind is only the fallback for a case-level row with no subject at
+  // all.
+  const ownerKind = party?.personId
+    ? ("person" as const)
+    : party?.organisationId
+      ? ("organisation" as const)
+      : caseProperty
+        ? ("property" as const)
+        : ("case" as const);
   const ownerFields = {
     ownerKind,
     ...(party?.personId ? { personId: party.personId } : {}),
@@ -1461,6 +1607,140 @@ export function addFinancialYearRequirement(
   });
 
   reconcileReadiness(caseId, "Additional financial year requested");
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Custom requirements — the exception the rules could not have known about
+// (Telecaller Workflow milestone, Part 6)
+// ---------------------------------------------------------------------------
+
+export interface CustomRequirementInput {
+  category: DocumentCategory;
+  name: string;
+  description?: string;
+  applicability: "mandatory" | "optional";
+}
+
+/**
+ * Add a document requirement to ONE case, by hand.
+ *
+ * WHY THIS IS NOT A RULE EDIT
+ *
+ * A bank asks for one extra letter on one file. A customer's situation has a
+ * wrinkle nobody wrote a rule for. The tempting fix is to add a rule — and a
+ * rule added for one file quietly changes what every other open case asks
+ * for, which is how a rules engine becomes something users are afraid of.
+ * MASTER RULES ARE NOT TOUCHED HERE. The row lands on this case and nowhere
+ * else, and `regenerateRequirements` leaves it alone because no rule produced
+ * it and therefore no rule's absence can withdraw it.
+ *
+ * It carries its own name, description and category rather than getting a
+ * document type of its own, for the same reason: a per-case document type is
+ * master data nobody owns. It points at `other_document` so upload,
+ * versioning, verification and the storage path all work on it exactly as
+ * they work on a generated requirement — which is the whole point. A custom
+ * document that cannot be verified is a note, not a document.
+ */
+export function addCustomRequirement(
+  caseId: Id,
+  input: CustomRequirementInput,
+  actorUserId: Id,
+): ActionResult {
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, message: "Give the document a name the customer would recognise." };
+  }
+
+  const documentType = db.documentTypes.find((t) => t.code === CUSTOM_DOCUMENT_TYPE_CODE);
+  if (!documentType) {
+    return { ok: false, message: "The 'Other Document' type is missing from master data." };
+  }
+
+  const duplicate = db.requirements.some(
+    (r) =>
+      r.caseId === caseId &&
+      r.isCustom &&
+      r.status !== "not_applicable" &&
+      r.customName?.toLowerCase() === name.toLowerCase(),
+  );
+  if (duplicate) {
+    return { ok: false, message: `"${name}" is already on this case's list.` };
+  }
+
+  const description = input.description?.trim();
+  const requirementId = nextId();
+
+  db.requirements = [
+    ...db.requirements,
+    {
+      id: requirementId,
+      caseId,
+      documentTypeId: documentType.id,
+      status: "pending" as const,
+      // Due now. A document somebody deliberately added is not something to
+      // start asking for at a later stage.
+      applicableFromStage: "documents_pending" as const,
+      applicability: input.applicability,
+      isCustom: true,
+      customName: name,
+      customCategory: input.category,
+      ...(description ? { customDescription: description } : {}),
+    },
+  ];
+
+  record({
+    actorUserId,
+    caseId,
+    entityType: "document_requirement",
+    entityId: requirementId,
+    eventType: "requirement.custom_added",
+    summary: `Added by hand: ${name} (${input.applicability})`,
+  });
+
+  reconcileReadiness(caseId, "Custom requirement added");
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Withdraw a hand-added requirement.
+ *
+ * Marked `not_applicable` rather than deleted, exactly as a rule-generated
+ * row that stops being wanted is (BR-034): someone asked the customer for
+ * this, and that they did is part of what happened to the case. A row that
+ * already has a document against it keeps it.
+ */
+export function removeCustomRequirement(requirementId: Id, actorUserId: Id): ActionResult {
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  if (!requirement) return { ok: false, message: "Requirement not found." };
+  if (!requirement.isCustom) {
+    return {
+      ok: false,
+      message:
+        "This requirement came from a rule. Waive it with a reason, or change the rule — " +
+        "deleting it here would hide why it was asked for.",
+    };
+  }
+
+  db.requirements = db.requirements.map((r) =>
+    r.id === requirementId ? { ...r, status: "not_applicable" as const } : r,
+  );
+
+  record({
+    actorUserId,
+    caseId: requirement.caseId,
+    entityType: "document_requirement",
+    entityId: requirementId,
+    eventType: "requirement.custom_removed",
+    summary: `No longer asked for: ${requirement.customName ?? "custom document"}`,
+  });
+
+  reconcileReadiness(requirement.caseId, "Custom requirement removed");
   commit();
   return { ok: true };
 }
@@ -2033,9 +2313,24 @@ export function setMasterDataActive(
 // is_active.
 // ---------------------------------------------------------------------------
 
+/**
+ * Rename a document type, or change what it says about itself.
+ *
+ * The Telecaller Workflow milestone added three of the four editable fields
+ * here. The catalogue ships names, local names, descriptions and categories
+ * researched against how lenders in this market actually ask — and every one
+ * of them stays master data a business user owns, because the right wording
+ * for a Coimbatore branch is a thing the branch knows and a developer does
+ * not.
+ */
 export function updateDocumentTypeDetails(
   id: Id,
-  patch: { name?: string; description?: string },
+  patch: {
+    name?: string;
+    localName?: string;
+    description?: string;
+    category?: DocumentCategory;
+  },
   actorUserId: Id,
 ): ActionResult {
   const existing = db.documentTypes.find((t) => t.id === id);
@@ -2043,15 +2338,23 @@ export function updateDocumentTypeDetails(
   const name = patch.name?.trim();
   if (patch.name !== undefined && !name) return { ok: false, message: "Name cannot be blank." };
 
-  db.documentTypes = db.documentTypes.map((t) =>
-    t.id === id
-      ? {
-          ...t,
-          ...(name ? { name } : {}),
-          ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
-        }
-      : t,
-  );
+  const localName = patch.localName?.trim();
+
+  db.documentTypes = db.documentTypes.map((t) => {
+    if (t.id !== id) return t;
+    // Clearing the local name is a real edit — spread-with-undefined would
+    // leave the old one in place — but only when the caller actually said so.
+    // A patch that never mentions the field leaves it alone.
+    const { localName: kept, ...rest } = t;
+    const nextLocalName = patch.localName === undefined ? kept : localName;
+    return {
+      ...rest,
+      ...(name ? { name } : {}),
+      ...(nextLocalName ? { localName: nextLocalName } : {}),
+      ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
+      ...(patch.category ? { category: patch.category } : {}),
+    };
+  });
   record({
     actorUserId,
     entityType: "document_type",

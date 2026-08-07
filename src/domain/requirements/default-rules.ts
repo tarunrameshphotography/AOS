@@ -431,6 +431,16 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // -------------------------------------------------------------------------
   // Income — self-employed and business owner.
   // -------------------------------------------------------------------------
+  /**
+   * The customer's PERSONAL return.
+   *
+   * Excluded on a business loan, where the business's own return is asked for
+   * instead (`business_itr_by_product`) — on a proprietorship the two are the
+   * same filing, and asking for both put "ITR" and "Business ITR" on the same
+   * checklist for one document. Where a firm IS on the file the two are
+   * genuinely different documents, and `income_itr_business_promoter` below
+   * asks for the promoter's.
+   */
   rule({
     code: "income_itr",
     name: "ITR — self-employed customer",
@@ -441,10 +451,25 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     financialYears: 2,
     conditions: [
       employmentIn("self_employed", "business_owner"),
-      customerProductNotIn(...ASSET_ONLY_PRODUCTS),
+      customerProductNotIn(...ASSET_ONLY_PRODUCTS, "business_loan"),
     ],
     order: ORDER.income,
     notes: "Two assessment years with computation; the market standard.",
+  }),
+  rule({
+    code: "income_itr_business_promoter",
+    name: "ITR — promoter of the borrowing firm",
+    documentTypeCode: "itr",
+    scope: "party",
+    partyRoles: INCOME_ROLES,
+    partyKind: "person",
+    financialYears: 2,
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_true")],
+    order: ORDER.income,
+    notes:
+      "Only where a separate firm is borrowing. Then the firm's return and the promoter's " +
+      "are two different filings and lenders read both; on a proprietorship they are one " +
+      "filing, and the business rule asks for it.",
   }),
   rule({
     code: "income_self_employed_banking",
@@ -906,8 +931,22 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   // these and the employment-conditioned rules above gets one row, not two.
   // -------------------------------------------------------------------------
   rule({
+    code: "business_pan_by_product",
+    name: "Business PAN card — business loan",
+    documentTypeCode: "org_pan",
+    scope: "party",
+    partyRoles: ["applicant"],
+    partyKind: "person",
+    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
+    order: ORDER.business,
+    notes:
+      "Amaze asks for the business PAN on every business loan. A proprietorship does not " +
+      "have one and gives the owner's personal PAN instead — the telecaller asks the same " +
+      "question either way, and the answer tells them which of the two it is.",
+  }),
+  rule({
     code: "business_proof_by_product",
-    name: "Business proof — business loan",
+    name: "Business registration proof — business loan",
     documentTypeCode: "business_proof",
     scope: "party",
     partyRoles: ["applicant"],
@@ -945,15 +984,19 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
   rule({
     code: "business_itr_by_product",
-    name: "ITR — business loan",
-    documentTypeCode: "itr",
+    name: "Business ITR — business loan",
+    documentTypeCode: "org_itr",
     scope: "party",
     partyRoles: ["applicant"],
     partyKind: "person",
     financialYears: 2,
     conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
     order: ORDER.business,
-    notes: "Two assessment years with computation. On a proprietorship the business ITR is the owner's ITR.",
+    notes:
+      "Two assessment years with computation. The business ITR rather than the personal one, " +
+      "which is what Amaze asks for and what the lender reads — on a proprietorship they are " +
+      "the same filing, and `income_itr` stands down on a business loan so the checklist does " +
+      "not name one document twice.",
   }),
   rule({
     code: "business_balance_sheet_by_product",
@@ -1104,6 +1147,11 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
       productNotIn("bl_msme_cgtmse", "bl_mudra", "bl_machinery"),
     ],
     order: ORDER.business,
+    notes:
+      "Amaze asks for this on every business loan, so it is on the list from the start — but " +
+      "OPTIONAL, because a genuine small proprietor often has not registered, and a mandatory " +
+      "row would hold up a file that no lender is actually holding up. On the scheme products " +
+      "above it is mandatory, because there the scheme itself requires it.",
   }),
   rule({
     code: "business_stock_statement",

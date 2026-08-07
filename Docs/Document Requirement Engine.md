@@ -15,7 +15,7 @@ code, and the office had no way to see — let alone change — what AOS would a
 a customer for.
 
 Now every document AOS asks for is generated from a **rule row**. There is no
-fixed checklist anywhere in the application. A loan manager can read all 86
+fixed checklist anywhere in the application. A loan manager can read all 105
 rules on the Document Rules screen, change what is asked for, and take a rule
 out of service, without a developer and without a deploy.
 
@@ -34,9 +34,10 @@ out of service, without a developer and without a deploy.
 ```
 src/domain/requirements/
   rules.ts               the evaluator — facts in, requirements out. No database.
-  default-rules.ts       the 103 researched default rules, seeded and then editable.
+  default-rules.ts       the 105 researched default rules, seeded and then editable.
   document-catalogue.ts  the document types the rules name — their customer-facing
-                         name, common local name, description and category.
+                         name, local name, description, examples, section and
+                         how each recurring one names its period.
   financial-year.ts      India's April–March year; which types recur.
   progress.ts            what the generated set means for the case's score.
 
@@ -319,8 +320,9 @@ passport, driving licence), because "what counts as address proof?" is the
 single most-asked question on a collection call. All four fields remain master
 data a business user owns.
 
-The six categories, in the order a call runs: **KYC**, **Income**, **Business**,
-**Financial**, **Property**, **Additional**.
+The six sections, in the order a call runs: **KYC**, **Business Registration**,
+**Business Financials**, **Income**, **Property**, **Additional** (renamed by the
+audit below).
 
 **A business loan asks for business documents on day one.** Every business rule
 in the pack waited for something to have been recorded — a borrowing firm added
@@ -329,7 +331,8 @@ start empty, so the newest business loan in the system had the emptiest
 checklist, at exactly the moment the telecaller needed it. Six new rules key on
 the one fact that *is* known then, the customer product: if someone opened a
 business loan, there is a business. They ask the applicant for business proof,
-business address proof, a current account statement, ITR ×2, balance sheet ×2
+business address proof, a current account statement, the business ITR ×2,
+balance sheet ×2
 and P&L ×2, and they stand down the moment a real firm is added, because from
 then on the firm's own rules ask for the same papers in the firm's name. The
 GST-by-product rules lost their employment-type condition for the same reason,
@@ -347,6 +350,59 @@ Resolving ownership from the type looked for an organisation id that was not
 there and refused the upload under BR-030: the checklist asked for a document
 the user could then not provide. Ownership now follows the requirement's
 subject, and falls back to the case only when there is no subject at all.
+
+### Corrections from the engine audit
+
+**The checklist looked like it was asking for the same document twice.** It was
+not. A business loan asks for two years of GST returns, two of the ITR, two of
+the balance sheet and two of the P&L — eight rows, each a distinct year with
+its own upload, its own verification and its own storage path. But every pair
+rendered under one name, so the list read as four documents asked for twice,
+and a list that looks buggy is a list people stop trusting *including the parts
+of it that are right*.
+
+**The period now belongs to the row's name**: `GST 3B – FY 2025-26` and
+`GST 3B – FY 2024-25` are visibly two different asks. `document_type.period_kind`
+says which name to use — **financial year** for returns, banking and accounts;
+**assessment year** for the ITRs, Form 16 and Form 26AS. The window is the same
+April-to-March year either way and no date or logic changes, but a customer
+knows their return by its assessment year, and asking for "the FY 2024-25 ITR"
+gets the previous year's filing handed over.
+
+**One document genuinely was asked for twice, on business loans.** A proprietor
+was asked for the personal ITR *and*, since the last milestone, the business
+ITR — which on a proprietorship is the same filing. `business_itr_by_product`
+now names `org_itr`, `income_itr` stands down on business loans, and a new rule
+(`income_itr_business_promoter`) asks the promoter for their personal return
+only where a separate firm is actually borrowing. Then the two are genuinely
+different documents and lenders read both.
+
+**The grouping was a filing taxonomy, not a collection order.** "Business"
+against "Financial" put a GST certificate beside a stock statement and
+separated the GST certificate from the GST returns. A telecaller collects a
+business's *papers* in one pass — registration, GST, Udyam, constitution — and
+its *numbers* in another — returns, accounts, banking — because those are two
+different calls and often two different people at the customer's end. The six
+sections are now **KYC Documents**, **Business Registration**, **Business
+Financials**, **Income Documents**, **Property Documents**, **Additional
+Documents**.
+
+**Amaze's business-loan set was incomplete.** The business PAN was reachable
+only when a separate firm was a party, so the ordinary proprietorship file
+never saw it. `business_pan_by_product` asks for it on every business loan; a
+proprietorship answers with the owner's personal PAN, which is the same
+question either way.
+
+**`document_type.examples`** carries what actually counts where the honest
+answer is a list rather than a sentence. Address proof is an EB bill *or* a gas
+bill *or* a ration card *or* a passport *or* a driving licence, and that is the
+single most-asked question on a collection call. Rendered as bullets under the
+row, and editable in Master Data like everything else.
+
+Udyam registration stays **optional** on the general business loan and mandatory
+on the scheme products. Amaze asks for it every time, so it is on the list from
+the start — but a genuine small proprietor often has not registered, and a
+mandatory row would hold up a file that no lender is holding up.
 
 ### Requirements added by hand
 
@@ -377,17 +433,20 @@ opinion, valuation, login form, NACH mandate.
 becomes ITR ×2, Form 26AS ×2, balance sheet ×2, P&L ×2 and twelve months'
 banking — and no payslips or Form 16 anywhere.
 
-**Business loan, proprietor, nothing yet recorded about them.** Twenty-four
-rows, grouped: *KYC* — PAN, Aadhaar, address proof, passport size photograph,
-signature proof (optional), loan consent form; *Income* — ITR ×2; *Business* —
-GST registration certificate, GST returns ×2, business proof, business address
-proof, Udyam registration (optional), and whatever the specific facility adds
-(stock statement and debtors/creditors list on a cash credit limit);
-*Financial* — current account statement, balance sheet ×2, P&L ×2;
-*Additional* — loan application form, bank login form, NACH mandate. The GST
-rows and the business rows appear because the *product* says so, before anyone
-has been asked whether the borrower is registered or what kind of business it
-is. This is the case the last two milestones each fixed half of.
+**Business loan, proprietor, nothing yet recorded about them.** Grouped as a
+call runs: *KYC* — PAN, Aadhaar, address proof, passport size photograph,
+signature proof (optional), loan consent form; *Business Registration* —
+business registration proof, GST registration certificate (GST REG-06),
+business PAN, business address proof, Udyam registration (optional);
+*Business Financials* — GST 3B ×2 years, business ITR ×2 assessment years,
+balance sheet ×2, P&L ×2, current account statement, and whatever the specific
+facility adds (stock statement and debtors/creditors list on a cash credit
+limit); *Additional* — loan application form, bank login form, NACH mandate.
+
+All of it appears because the *product* says so, before anyone has been asked
+whether the borrower is registered or what kind of business it is. Each
+recurring row names its own year, so the two GST returns and the two business
+ITRs read as four distinct asks rather than two documents listed twice.
 
 **Working capital, GST-registered partnership.** The individual's KYC and ITR,
 plus for the firm: business PAN, address proof, business registration, twelve

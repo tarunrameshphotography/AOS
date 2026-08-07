@@ -51,9 +51,12 @@ export {
   ENGINE_DOCUMENT_TYPES,
   PRE_ENGINE_DOCUMENT_TYPES,
   allDocumentTypeCodes,
+  assessmentYearLabel,
+  documentRowLabel,
   documentTypeByCode,
   type DocumentCategory,
   type DocumentTypeDefinition,
+  type PeriodKind,
 } from "./document-catalogue.js";
 
 export {

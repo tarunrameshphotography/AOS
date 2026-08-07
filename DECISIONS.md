@@ -1593,3 +1593,89 @@ property, which can now be corrected and removed rather than only added.
 What stays hard, on purpose: nothing here decides anything. A friendlier name
 does not make the checklist more or less right, and ADR-016's line on
 eligibility is untouched.
+
+---
+
+## ADR-038 — The period belongs to the row's name; sections follow the collection call, not the filing cabinet
+
+**Status.** Accepted, Document Requirement Engine audit.
+**Schema.** `Database/migrations/0027`.
+**Code.** `src/domain/requirements/document-catalogue.ts`, `default-rules.ts`.
+**Guide.** `Docs/Document Requirement Engine.md`.
+
+**The problem.** The engine was reported as having grown duplicate document
+definitions. It had not — there is exactly one definition per code and the
+tests now hold that shut permanently. What the report was actually seeing was
+worse, because it was invisible to every test that checked document *codes*: a
+business loan asks for two years of GST returns, two of the ITR, two of the
+balance sheet and two of the P&L, and all eight rows rendered under four
+names. Each row is a genuinely distinct year with its own upload, its own
+verification and its own storage path. On screen it read as four documents
+asked for twice.
+
+That is not a cosmetic problem. A checklist that looks buggy is one people stop
+trusting *including the parts of it that are right*, and the first thing a
+telecaller does with a list they distrust is stop reading it out.
+
+Two smaller findings came out of the same audit. One document genuinely *was*
+asked for twice: a proprietor on a business loan was asked for the personal ITR
+and the business ITR, which on a proprietorship are the same filing. And the
+six sections introduced by ADR-037 were a filing taxonomy rather than a
+collection order — "Business" against "Financial" put a GST certificate beside
+a stock statement and separated the GST certificate from the GST returns.
+
+**The decision.**
+
+*The period goes in the row's name, not beside it.* `GST 3B – FY 2025-26` and
+`GST 3B – FY 2024-25` are visibly two different asks; `GST 3B` twice is not.
+A `period_kind` on the document type says which name to use — **financial year**
+for returns, banking and accounts, **assessment year** for the ITRs, Form 16 and
+Form 26AS. The underlying window is the same April-to-March year in both cases
+and nothing in the engine, the storage path or the period columns branches on
+it. It is presentation, and it is presentation that decides whether the
+customer hands over the right year's document on the first call: a return is
+known by its assessment year, and "the FY 2024-25 ITR" invites them to fetch
+the one they filed *in* 2024-25, which is the year before.
+
+*The business ITR is the business's return.* `business_itr_by_product` names
+`org_itr`; `income_itr` stands down on business loans; and a separate rule asks
+the promoter for their personal return only where a firm is actually borrowing,
+which is the only situation in which the two are different documents.
+
+*Sections follow the call.* **KYC**, **Business Registration**, **Business
+Financials**, **Income**, **Property**, **Additional**. A telecaller collects a
+business's papers in one pass and its numbers in another, because those are two
+different calls and often two different people at the customer's end.
+
+*`examples` is a first-class field.* Where the honest answer to "what counts?"
+is a list rather than a sentence, it is stored as a list and rendered as
+bullets. Address proof is the case that justifies it on its own.
+
+**What was rejected.**
+
+*Splitting Patta and Chitta into two rows.* Asked for twice across two
+milestones, and declined both times with the same reason: Tamil Nadu merged the
+two records in 2015 and the e-Services portal issues them as a single extract.
+Two rows would have the telecaller ask for two documents the VAO hands over as
+one, and would leave a permanently unsatisfiable second row on every property
+file. Both words are in the name, which is what the request was actually for.
+
+*Making Udyam registration mandatory on the general business loan.* Amaze asks
+for it every time, so it is on the list from the moment the case opens — but a
+genuine small proprietor often has not registered, and a mandatory row would
+hold a file that no lender is holding. It stays mandatory on the scheme
+products, where the scheme itself requires it.
+
+*Renaming the underlying document codes to match the new display names.* The
+codes are what documents, requirements and storage paths point at. A prettier
+`gst_returns` is worth nothing and costs a data migration.
+
+**Consequences.** `app.document_category` was rewritten rather than extended,
+because a value added with `alter type ... add value` cannot be used in the
+same transaction and this migration inserts rows using the new values. Both
+columns that reference it are parked as text across the swap.
+
+`Frontend/src/fake/checklists.test.ts` now opens one case of each product
+family Amaze sells and asserts no two rows say the same thing for the same
+subject. That is the assertion that would have caught this, and every
+code-level test in the repo missed it.

@@ -12,10 +12,11 @@ import {
   ALL_DOCUMENT_TYPES,
   DOCUMENT_CATEGORIES,
   allDocumentTypeCodes,
+  documentRowLabel,
   ENGINE_DOCUMENT_TYPES,
 } from "./document-catalogue.js";
 import { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
-import { isFinancialYearScoped } from "./financial-year.js";
+import { FINANCIAL_YEAR_DOCUMENT_TYPES, isFinancialYearScoped } from "./financial-year.js";
 import { evaluateRules, type CaseFacts, type PartyFacts } from "./rules.js";
 
 function individual(overrides: Partial<PartyFacts> = {}): PartyFacts {
@@ -124,7 +125,9 @@ describe("the default pack — income by employment type", () => {
       properties: [],
     });
 
-    expect(rows.find((row) => row.documentTypeCode === "itr")?.financialYears).toBe(2);
+    // A business loan asks for the BUSINESS return (org_itr); the personal
+    // ITR rule stands down there so one filing is not named twice.
+    expect(rows.find((row) => row.documentTypeCode === "org_itr")?.financialYears).toBe(2);
     expect(rows.find((row) => row.documentTypeCode === "bank_statement")?.financialYears).toBe(1);
   });
 });
@@ -407,8 +410,12 @@ describe("the audit — a proprietor's business is underwritten like a firm's", 
 
     expect(asked).toContain("balance_sheet");
     expect(asked).toContain("profit_and_loss");
-    expect(asked).toContain("itr");
+    expect(asked).toContain("org_itr");
     expect(asked).toContain("form_26as");
+    // ...and NOT the personal ITR as well. On a proprietorship the business
+    // return and the owner's return are one filing, and naming both put the
+    // same document on the checklist twice.
+    expect(asked).not.toContain("itr");
   });
 
   it("leaves the accounts to the firm's own rules once a firm is a party", () => {
@@ -509,8 +516,17 @@ describe("the audit — the whole validation matrix generates something sensible
         securityTypeCode: "stock_book_debts",
         parties: [individual({ employmentTypeCode: "business_owner" })],
       },
-      expects: ["gst_certificate", "gst_returns", "itr", "balance_sheet", "stock_statement"],
-      forbids: ["salary_slip", "sale_deed", "gold_appraisal_note"],
+      expects: [
+        "gst_certificate",
+        "gst_returns",
+        "org_itr",
+        "org_pan",
+        "balance_sheet",
+        "stock_statement",
+      ],
+      // The personal ITR is forbidden here, not missing by accident: the
+      // business return covers it on a proprietorship.
+      forbids: ["salary_slip", "sale_deed", "gold_appraisal_note", "itr"],
     },
     {
       label: "LAP",
@@ -683,8 +699,10 @@ describe("the checklist a telecaller actually reads out", () => {
     });
 
     expect(asked).toContain("business_proof");
+    expect(asked).toContain("org_pan");
+    expect(asked).toContain("org_address_proof");
     expect(asked).toContain("org_bank_statement");
-    expect(asked).toContain("itr");
+    expect(asked).toContain("org_itr");
     expect(asked).toContain("balance_sheet");
     expect(asked).toContain("profit_and_loss");
     expect(asked).toContain("gst_certificate");
@@ -827,10 +845,68 @@ describe("the document catalogue as a telecaller reads it", () => {
 
   it("lists what counts as address proof, because that is the question every collection call gets", () => {
     const addressProof = ALL_DOCUMENT_TYPES.find((type) => type.code === "address_proof");
+    const examples = (addressProof?.examples ?? []).map((e) => e.toLowerCase());
 
-    for (const example of ["EB bill", "gas bill", "ration card", "passport", "driving licence"]) {
-      expect(addressProof?.description.toLowerCase()).toContain(example.toLowerCase());
+    for (const example of ["eb bill", "gas bill", "ration card", "passport", "driving licence"]) {
+      expect(examples).toContain(example);
     }
+  });
+
+  /**
+   * The guard Part 1 of the audit milestone asked for, held permanently open.
+   *
+   * A second definition of the same document is the bug that makes a
+   * checklist ask for one thing twice and look broken to the person reading
+   * it out. This asserts it across every surface a definition can appear on:
+   * the code, the customer-facing name, and the display order.
+   */
+  it("has exactly one canonical definition for every document code", () => {
+    const seen = new Map<string, number>();
+    for (const type of ALL_DOCUMENT_TYPES) {
+      seen.set(type.code, (seen.get(type.code) ?? 0) + 1);
+    }
+
+    expect([...seen.entries()].filter(([, count]) => count > 1)).toEqual([]);
+    expect(ALL_DOCUMENT_TYPES).toHaveLength(seen.size);
+  });
+
+  it("gives no two document types the same customer-facing name", () => {
+    const byName = new Map<string, string[]>();
+    for (const type of ALL_DOCUMENT_TYPES) {
+      byName.set(type.name, [...(byName.get(type.name) ?? []), type.code]);
+    }
+
+    expect([...byName.entries()].filter(([, codes]) => codes.length > 1)).toEqual([]);
+  });
+
+  it("names every recurring document's period, and names the returns by assessment year", () => {
+    // A recurring document rendered without its year is why two years of GST
+    // returns looked like one document asked for twice.
+    for (const code of Object.keys(FINANCIAL_YEAR_DOCUMENT_TYPES)) {
+      const type = ALL_DOCUMENT_TYPES.find((t) => t.code === code);
+      expect(type?.periodKind, `${code} has no periodKind`).toBeDefined();
+    }
+
+    const assessmentYearScoped = ALL_DOCUMENT_TYPES.filter(
+      (type) => type.periodKind === "assessment_year",
+    ).map((type) => type.code);
+
+    expect(assessmentYearScoped).toContain("itr");
+    expect(assessmentYearScoped).toContain("org_itr");
+    expect(assessmentYearScoped).toContain("form_16");
+    expect(assessmentYearScoped).toContain("form_26as");
+  });
+
+  it("puts the period in the row's own name, so two years never read as one document twice", () => {
+    expect(documentRowLabel("GST 3B", "2025-26", "financial_year")).toBe("GST 3B – FY 2025-26");
+    expect(documentRowLabel("GST 3B", "2024-25", "financial_year")).toBe("GST 3B – FY 2024-25");
+    // FY 2024-25 is assessed in AY 2025-26 — the number on the return the
+    // customer is holding.
+    expect(documentRowLabel("Business ITR", "2024-25", "assessment_year")).toBe(
+      "Business ITR – AY 2025-26",
+    );
+    // A document with no period is left exactly as it is.
+    expect(documentRowLabel("PAN Card", undefined, undefined)).toBe("PAN Card");
   });
 
   it("has no duplicate codes or display orders across the whole catalogue", () => {

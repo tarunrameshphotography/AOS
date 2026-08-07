@@ -7,6 +7,10 @@
  * listing would need to group by.
  */
 
+import {
+  assessmentYearLabel,
+  type PeriodKind,
+} from "@domain/requirements/document-catalogue.js";
 import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
 
 import type { Database, DocumentRequirement, Id } from "../fake/types.js";
@@ -19,6 +23,8 @@ export interface FyGroup {
   casePartyId?: Id;
   casePropertyId?: Id;
   subjectLabel: string;
+  /** How the year badges name themselves: FY, or AY for the returns. */
+  periodKind?: PeriodKind;
   years: Array<{ requirement: DocumentRequirement; label: string }>;
 }
 
@@ -46,6 +52,7 @@ export function financialYearGroups(db: Database, requirements: DocumentRequirem
         key,
         documentTypeId: requirement.documentTypeId,
         documentTypeName: type.name,
+        ...(type.periodKind ? { periodKind: type.periodKind } : {}),
         ...(requirement.requiredOfCasePartyId ? { casePartyId: requirement.requiredOfCasePartyId } : {}),
         ...(requirement.requiredOfCasePropertyId
           ? { casePropertyId: requirement.requiredOfCasePropertyId }
@@ -56,9 +63,16 @@ export function financialYearGroups(db: Database, requirements: DocumentRequirem
         years: [],
       } satisfies FyGroup);
 
+    // The badge names the year the way the CUSTOMER names it: an ITR is known
+    // by its assessment year, and asking for "FY 2024-25" gets the previous
+    // year's return handed over.
+    const financialYear = financialYearOf(new Date(requirement.periodStart)).label;
     group.years.push({
       requirement,
-      label: financialYearOf(new Date(requirement.periodStart)).label,
+      label:
+        type.periodKind === "assessment_year"
+          ? `AY ${assessmentYearLabel(financialYear)}`
+          : `FY ${financialYear}`,
     });
     groups.set(key, group);
   }

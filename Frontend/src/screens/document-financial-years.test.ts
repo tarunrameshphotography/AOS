@@ -86,7 +86,22 @@ describe("financialYearGroups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.documentTypeName).toBe("Income Tax Return");
     expect(groups[0]?.subjectLabel).toBe("Deepa Krishnan");
-    expect(groups[0]?.years.map((y) => y.label)).toEqual(["2024-25", "2023-24"]);
+    // The badge carries its own FY/AY prefix since the engine audit — the
+    // panel no longer prepends one, because an ITR row has to say AY.
+    expect(groups[0]?.years.map((y) => y.label)).toEqual(["FY 2024-25", "FY 2023-24"]);
+  });
+
+  it("names an assessment-year document by its assessment year, one ahead of the financial year", () => {
+    const db = baseDb();
+    db.documentTypes = db.documentTypes.map((type) =>
+      type.id === "dty_itr" ? { ...type, periodKind: "assessment_year" as const } : type,
+    );
+
+    const groups = financialYearGroups(db, REQUIREMENTS);
+
+    // FY 2024-25 is assessed in AY 2025-26 — the number printed on the return
+    // the customer actually holds.
+    expect(groups[0]?.years.map((y) => y.label)).toEqual(["AY 2025-26", "AY 2024-25"]);
   });
 
   it("excludes not_applicable rows from the group", () => {

@@ -605,8 +605,15 @@ function DocumentTypeSectionView({
                   </p>
                   <p className="tnum text-xs text-ink-500">
                     {type.code}
+                    {type.periodKind === "assessment_year" && " · by assessment year"}
+                    {type.periodKind === "financial_year" && " · by financial year"}
                     {type.description && ` · ${type.description}`}
                   </p>
+                  {type.examples && type.examples.length > 0 && (
+                    <p className="text-xs text-ink-400">
+                      Examples: {type.examples.join(", ")}
+                    </p>
+                  )}
                 </div>
                 {canManage && (
                   <div className="flex shrink-0 items-center gap-2">
@@ -672,12 +679,14 @@ function DocumentTypeModal({
     name: string;
     localName: string;
     description: string;
+    examples: string[];
     category: DocumentCategory;
   }) => void;
 }): ReactNode {
   const [name, setName] = useState(type.name);
   const [localName, setLocalName] = useState(type.localName ?? "");
   const [description, setDescription] = useState(type.description ?? "");
+  const [examples, setExamples] = useState((type.examples ?? []).join(", "));
   const [category, setCategory] = useState<DocumentCategory>(type.category ?? "additional");
 
   return (
@@ -701,7 +710,17 @@ function DocumentTypeModal({
             onChange={(event) => setDescription(event.target.value)}
           />
         </Field>
-        <Field label="Category" hint="Which block of the checklist this appears under.">
+        <Field
+          label="Examples"
+          hint='Optional, comma separated. Use where the honest answer is a list rather than a sentence — "EB Bill, Gas Bill, Ration Card, Passport, Driving Licence".'
+        >
+          <Input
+            value={examples}
+            onChange={(event) => setExamples(event.target.value)}
+            placeholder="EB Bill, Gas Bill, Ration Card"
+          />
+        </Field>
+        <Field label="Category" hint="Which section of the collection call this appears in.">
           <Select
             value={category}
             onChange={(event) => setCategory(event.target.value as DocumentCategory)}
@@ -719,7 +738,15 @@ function DocumentTypeModal({
           </Button>
           <Button
             variant="primary"
-            onClick={() => onSubmit({ name, localName, description, category })}
+            onClick={() =>
+              onSubmit({
+                name,
+                localName,
+                description,
+                examples: examples.split(",").map((e) => e.trim()).filter(Boolean),
+                category,
+              })
+            }
           >
             Save &amp; continue
           </Button>

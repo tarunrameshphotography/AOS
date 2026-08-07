@@ -13,7 +13,7 @@
  */
 
 import type { CaseStage, LostReason } from "@domain/case/stages.js";
-import type { DocumentCategory } from "@domain/requirements/document-catalogue.js";
+import type { DocumentCategory, PeriodKind } from "@domain/requirements/document-catalogue.js";
 import type { RequirementStatus } from "@domain/requirements/progress.js";
 import type { ConstructionStage, RequirementRule } from "@domain/requirements/rules.js";
 import type { ApplicabilityCode } from "@domain/products/index.js";
@@ -391,12 +391,24 @@ export interface DocumentType {
   /** One sentence a first-week joiner can read out loud. */
   description?: string;
   /**
-   * Which block of the checklist this appears under. A flat list of forty
-   * rows is a list nobody reads.
+   * What actually counts, where the honest answer is a list rather than a
+   * sentence — "what can I give for address proof?" is the most-asked
+   * question on a collection call.
+   */
+  examples?: string[];
+  /**
+   * Which section of the collection call this appears in. A flat list of
+   * forty rows is a list nobody reads.
    */
   category?: DocumentCategory;
   ownerKind: "person" | "property" | "organisation" | "case";
   requiresPeriod: boolean;
+  /**
+   * How a per-period row names its period to the customer: by financial year,
+   * or by assessment year for the returns. The window is the same either way;
+   * the customer's name for it is not (Document Requirement Engine audit).
+   */
+  periodKind?: PeriodKind;
   requiresExpiry?: boolean;
   isActive: boolean;
   displayOrder: number;

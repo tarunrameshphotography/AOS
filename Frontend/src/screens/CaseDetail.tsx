@@ -25,6 +25,7 @@ import {
   DOCUMENT_CATEGORIES,
   DOCUMENT_CATEGORY_HINTS,
   DOCUMENT_CATEGORY_LABELS,
+  documentRowLabel,
   type DocumentCategory,
 } from "@domain/requirements/document-catalogue.js";
 import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
@@ -1315,6 +1316,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     name: string;
     localName?: string | undefined;
     description?: string | undefined;
+    examples?: readonly string[] | undefined;
     category: DocumentCategory;
   } => {
     const type = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
@@ -1325,10 +1327,19 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         category: requirement.customCategory ?? "additional",
       };
     }
+    // The PERIOD IS PART OF THE NAME, not a suffix beside it. Two years of GST
+    // returns rendered as two rows both called "GST 3B" reads as the same
+    // document asked for twice, and a checklist that looks buggy is a
+    // checklist people stop trusting. "GST 3B – FY 2025-26" and
+    // "GST 3B – FY 2024-25" are visibly two different asks.
+    const label = requirement.periodStart
+      ? financialYearOf(new Date(requirement.periodStart)).label
+      : undefined;
     return {
-      name: type?.name ?? "Document",
+      name: documentRowLabel(type?.name ?? "Document", label, type?.periodKind),
       localName: type?.localName,
       description: type?.description,
+      examples: type?.examples,
       category: type?.category ?? "additional",
     };
   };
@@ -1385,11 +1396,22 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
                 ({presentation.localName})
               </span>
             )}
-            {requirement.periodStart && ` · FY ${financialYearOf(new Date(requirement.periodStart)).label}`}
           </p>
-          {/* What to say when the customer asks "what is that?" (Part 9). */}
+          {/* What to say when the customer asks "what is that?" */}
           {presentation.description && (
             <p className="mt-0.5 text-xs text-ink-500">{presentation.description}</p>
+          )}
+          {/* And what actually counts, where the answer is a list of things
+              rather than a sentence. This is the address-proof question, and
+              it gets asked on nearly every call. */}
+          {presentation.examples && presentation.examples.length > 0 && (
+            <ul className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+              {presentation.examples.map((example) => (
+                <li key={example} className="text-xs text-ink-400">
+                  • {example}
+                </li>
+              ))}
+            </ul>
           )}
           <p className="mt-0.5 text-xs text-ink-500">
             {subject}
@@ -1547,7 +1569,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
                               : "neutral"
                       }
                     >
-                      FY {label}
+                      {label}
                     </Badge>
                   ))}
                 </div>

@@ -2329,6 +2329,8 @@ export function updateDocumentTypeDetails(
     name?: string;
     localName?: string;
     description?: string;
+    /** Comma- or newline-separated in the form; a real list here. */
+    examples?: string[];
     category?: DocumentCategory;
   },
   actorUserId: Id,
@@ -2345,13 +2347,21 @@ export function updateDocumentTypeDetails(
     // Clearing the local name is a real edit — spread-with-undefined would
     // leave the old one in place — but only when the caller actually said so.
     // A patch that never mentions the field leaves it alone.
-    const { localName: kept, ...rest } = t;
-    const nextLocalName = patch.localName === undefined ? kept : localName;
+    const { localName: keptLocalName, examples: keptExamples, ...rest } = t;
+    const nextLocalName = patch.localName === undefined ? keptLocalName : localName;
+    // An emptied examples list is a real edit — "actually, only these two
+    // count now" — so an explicitly-empty array clears it, while a patch that
+    // never mentions the field leaves it alone.
+    const nextExamples =
+      patch.examples === undefined
+        ? keptExamples
+        : patch.examples.map((e) => e.trim()).filter(Boolean);
     return {
       ...rest,
       ...(name ? { name } : {}),
       ...(nextLocalName ? { localName: nextLocalName } : {}),
       ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
+      ...(nextExamples && nextExamples.length > 0 ? { examples: nextExamples } : {}),
       ...(patch.category ? { category: patch.category } : {}),
     };
   });

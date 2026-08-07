@@ -94,7 +94,9 @@ export function recentFinancialYears(count: number, asOf: Date = new Date()): Fi
 export const FINANCIAL_YEAR_DOCUMENT_TYPES: Readonly<Record<string, number>> = {
   itr: 2,
   org_itr: 2,
-  gst_returns: 1,
+  // Two years since the Telecaller Workflow milestone, matching what the rule
+  // pack asks for: one year of GSTR-3B is a turnover figure, two are a trend.
+  gst_returns: 2,
   balance_sheet: 2,
   profit_and_loss: 2,
   bank_statement: 1,

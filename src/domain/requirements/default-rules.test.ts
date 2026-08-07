@@ -8,15 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import {
-  ALL_DOCUMENT_TYPES,
-  DOCUMENT_CATEGORIES,
-  allDocumentTypeCodes,
-  documentRowLabel,
-  ENGINE_DOCUMENT_TYPES,
-} from "./document-catalogue.js";
+import { allDocumentTypeCodes, isFinancialYearScoped } from "./document-catalogue.js";
 import { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
-import { FINANCIAL_YEAR_DOCUMENT_TYPES, isFinancialYearScoped } from "./financial-year.js";
 import { evaluateRules, type CaseFacts, type PartyFacts } from "./rules.js";
 
 function individual(overrides: Partial<PartyFacts> = {}): PartyFacts {
@@ -639,10 +632,10 @@ describe("the default pack — integrity", () => {
     expect(new Set(orders).size).toBe(orders.length);
   });
 
-  // Read from FINANCIAL_YEAR_DOCUMENT_TYPES rather than from a second list
-  // written out here. A hand-kept copy drifts, and the drift is silent: a
-  // rule asking for years of a type the expander does not know recurs loses
-  // its period and collapses to one undated row.
+  // Read from the catalogue rather than from a second list written out here.
+  // A hand-kept copy drifts, and the drift is silent: a rule asking for years
+  // of a type the expander does not know recurs loses its period and collapses
+  // to one undated row.
   it("only asks for financial years on document types that recur", () => {
     for (const rule of DEFAULT_REQUIREMENT_RULES) {
       if (rule.financialYears !== undefined) {
@@ -672,14 +665,6 @@ describe("the default pack — integrity", () => {
     const unknown = defaultRuleDocumentTypeCodes().filter((code) => !known.has(code));
 
     expect(unknown).toEqual([]);
-  });
-
-  it("has no duplicate document type codes or display orders in the engine catalogue", () => {
-    const codes = ENGINE_DOCUMENT_TYPES.map((type) => type.code);
-    const orders = ENGINE_DOCUMENT_TYPES.map((type) => type.displayOrder);
-
-    expect(new Set(codes).size).toBe(codes.length);
-    expect(new Set(orders).size).toBe(orders.length);
   });
 });
 
@@ -790,130 +775,5 @@ describe("the checklist a telecaller actually reads out", () => {
     ).map((rule) => rule.code);
 
     expect(offenders).toEqual([]);
-  });
-});
-
-describe("the document catalogue as a telecaller reads it", () => {
-  it("gives every document type a category, so nothing lands in a flat unsorted list", () => {
-    const uncategorised = ALL_DOCUMENT_TYPES.filter(
-      (type) => !(DOCUMENT_CATEGORIES as readonly string[]).includes(type.category),
-    ).map((type) => type.code);
-
-    expect(uncategorised).toEqual([]);
-  });
-
-  it("gives every document type a helper description, because the person asking may be in their first week", () => {
-    const undescribed = ALL_DOCUMENT_TYPES.filter(
-      (type) => type.description.trim().length < 20,
-    ).map((type) => type.code);
-
-    expect(undescribed).toEqual([]);
-  });
-
-  it("carries the local name alongside the official one for the documents Tamil Nadu calls something else", () => {
-    const localNameOf = (code: string): string | undefined =>
-      ALL_DOCUMENT_TYPES.find((type) => type.code === code)?.localName;
-
-    expect(localNameOf("encumbrance_cert")).toMatch(/villangam/i);
-    expect(localNameOf("udyam_certificate")).toMatch(/udyog aadhaar/i);
-    expect(localNameOf("credit_bureau_consent")).toMatch(/cibil/i);
-  });
-
-  /**
-   * A local name that is only the official name reworded tells the telecaller
-   * nothing and reads as noise on the row ("GST Returns (GSTR-3B) (GST 3B)").
-   * Where the form number IS the recognisable name, it belongs in the name.
-   */
-  it("never repeats the official name back as the local name", () => {
-    const noisy = ALL_DOCUMENT_TYPES.filter(
-      (type) => type.localName && type.name.toLowerCase().includes(type.localName.toLowerCase()),
-    ).map((type) => type.code);
-
-    expect(noisy).toEqual([]);
-  });
-
-  it("calls documents what the customer calls them", () => {
-    const nameOf = (code: string): string | undefined =>
-      ALL_DOCUMENT_TYPES.find((type) => type.code === code)?.name;
-
-    expect(nameOf("credit_bureau_consent")).toBe("Loan Consent Form");
-    expect(nameOf("application_form")).toBe("Loan Application Form");
-    expect(nameOf("photograph")).toBe("Passport Size Photograph");
-    expect(nameOf("gst_certificate")).toBe("GST Registration Certificate (GST REG-06)");
-    expect(nameOf("patta_chitta")).toBe("Patta & Chitta");
-  });
-
-  it("lists what counts as address proof, because that is the question every collection call gets", () => {
-    const addressProof = ALL_DOCUMENT_TYPES.find((type) => type.code === "address_proof");
-    const examples = (addressProof?.examples ?? []).map((e) => e.toLowerCase());
-
-    for (const example of ["eb bill", "gas bill", "ration card", "passport", "driving licence"]) {
-      expect(examples).toContain(example);
-    }
-  });
-
-  /**
-   * The guard Part 1 of the audit milestone asked for, held permanently open.
-   *
-   * A second definition of the same document is the bug that makes a
-   * checklist ask for one thing twice and look broken to the person reading
-   * it out. This asserts it across every surface a definition can appear on:
-   * the code, the customer-facing name, and the display order.
-   */
-  it("has exactly one canonical definition for every document code", () => {
-    const seen = new Map<string, number>();
-    for (const type of ALL_DOCUMENT_TYPES) {
-      seen.set(type.code, (seen.get(type.code) ?? 0) + 1);
-    }
-
-    expect([...seen.entries()].filter(([, count]) => count > 1)).toEqual([]);
-    expect(ALL_DOCUMENT_TYPES).toHaveLength(seen.size);
-  });
-
-  it("gives no two document types the same customer-facing name", () => {
-    const byName = new Map<string, string[]>();
-    for (const type of ALL_DOCUMENT_TYPES) {
-      byName.set(type.name, [...(byName.get(type.name) ?? []), type.code]);
-    }
-
-    expect([...byName.entries()].filter(([, codes]) => codes.length > 1)).toEqual([]);
-  });
-
-  it("names every recurring document's period, and names the returns by assessment year", () => {
-    // A recurring document rendered without its year is why two years of GST
-    // returns looked like one document asked for twice.
-    for (const code of Object.keys(FINANCIAL_YEAR_DOCUMENT_TYPES)) {
-      const type = ALL_DOCUMENT_TYPES.find((t) => t.code === code);
-      expect(type?.periodKind, `${code} has no periodKind`).toBeDefined();
-    }
-
-    const assessmentYearScoped = ALL_DOCUMENT_TYPES.filter(
-      (type) => type.periodKind === "assessment_year",
-    ).map((type) => type.code);
-
-    expect(assessmentYearScoped).toContain("itr");
-    expect(assessmentYearScoped).toContain("org_itr");
-    expect(assessmentYearScoped).toContain("form_16");
-    expect(assessmentYearScoped).toContain("form_26as");
-  });
-
-  it("puts the period in the row's own name, so two years never read as one document twice", () => {
-    expect(documentRowLabel("GST 3B", "2025-26", "financial_year")).toBe("GST 3B – FY 2025-26");
-    expect(documentRowLabel("GST 3B", "2024-25", "financial_year")).toBe("GST 3B – FY 2024-25");
-    // FY 2024-25 is assessed in AY 2025-26 — the number on the return the
-    // customer is holding.
-    expect(documentRowLabel("Business ITR", "2024-25", "assessment_year")).toBe(
-      "Business ITR – AY 2025-26",
-    );
-    // A document with no period is left exactly as it is.
-    expect(documentRowLabel("PAN Card", undefined, undefined)).toBe("PAN Card");
-  });
-
-  it("has no duplicate codes or display orders across the whole catalogue", () => {
-    const codes = ALL_DOCUMENT_TYPES.map((type) => type.code);
-    const orders = ALL_DOCUMENT_TYPES.map((type) => type.displayOrder);
-
-    expect(new Set(codes).size).toBe(codes.length);
-    expect(new Set(orders).size).toBe(orders.length);
   });
 });

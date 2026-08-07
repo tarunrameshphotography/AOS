@@ -26,9 +26,10 @@ import {
   DOCUMENT_CATEGORY_HINTS,
   DOCUMENT_CATEGORY_LABELS,
   documentRowLabel,
+  isFinancialYearScoped,
   type DocumentCategory,
 } from "@domain/requirements/document-catalogue.js";
-import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
+import { financialYearOf } from "@domain/requirements/financial-year.js";
 import { CONSTRUCTION_STAGES } from "@domain/requirements/rules.js";
 
 import {

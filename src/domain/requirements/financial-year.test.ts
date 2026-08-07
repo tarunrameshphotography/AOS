@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  FINANCIAL_YEAR_DOCUMENT_TYPES,
   financialYearLabel,
   financialYearOf,
   financialYearStartYear,
-  isFinancialYearScoped,
   recentFinancialYears,
 } from "./financial-year.js";
 
@@ -61,33 +59,3 @@ describe("recentFinancialYears", () => {
   });
 });
 
-describe("FINANCIAL_YEAR_DOCUMENT_TYPES / isFinancialYearScoped", () => {
-  it("covers GST returns, ITR, financials and bank statements (person and organisation variants), plus Form 16, the audit report added with the rule engine, and Form 26AS added by the Milestone 9.1 audit", () => {
-    expect(Object.keys(FINANCIAL_YEAR_DOCUMENT_TYPES).sort()).toEqual(
-      [
-        "audit_report",
-        "balance_sheet",
-        "bank_statement",
-        "form_16",
-        "form_26as",
-        "gst_returns",
-        "itr",
-        "org_bank_statement",
-        "org_itr",
-        "profit_and_loss",
-      ].sort(),
-    );
-  });
-
-  it("reports scoped and unscoped types correctly", () => {
-    expect(isFinancialYearScoped("itr")).toBe(true);
-    expect(isFinancialYearScoped("pan_card")).toBe(false);
-  });
-
-  it("requires every trailing-year count to be a positive integer", () => {
-    for (const count of Object.values(FINANCIAL_YEAR_DOCUMENT_TYPES)) {
-      expect(Number.isInteger(count)).toBe(true);
-      expect(count).toBeGreaterThan(0);
-    }
-  });
-});

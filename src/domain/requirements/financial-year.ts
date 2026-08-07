@@ -14,6 +14,11 @@
  * All dates are computed in UTC so a financial year boundary does not shift
  * with the machine's local timezone — the same reason `document.period_start`
  * is a plain `date`, not a `timestamptz`.
+ *
+ * WHICH document types recur per year is not decided here — that is a property
+ * of the document, and it lives with the document in document-catalogue.ts
+ * (`defaultFinancialYears`, `isFinancialYearScoped`). This file only knows what
+ * a financial year IS.
  */
 
 export interface FinancialYear {
@@ -64,53 +69,3 @@ export function recentFinancialYears(count: number, asOf: Date = new Date()): Fi
   );
 }
 
-/**
- * Document types whose requirement is scoped per financial year, keyed by
- * `document_type.code`, with the number of trailing years requested by
- * default when a case first generates requirements.
- *
- * SINCE THE RULE ENGINE (Milestone 9, ADR-035) the authoritative trailing-year
- * count for a generated requirement is `RequirementRule.financialYears` — a
- * configurable number on an editable rule, not a constant. This map remains
- * for two jobs the rules cannot do:
- *
- *   1. `isFinancialYearScoped` — the UI's "is this document type tracked per
- *      year, and may a user request another year of it?" question, which is a
- *      property of the document type rather than of any one rule.
- *   2. A fallback count for a requirement generated without a rule (an
- *      explicitly-requested extra year, or a row that predates the engine).
- *
- * **These counts are a starting assumption, not a finding** — real per-lender
- * practice varies (the same caveat `rejection_reason`'s seed data carries in
- * Database/migrations/0009).
- *
- * A document type absent from this map is period-scoped in the ordinary
- * sense (`document_type.requires_period`) without being multiplied per
- * year — a bank statement's *requirement* still asks for one rolling window,
- * even though the *document* uploaded against it now also carries a period.
- * Only the five types this feature was scoped for are financial-year-scoped
- * requirements; the rest are unchanged.
- */
-export const FINANCIAL_YEAR_DOCUMENT_TYPES: Readonly<Record<string, number>> = {
-  itr: 2,
-  org_itr: 2,
-  // Two years since the Telecaller Workflow milestone, matching what the rule
-  // pack asks for: one year of GSTR-3B is a turnover figure, two are a trend.
-  gst_returns: 2,
-  balance_sheet: 2,
-  profit_and_loss: 2,
-  bank_statement: 1,
-  org_bank_statement: 1,
-  // Added with the rule engine (Milestone 9): a lender asking for two years'
-  // Form 16 or audited accounts means two distinguishable rows, for exactly
-  // the reason ITR did.
-  form_16: 2,
-  audit_report: 2,
-  // Added by the Milestone 9.1 audit. Read alongside the ITR, so it recurs
-  // over the same window: a 26AS for one year cannot evidence another.
-  form_26as: 2,
-};
-
-export function isFinancialYearScoped(documentTypeCode: string): boolean {
-  return documentTypeCode in FINANCIAL_YEAR_DOCUMENT_TYPES;
-}

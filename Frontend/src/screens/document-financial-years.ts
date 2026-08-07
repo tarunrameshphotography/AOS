@@ -9,9 +9,10 @@
 
 import {
   assessmentYearLabel,
+  isFinancialYearScoped,
   type PeriodKind,
 } from "@domain/requirements/document-catalogue.js";
-import { financialYearOf, isFinancialYearScoped } from "@domain/requirements/financial-year.js";
+import { financialYearOf } from "@domain/requirements/financial-year.js";
 
 import type { Database, DocumentRequirement, Id } from "../fake/types.js";
 import { partyName } from "../lib.js";

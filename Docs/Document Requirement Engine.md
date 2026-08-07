@@ -35,10 +35,11 @@ out of service, without a developer and without a deploy.
 src/domain/requirements/
   rules.ts               the evaluator — facts in, requirements out. No database.
   default-rules.ts       the 105 researched default rules, seeded and then editable.
-  document-catalogue.ts  the document types the rules name — their customer-facing
-                         name, local name, description, examples, section and
-                         how each recurring one names its period.
-  financial-year.ts      India's April–March year; which types recur.
+  document-catalogue.ts  ONE list of the document types the rules name — their
+                         customer-facing name, local name, description, examples,
+                         section, owner, how each recurring one names its period
+                         and how many years of it to ask for.
+  financial-year.ts      India's April–March year. Nothing about documents.
   progress.ts            what the generated set means for the case's score.
 
 Frontend/src/fake/requirements.ts   the ADAPTER: database -> facts, and back.
@@ -179,12 +180,16 @@ loses the trust it needs to be useful.
 ### In the default pack (a new rule)
 
 1. If the rule names a document type that does not exist yet, add it to
-   `ENGINE_DOCUMENT_TYPES` in `src/domain/requirements/document-catalogue.ts`
-   — with its customer-facing name, its local name where Tamil Nadu has one, a
-   one-sentence description, and a category. A rule naming a type nobody
-   created generates *nothing*, which looks exactly like a case that does not
-   need the document — the test `never names a document type that does not
-   exist` exists to catch it.
+   `DOCUMENT_CATALOGUE` in `src/domain/requirements/document-catalogue.ts` —
+   with its customer-facing name, its local name where Tamil Nadu has one, a
+   one-sentence description, a category and the next free display order, placed
+   in the file at the position that order puts it. There is one list and it is
+   written in display order; do **not** start a second array. A rule naming a
+   type nobody created generates *nothing*, which looks exactly like a case
+   that does not need the document — the test `never names a document type that
+   does not exist` exists to catch it, and `document-catalogue.test.ts` fails
+   the build if the new entry duplicates a code, an object, a display order or
+   a customer-facing name.
 2. Add a `rule({ ... })` entry to `DEFAULT_REQUIREMENT_RULES` in
    `default-rules.ts`, in the block it belongs to.
 3. Add a test to `default-rules.test.ts` phrased as a sentence an office user

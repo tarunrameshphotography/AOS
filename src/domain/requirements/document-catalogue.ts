@@ -9,19 +9,17 @@
  * failure for a checklist, because it looks like the case simply does not
  * need the document. Defining the types the default pack depends on in the
  * same layer as the pack itself lets one test assert the two agree
- * (default-rules.test.ts), and lets the prototype seed and the SQL seed be
- * built from one source rather than kept in step by hand.
+ * (document-catalogue.test.ts), and lets the prototype seed and the SQL seed
+ * be built from one source rather than kept in step by hand.
  *
- * ONE CANONICAL DEFINITION PER CODE
+ * ONE OBJECT PER DOCUMENT, ONE LIST, ONE ORDER
  *
- * This file is the single place a document type is defined. `pan_card` is
- * defined here once and nowhere else; the prototype seed, the SQL seed and
- * every rule all resolve through the code. The tests
- * `has exactly one canonical definition for every document code` and
- * `never names a document type that does not exist` hold both ends of that
- * shut, because a second definition of the same document is the one bug that
- * makes a checklist ask for the same thing twice and look broken to the
- * person reading it out.
+ * `DOCUMENT_CATALOGUE` below is the whole catalogue. There is no second list,
+ * no "base pack" and "engine pack", and no per-milestone appendix: a document
+ * is one object here and nothing anywhere else restates it. The prototype
+ * seed, the SQL seed and every rule resolve through `code`, and
+ * document-catalogue.test.ts fails the build if a code, an object, a display
+ * order or a customer-facing name is ever written twice.
  *
  * WHAT EACH TYPE CARRIES
  *
@@ -44,6 +42,13 @@
  *                April–March window either way — but a customer who filed an
  *                ITR knows it by its assessment year, and asking them for
  *                "ITR FY 2024-25" gets you the wrong year's return.
+ *   defaultFinancialYears
+ *                How many trailing years to raise rows for when a rule does
+ *                not say. Present only on the documents a lender reads a run
+ *                of; see the note on `financialYearsRequested` below.
+ *   displayOrder Where the row sits. FROZEN — Database/migrations/0027 seeds
+ *                these same numbers, and the file below is written in this
+ *                order so the code reads in the order a call runs.
  *
  * All of it remains master data: a business user may rename, deactivate or
  * add to any of it through the Master Data screen. This is the starting set,
@@ -59,13 +64,10 @@
 /**
  * The six sections of a collection call.
  *
- * These are COLLECTION sections, not a filing taxonomy. The earlier split —
- * "Business" against "Financial" — grouped a GST certificate with a stock
- * statement and separated the GST certificate from the GST returns, which is
- * not how anybody asks for them. A telecaller collects a business's PAPERS in
- * one pass (registration, GST, Udyam, constitution) and its NUMBERS in
- * another (returns, accounts, banking), because those are two different
- * phone calls and often two different people at the customer's end.
+ * These are COLLECTION sections, not a filing taxonomy. A telecaller collects
+ * a business's PAPERS in one pass (registration, GST, Udyam, constitution) and
+ * its NUMBERS in another (returns, accounts, banking), because those are two
+ * different phone calls and often two different people at the customer's end.
  */
 export const DOCUMENT_CATEGORIES = [
   "kyc",
@@ -109,13 +111,24 @@ export const DOCUMENT_CATEGORY_HINTS: Record<DocumentCategory, string> = {
  */
 export type PeriodKind = "financial_year" | "assessment_year";
 
+/**
+ * Who a document belongs to (ADR-007): the person, property or organisation it
+ * describes, with `case` reserved for genuinely case-specific paperwork. A
+ * vehicle quotation is case-scoped because AOS has no vehicle entity — noted
+ * here rather than silently modelled, because "the case owns it" is a real
+ * answer only while that stays true.
+ */
+export const DOCUMENT_OWNER_KINDS = ["person", "property", "organisation", "case"] as const;
+
+export type DocumentOwnerKind = (typeof DOCUMENT_OWNER_KINDS)[number];
+
 export interface DocumentTypeDefinition {
   readonly code: string;
   /** What we call it to the customer. */
   readonly name: string;
   /** What it is called locally, where that differs. Never a replacement. */
   readonly localName?: string;
-  readonly ownerKind: "person" | "property" | "organisation" | "case";
+  readonly ownerKind: DocumentOwnerKind;
   readonly requiresPeriod: boolean;
   readonly requiresExpiry: boolean;
   /** One sentence, readable out loud by someone in their first week. */
@@ -125,239 +138,63 @@ export interface DocumentTypeDefinition {
   readonly category: DocumentCategory;
   /** How a per-period row names its period. Only for recurring documents. */
   readonly periodKind?: PeriodKind;
+  /**
+   * Trailing years to raise rows for when the rule does not say. Only for
+   * documents a lender reads a RUN of — see the note above
+   * `financialYearsRequested`.
+   */
+  readonly defaultFinancialYears?: number;
   readonly displayOrder: number;
 }
 
 /**
- * The eighteen types that existed before the rule engine (Database/migrations
- * /0009 and 0011).
+ * The whole catalogue, in display order.
  *
- * Their CODES are frozen — documents, requirements and storage paths all point
- * at them. Everything else about them is presentation, and this milestone and
- * the last one rewrote it.
+ * Codes are frozen: documents, requirements and storage paths all point at
+ * them. Everything else is presentation and may be edited here or, in
+ * production, through the Master Data screen.
  */
-export const BASE_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
-  {
-    code: "pan_card",
-    name: "PAN Card",
-    ownerKind: "person",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "The customer's own PAN card. Every lender asks for it and none of them waive it.",
-    category: "kyc",
-    displayOrder: 10,
-  },
-  {
-    code: "aadhaar_card",
-    name: "Aadhaar Card",
-    ownerKind: "person",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "Front and back. Serves as both identity and address proof for most lenders.",
-    category: "kyc",
-    displayOrder: 20,
-  },
-  {
-    code: "address_proof",
-    name: "Address Proof",
-    ownerKind: "person",
-    requiresPeriod: false,
-    requiresExpiry: true,
-    description:
-      "Any one of these, in the customer's name and not more than three months old.",
-    examples: ["EB Bill", "Gas Bill", "Ration Card", "Passport", "Driving Licence", "Rental Agreement"],
-    category: "kyc",
-    displayOrder: 30,
-  },
-  {
-    code: "photograph",
-    name: "Passport Size Photograph",
-    ownerKind: "person",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "One recent passport size photo. A clear phone photo of the print is enough to start.",
-    category: "kyc",
-    displayOrder: 40,
-  },
-  {
-    code: "salary_slip",
-    name: "Salary Slip",
-    localName: "Payslip",
-    ownerKind: "person",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description: "Last three months' payslips. Six months where the salary includes incentive or overtime.",
-    category: "income",
-    displayOrder: 50,
-  },
-  {
-    code: "form_16",
-    name: "Form 16",
-    ownerKind: "person",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description: "The employer's annual salary and TDS certificate, one per year.",
-    category: "income",
-    periodKind: "assessment_year",
-    displayOrder: 60,
-  },
-  {
-    code: "bank_statement",
-    name: "Bank Statement",
-    ownerKind: "person",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description:
-      "Statement of the account the salary or income comes into. Six months for salaried, " +
-      "twelve for self-employed. A PDF downloaded from net banking is accepted.",
-    category: "income",
-    periodKind: "financial_year",
-    displayOrder: 70,
-  },
-  {
-    code: "itr",
-    name: "ITR",
-    localName: "Income Tax Return",
-    ownerKind: "person",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description: "The customer's personal income tax return with the computation sheet, one per assessment year.",
-    category: "income",
-    periodKind: "assessment_year",
-    displayOrder: 80,
-  },
-  {
-    code: "gst_certificate",
-    name: "GST Registration Certificate (GST REG-06)",
-    ownerKind: "organisation",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "The certificate issued after GST registration. It carries the GSTIN.",
-    category: "business_registration",
-    displayOrder: 90,
-  },
-  {
-    code: "gst_returns",
-    name: "GST 3B",
-    localName: "GSTR-3B",
-    ownerKind: "organisation",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description:
-      "Monthly GST return. Ask for a full financial year at a time — lenders read the last " +
-      "twelve months to see real turnover.",
-    category: "business_financials",
-    periodKind: "financial_year",
-    displayOrder: 110,
-  },
-  {
-    code: "balance_sheet",
-    name: "Balance Sheet",
-    ownerKind: "organisation",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description: "The year-end statement of what the business owns and owes, signed by the auditor or CA.",
-    category: "business_financials",
-    periodKind: "financial_year",
-    displayOrder: 120,
-  },
-  {
-    code: "profit_and_loss",
-    name: "Profit & Loss Statement",
-    localName: "P&L Account",
-    ownerKind: "organisation",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description: "The year's income and expenses, signed by the auditor or CA. Filed with the balance sheet.",
-    category: "business_financials",
-    periodKind: "financial_year",
-    displayOrder: 130,
-  },
-  {
-    code: "sale_deed",
-    name: "Sale Deed",
-    localName: "Title Deed",
-    ownerKind: "property",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "The registered deed by which the current owner bought the property.",
-    category: "property",
-    displayOrder: 140,
-  },
-  {
-    code: "encumbrance_cert",
-    name: "Encumbrance Certificate (EC)",
-    localName: "Villangam",
-    ownerKind: "property",
-    requiresPeriod: true,
-    requiresExpiry: false,
-    description:
-      "The Sub-Registrar's record of every sale and loan registered on the property. " +
-      "Banks ask for the last thirteen years.",
-    category: "property",
-    displayOrder: 150,
-  },
-  {
-    code: "approved_plan",
-    name: "Building Approval Plan",
-    localName: "Plan Approval",
-    ownerKind: "property",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "The building plan sanctioned by the panchayat, municipality, CMDA or DTCP.",
-    category: "property",
-    displayOrder: 160,
-  },
-  {
-    code: "valuation_report",
-    name: "Property Valuation Report",
-    ownerKind: "property",
-    requiresPeriod: false,
-    requiresExpiry: true,
-    description: "The bank's own valuer visits and values the property. Arranged after the bank is chosen.",
-    category: "property",
-    displayOrder: 170,
-  },
-  {
-    code: "login_form",
-    name: "Bank Login Form",
-    ownerKind: "case",
-    requiresPeriod: false,
-    requiresExpiry: false,
-    description: "The bank's own application form, signed. Only available once a bank has been chosen.",
-    category: "additional",
-    displayOrder: 180,
-  },
-  {
-    code: "sanction_letter",
-    name: "Sanction Letter",
-    ownerKind: "case",
-    requiresPeriod: false,
-    requiresExpiry: true,
-    description: "The bank's letter confirming the approved amount and terms.",
-    category: "additional",
-    displayOrder: 190,
-  },
-];
+export const DOCUMENT_CATALOGUE: readonly DocumentTypeDefinition[] = [
+  // --- KYC: identity and address, asked of everyone signing -----------------
+  { code: "pan_card", name: "PAN Card", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "The customer's own PAN card. Every lender asks for it and none of them waive it.", category: "kyc", displayOrder: 10 },
+  { code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "Front and back. Serves as both identity and address proof for most lenders.", category: "kyc", displayOrder: 20 },
+  { code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false, requiresExpiry: true, description: "Any one of these, in the customer's name and not more than three months old.", examples: ["EB Bill", "Gas Bill", "Ration Card", "Passport", "Driving Licence", "Rental Agreement"], category: "kyc", displayOrder: 30 },
+  { code: "photograph", name: "Passport Size Photograph", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "One recent passport size photo. A clear phone photo of the print is enough to start.", category: "kyc", displayOrder: 40 },
 
-/**
- * Document types the rule engine introduced, plus those added since.
- *
- * Owner kind follows ADR-007: a document belongs to the person, property or
- * organisation it describes, and only genuinely case-specific paperwork
- * belongs to the case. A vehicle quotation is case-scoped because AOS has no
- * vehicle entity — noted here rather than silently modelled, because "the
- * case owns it" is a real answer only while that stays true.
- */
-export const ENGINE_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
-  // --- Individual KYC and identity -----------------------------------------
+  // --- Personal income -------------------------------------------------------
+  { code: "salary_slip", name: "Salary Slip", localName: "Payslip", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "Last three months' payslips. Six months where the salary includes incentive or overtime.", category: "income", displayOrder: 50 },
+  { code: "form_16", name: "Form 16", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "The employer's annual salary and TDS certificate, one per year.", category: "income", periodKind: "assessment_year", defaultFinancialYears: 2, displayOrder: 60 },
+  { code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "Statement of the account the salary or income comes into. Six months for salaried, twelve for self-employed. A PDF downloaded from net banking is accepted.", category: "income", periodKind: "financial_year", defaultFinancialYears: 1, displayOrder: 70 },
+  { code: "itr", name: "ITR", localName: "Income Tax Return", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "The customer's personal income tax return with the computation sheet, one per assessment year.", category: "income", periodKind: "assessment_year", defaultFinancialYears: 2, displayOrder: 80 },
+
+  // --- The business, as first modelled: GST and the annual accounts ---------
+  // Display order 100 is retired. It belonged to `financial_statements`, which
+  // Database/migrations/0011 split into the balance sheet and the P&L below;
+  // the type is kept deactivated rather than deleted (BR-027) and so has no
+  // entry here — nothing may ask for it again.
+  { code: "gst_certificate", name: "GST Registration Certificate (GST REG-06)", ownerKind: "organisation", requiresPeriod: false, requiresExpiry: false, description: "The certificate issued after GST registration. It carries the GSTIN.", category: "business_registration", displayOrder: 90 },
+  { code: "gst_returns", name: "GST 3B", localName: "GSTR-3B", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "Monthly GST return. Ask for a full financial year at a time — lenders read the last twelve months to see real turnover.", category: "business_financials", periodKind: "financial_year", defaultFinancialYears: 2, displayOrder: 110 },
+  { code: "balance_sheet", name: "Balance Sheet", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The year-end statement of what the business owns and owes, signed by the auditor or CA.", category: "business_financials", periodKind: "financial_year", defaultFinancialYears: 2, displayOrder: 120 },
+  { code: "profit_and_loss", name: "Profit & Loss Statement", localName: "P&L Account", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The year's income and expenses, signed by the auditor or CA. Filed with the balance sheet.", category: "business_financials", periodKind: "financial_year", defaultFinancialYears: 2, displayOrder: 130 },
+
+  // --- Property: title, revenue record and the bank's own checks ------------
+  { code: "sale_deed", name: "Sale Deed", localName: "Title Deed", ownerKind: "property", requiresPeriod: false, requiresExpiry: false, description: "The registered deed by which the current owner bought the property.", category: "property", displayOrder: 140 },
+  { code: "encumbrance_cert", name: "Encumbrance Certificate (EC)", localName: "Villangam", ownerKind: "property", requiresPeriod: true, requiresExpiry: false, description: "The Sub-Registrar's record of every sale and loan registered on the property. Banks ask for the last thirteen years.", category: "property", displayOrder: 150 },
+  { code: "approved_plan", name: "Building Approval Plan", localName: "Plan Approval", ownerKind: "property", requiresPeriod: false, requiresExpiry: false, description: "The building plan sanctioned by the panchayat, municipality, CMDA or DTCP.", category: "property", displayOrder: 160 },
+  { code: "valuation_report", name: "Property Valuation Report", ownerKind: "property", requiresPeriod: false, requiresExpiry: true, description: "The bank's own valuer visits and values the property. Arranged after the bank is chosen.", category: "property", displayOrder: 170 },
+
+  // --- The bank's own paperwork, once a bank has been chosen ----------------
+  { code: "login_form", name: "Bank Login Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The bank's own application form, signed. Only available once a bank has been chosen.", category: "additional", displayOrder: 180 },
+  { code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false, requiresExpiry: true, description: "The bank's letter confirming the approved amount and terms.", category: "additional", displayOrder: 190 },
+
+  // --- KYC: the extra proofs some customers need ----------------------------
   { code: "signature_proof", name: "Signature Proof", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "A specimen signature on a blank sheet, asked for when the signature on the PAN is unclear.", category: "kyc", displayOrder: 200 },
   { code: "credit_bureau_consent", name: "Loan Consent Form", localName: "CIBIL Consent", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "The customer's signed permission to check their CIBIL score. We cannot check it without this.", category: "kyc", displayOrder: 210 },
   { code: "passport", name: "Passport", ownerKind: "person", requiresPeriod: false, requiresExpiry: true, description: "Photo page and address page. Needed for NRI customers and for study-abroad loans.", category: "kyc", displayOrder: 220 },
   { code: "visa", name: "Visa / Work Permit", ownerKind: "person", requiresPeriod: false, requiresExpiry: true, description: "The current visa or work permit page, for a customer living or studying abroad.", category: "kyc", displayOrder: 230 },
   { code: "power_of_attorney", name: "Power of Attorney (POA)", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "A registered POA given to a relative in India, so papers can be signed here while the customer is abroad.", category: "kyc", displayOrder: 240 },
 
-  // --- Salaried income ------------------------------------------------------
+  // --- Salaried income -------------------------------------------------------
   { code: "employment_certificate", name: "Employment Certificate", localName: "Job Certificate", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "A letter from the employer confirming the designation, how long they have worked there, and the salary.", category: "income", displayOrder: 250 },
   { code: "appointment_letter", name: "Appointment Letter", localName: "Offer Letter", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "The joining letter from the employer. Asked for when the customer has joined recently.", category: "income", displayOrder: 260 },
 
@@ -378,9 +215,9 @@ export const ENGINE_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
   { code: "udyam_certificate", name: "Udyam Registration Certificate", localName: "Udyog Aadhaar / MSME Certificate", ownerKind: "organisation", requiresPeriod: false, requiresExpiry: false, description: "The MSME registration certificate. Compulsory for MUDRA and CGTMSE loans, and asked for on every other business loan.", category: "business_registration", displayOrder: 360 },
 
   // --- The business: its numbers --------------------------------------------
-  { code: "org_itr", name: "Business ITR", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The business's income tax return with computation, one per assessment year. On a proprietorship this is the owner's own return.", category: "business_financials", periodKind: "assessment_year", displayOrder: 370 },
-  { code: "org_bank_statement", name: "Business Bank Statement", localName: "Current Account Statement", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "Twelve months of the business account. This is what the bank reads to judge daily turnover.", category: "business_financials", periodKind: "financial_year", displayOrder: 380 },
-  { code: "audit_report", name: "Audit Report", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The auditor's report for the year. Companies and LLPs have one; a small proprietorship usually does not.", category: "business_financials", periodKind: "financial_year", displayOrder: 390 },
+  { code: "org_itr", name: "Business ITR", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The business's income tax return with computation, one per assessment year. On a proprietorship this is the owner's own return.", category: "business_financials", periodKind: "assessment_year", defaultFinancialYears: 2, displayOrder: 370 },
+  { code: "org_bank_statement", name: "Business Bank Statement", localName: "Current Account Statement", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "Twelve months of the business account. This is what the bank reads to judge daily turnover.", category: "business_financials", periodKind: "financial_year", defaultFinancialYears: 1, displayOrder: 380 },
+  { code: "audit_report", name: "Audit Report", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "The auditor's report for the year. Companies and LLPs have one; a small proprietorship usually does not.", category: "business_financials", periodKind: "financial_year", defaultFinancialYears: 2, displayOrder: 390 },
   { code: "stock_statement", name: "Stock Statement", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "A list of stock in hand and money customers owe. This is the security on a cash credit limit.", category: "business_financials", periodKind: "financial_year", displayOrder: 400 },
   { code: "debtors_creditors_statement", name: "Debtors & Creditors List", ownerKind: "organisation", requiresPeriod: true, requiresExpiry: false, description: "Who owes the business money and whom it owes, with how long each has been outstanding.", category: "business_financials", periodKind: "financial_year", displayOrder: 410 },
 
@@ -439,47 +276,79 @@ export const ENGINE_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
   { code: "demat_statement", name: "Demat / Portfolio Statement", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "Statement of the shares or mutual funds being pledged, with today's value.", category: "additional", displayOrder: 760 },
   { code: "fd_receipt", name: "Fixed Deposit Receipt", localName: "FD Receipt", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "The deposit receipt being pledged for the loan.", category: "additional", displayOrder: 770 },
 
-  // --- Case paperwork -------------------------------------------------------
+  // --- Amaze's own case paperwork -------------------------------------------
   { code: "application_form", name: "Loan Application Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Amaze's own application form, filled and signed by the customer. Separate from the bank's login form.", category: "additional", displayOrder: 780 },
   { code: "nach_mandate", name: "NACH Mandate / Security Cheques", localName: "ECS Mandate", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The signed EMI auto-debit mandate and any blank cheques the bank asks for.", category: "additional", displayOrder: 790 },
   { code: "tenant_kyc", name: "Tenant KYC", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Identity and agreement papers of the tenant paying the rent, for a rent-based loan.", category: "additional", displayOrder: 800 },
 
-  // --- Added by the Milestone 9.1 audit ------------------------------------
-  { code: "form_26as", name: "Form 26AS / AIS", localName: "Tax Credit Statement", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "The income tax department's own record of income and TDS, downloaded from the income tax portal. Banks compare it against the ITR.", category: "income", periodKind: "assessment_year", displayOrder: 810 },
+  // --- What the tax department itself says, and what the customer paid ------
+  { code: "form_26as", name: "Form 26AS / AIS", localName: "Tax Credit Statement", ownerKind: "person", requiresPeriod: true, requiresExpiry: false, description: "The income tax department's own record of income and TDS, downloaded from the income tax portal. Banks compare it against the ITR.", category: "income", periodKind: "assessment_year", defaultFinancialYears: 2, displayOrder: 810 },
   { code: "own_contribution_proof", name: "Own Contribution Proof", localName: "Margin Money Proof", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Proof the customer has paid their own share — the builder's or seller's receipt, or the bank transfer that paid it.", category: "additional", displayOrder: 820 },
 
-  // --- Added by the Telecaller Workflow milestone ---------------------------
   /**
    * The home for a document a Login Executive adds by hand on one case. The
    * requirement carries its own name and description; this type exists so the
    * upload, versioning and storage-path machinery has something real to point
-   * at rather than a null.
+   * at rather than a null. Ordered last on purpose: it is never part of the
+   * standard call.
    */
   { code: "other_document", name: "Other Document", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "A document asked for on this case only, added by hand because the standard list did not cover it.", category: "additional", displayOrder: 900 },
 ];
 
-/** Every document type AOS knows about, base pack and engine pack together. */
-export const ALL_DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
-  ...BASE_DOCUMENT_TYPES,
-  ...ENGINE_DOCUMENT_TYPES,
-];
+/** The code every hand-added, case-only requirement points at. */
+export const CUSTOM_DOCUMENT_TYPE_CODE = "other_document";
 
-/** Document type codes that existed before the rule engine (0009, 0011). */
-export const PRE_ENGINE_DOCUMENT_TYPES: readonly string[] = BASE_DOCUMENT_TYPES.map(
-  (type) => type.code,
+/**
+ * Code → definition. Built once; `documentTypeByCode` and every caller that
+ * needs to resolve a code read this rather than scanning the list.
+ */
+export const DOCUMENT_TYPES_BY_CODE: ReadonlyMap<string, DocumentTypeDefinition> = new Map(
+  DOCUMENT_CATALOGUE.map((type) => [type.code, type]),
 );
+
+export function documentTypeByCode(code: string): DocumentTypeDefinition | undefined {
+  return DOCUMENT_TYPES_BY_CODE.get(code);
+}
 
 /** Every document type code AOS knows about. */
 export function allDocumentTypeCodes(): string[] {
-  return ALL_DOCUMENT_TYPES.map((type) => type.code);
+  return DOCUMENT_CATALOGUE.map((type) => type.code);
 }
 
-export function documentTypeByCode(code: string): DocumentTypeDefinition | undefined {
-  return ALL_DOCUMENT_TYPES.find((type) => type.code === code);
-}
+/**
+ * Document types whose requirement is raised once per FINANCIAL YEAR, with the
+ * number of trailing years asked for when a rule does not say.
+ *
+ * SINCE THE RULE ENGINE (Milestone 9, ADR-035) the authoritative trailing-year
+ * count for a generated requirement is `RequirementRule.financialYears` — a
+ * configurable number on an editable rule, not a constant. This map answers
+ * the two questions the rules cannot:
+ *
+ *   1. "Is this document type tracked per year, and may a user request another
+ *      year of it?" — a property of the type, not of any one rule.
+ *   2. What to raise for a requirement generated without a rule (an explicitly
+ *      requested extra year, or a row that predates the engine).
+ *
+ * **These counts are a starting assumption, not a finding** — real per-lender
+ * practice varies (the same caveat `rejection_reason`'s seed data carries in
+ * Database/migrations/0009).
+ *
+ * A type with `requiresPeriod` but no `defaultFinancialYears` is period-scoped
+ * in the ordinary sense without being multiplied per year: a personal bank
+ * statement's *requirement* still asks for one rolling window, even though the
+ * *document* uploaded against it carries a period.
+ */
+export const FINANCIAL_YEAR_DOCUMENT_TYPES: Readonly<Record<string, number>> =
+  Object.fromEntries(
+    DOCUMENT_CATALOGUE.filter((type) => type.defaultFinancialYears !== undefined).map((type) => [
+      type.code,
+      type.defaultFinancialYears as number,
+    ]),
+  );
 
-/** The code every hand-added, case-only requirement points at. */
-export const CUSTOM_DOCUMENT_TYPE_CODE = "other_document";
+export function isFinancialYearScoped(documentTypeCode: string): boolean {
+  return documentTypeCode in FINANCIAL_YEAR_DOCUMENT_TYPES;
+}
 
 /**
  * How one requirement row names itself, period included.

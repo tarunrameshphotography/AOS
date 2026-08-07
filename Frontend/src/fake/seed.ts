@@ -13,9 +13,9 @@
 
 import { buildStoragePath, type DocumentOwner } from "@domain/storage/index.js";
 import {
-  BASE_DOCUMENT_TYPES,
   DEFAULT_REQUIREMENT_RULES,
-  ENGINE_DOCUMENT_TYPES,
+  DOCUMENT_CATALOGUE,
+  type DocumentTypeDefinition,
 } from "@domain/requirements/index.js";
 
 import type { Database } from "./types.js";
@@ -162,10 +162,12 @@ export function buildSeed(): Database {
    * the ids stay put even though the Telecaller Workflow milestone rewrote
    * every one of their names.
    *
-   * Numbering is not in list order because it is not in list order in the
-   * database either — 17, 18 and 19 were added by migration 0011 after 16.
+   * Numbering is not in catalogue order because it is not in catalogue order
+   * in the database either — 17, 18 and 19 were added by migration 0011 after
+   * 16. Every code the catalogue holds and this map does not gets the next id
+   * from 20 up, in catalogue order.
    */
-  const BASE_DOCUMENT_TYPE_IDS: Record<string, number> = {
+  const FROZEN_DOCUMENT_TYPE_IDS: Record<string, number> = {
     pan_card: 1, aadhaar_card: 2, address_proof: 3, photograph: 4,
     salary_slip: 5, form_16: 6, bank_statement: 7, itr: 8,
     gst_certificate: 9, gst_returns: 17, balance_sheet: 18, profit_and_loss: 19,
@@ -182,9 +184,9 @@ export function buildSeed(): Database {
    *
    * A rule naming a type nobody created generates NOTHING, which looks exactly
    * like a case that does not need the document — so one definition, shared
-   * with Database/migrations/0022, is the only way to be sure.
+   * with Database/migrations/0027, is the only way to be sure.
    */
-  const fromCatalogue = (type: (typeof BASE_DOCUMENT_TYPES)[number], typeId: string) => ({
+  const fromCatalogue = (type: DocumentTypeDefinition, typeId: string) => ({
     id: typeId,
     code: type.code,
     name: type.name,
@@ -200,19 +202,19 @@ export function buildSeed(): Database {
     displayOrder: type.displayOrder,
   });
 
+  let nextDocumentTypeId = 20;
   const documentTypes: Database["documentTypes"] = [
-    ...BASE_DOCUMENT_TYPES.map((type) =>
-      fromCatalogue(type, id("dty", BASE_DOCUMENT_TYPE_IDS[type.code] ?? 0)),
+    ...DOCUMENT_CATALOGUE.map((type) =>
+      fromCatalogue(type, id("dty", FROZEN_DOCUMENT_TYPE_IDS[type.code] ?? nextDocumentTypeId++)),
     ),
     // financial_statements is retained (not deleted, per BR-027's pattern) but
     // no longer generated — superseded by the two split-out, financial-year-
     // scoped types (Database/migrations/0011). It has no catalogue entry
-    // because nothing may ask for it again.
+    // because nothing may ask for it again, which is why it is written out
+    // here and only here.
     { id: id("dty", 10), code: "financial_statements", name: "Financial Statements", ownerKind: "organisation", requiresPeriod: true, isActive: false, displayOrder: 100 },
-    // Ids continue from 20 so the eighteen above keep the ids everything else
-    // already points at.
-    ...ENGINE_DOCUMENT_TYPES.map((type, index) => fromCatalogue(type, id("dty", 20 + index))),
   ];
+  documentTypes.sort((a, b) => a.displayOrder - b.displayOrder);
 
   /**
    * The rule pack, seeded exactly as Database/migrations/0022 seeds it.

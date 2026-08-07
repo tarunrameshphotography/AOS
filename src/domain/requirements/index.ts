@@ -5,12 +5,13 @@
  * and @domain/permissions, so a consumer imports what requirements MEAN rather
  * than which file they live in.
  *
- * The three pieces:
+ * The pieces:
  *
- *   rules.ts          the evaluator — facts in, requirements out, no database
- *   default-rules.ts  the researched starting rule pack, editable afterwards
- *   financial-year.ts India's April–March year, and which types recur
- *   progress.ts       what the generated set means for the case's score
+ *   document-catalogue.ts every document type AOS can ask for, defined once
+ *   rules.ts              the evaluator — facts in, requirements out, no database
+ *   default-rules.ts      the researched starting rule pack, editable afterwards
+ *   financial-year.ts     India's April–March year
+ *   progress.ts           what the generated set means for the case's score
  */
 
 export {
@@ -42,30 +43,30 @@ export {
 } from "./default-rules.js";
 
 export {
-  ALL_DOCUMENT_TYPES,
-  BASE_DOCUMENT_TYPES,
   CUSTOM_DOCUMENT_TYPE_CODE,
+  DOCUMENT_CATALOGUE,
   DOCUMENT_CATEGORIES,
   DOCUMENT_CATEGORY_HINTS,
   DOCUMENT_CATEGORY_LABELS,
-  ENGINE_DOCUMENT_TYPES,
-  PRE_ENGINE_DOCUMENT_TYPES,
+  DOCUMENT_OWNER_KINDS,
+  DOCUMENT_TYPES_BY_CODE,
+  FINANCIAL_YEAR_DOCUMENT_TYPES,
   allDocumentTypeCodes,
   assessmentYearLabel,
   documentRowLabel,
   documentTypeByCode,
+  isFinancialYearScoped,
   type DocumentCategory,
+  type DocumentOwnerKind,
   type DocumentTypeDefinition,
   type PeriodKind,
 } from "./document-catalogue.js";
 
 export {
-  FINANCIAL_YEAR_DOCUMENT_TYPES,
   financialYearFromStartYear,
   financialYearLabel,
   financialYearOf,
   financialYearStartYear,
-  isFinancialYearScoped,
   recentFinancialYears,
   type FinancialYear,
 } from "./financial-year.js";

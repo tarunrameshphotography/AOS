@@ -52,6 +52,7 @@ vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() 
 const {
   addCustomRequirement,
   addNote,
+  assignOwner,
   createCase,
   getDb,
   moveStage,
@@ -86,6 +87,15 @@ function caseById(caseId: string) {
   const loanCase = getDb().cases.find((c) => c.id === caseId);
   if (!loanCase) throw new Error(`expected case ${caseId} to exist`);
   return loanCase;
+}
+
+/** Verifying is the Login Team's job, not a telecaller's (Part 7) —
+ * `verifyDocument` now checks it, so tests that verify need this actor
+ * rather than `setup()`'s telecaller. */
+function loginExecutiveId(): string {
+  const id = getDb().users.find((u) => u.roles.includes("login_executive"))?.id;
+  if (!id) throw new Error("test setup: expected a seeded login executive");
+  return id;
 }
 
 function requirementsOf(caseId: string) {
@@ -163,6 +173,63 @@ describe("creating a case and opening it", () => {
     };
     expect(applicantOf(first.caseId)).toBe("First Applicant");
     expect(applicantOf(secondId)).toBe("Second Applicant");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Who brought the case in, versus who currently holds it (real-world-issues
+// milestone, Part 4). Two different facts, and reassignment must only ever
+// touch the second.
+// ---------------------------------------------------------------------------
+
+describe("case ownership and attribution", () => {
+  it("records who created the case, permanently — reassigning never changes it", () => {
+    const { caseId, userId } = setup();
+    const managerId = getDb().users.find((u) => u.roles.includes("manager"))?.id;
+    if (!managerId) throw new Error("test setup: expected a seeded manager");
+
+    expect(caseById(caseId).createdByUserId).toBe(userId);
+    expect(caseById(caseId).ownerUserId).toBe(userId);
+
+    const otherOwner = getDb().users.find((u) => u.id !== userId && u.isActive)?.id;
+    if (!otherOwner) throw new Error("test setup: expected a second active user");
+
+    const result = assignOwner(caseId, otherOwner, managerId);
+    expect(result.ok).toBe(true);
+
+    expect(caseById(caseId).ownerUserId).toBe(otherOwner);
+    // The originator survives the reassignment untouched.
+    expect(caseById(caseId).createdByUserId).toBe(userId);
+  });
+
+  it("refuses reassignment from an actor who holds no case.assign grant", () => {
+    const { caseId, userId } = setup();
+    const before = caseById(caseId).ownerUserId;
+    const otherOwner = getDb().users.find((u) => u.id !== userId && u.isActive)?.id;
+    if (!otherOwner) throw new Error("test setup: expected a second active user");
+
+    // The case's own creator — a telecaller — does not hold case.assign.
+    const result = assignOwner(caseId, otherOwner, userId);
+
+    expect(result.ok).toBe(false);
+    expect(caseById(caseId).ownerUserId).toBe(before);
+  });
+
+  it("records a case.assigned event when reassignment succeeds", () => {
+    const { caseId, userId } = setup();
+    const managerId = getDb().users.find((u) => u.roles.includes("manager"))?.id;
+    const otherOwner = getDb().users.find((u) => u.id !== userId && u.isActive)?.id;
+    if (!managerId || !otherOwner) {
+      throw new Error("test setup: expected a seeded manager and a second active user");
+    }
+
+    assignOwner(caseId, otherOwner, managerId);
+
+    const event = getDb().events.find(
+      (e) => e.caseId === caseId && e.eventType === "case.assigned",
+    );
+    expect(event).toBeDefined();
+    expect(event?.actorUserId).toBe(managerId);
   });
 });
 
@@ -283,7 +350,7 @@ describe("changing a fact changes what is asked for", () => {
     const requirementId = anyPendingRequirementId(caseId);
 
     await uploadDocument(requirementId, FILE, userId);
-    verifyDocument(requirementId, userId);
+    verifyDocument(requirementId, loginExecutiveId());
     expect(requirementsOf(caseId).find((r) => r.id === requirementId)?.status).toBe("verified");
 
     updateCaseFacts(caseId, { hasExistingObligations: true, isGstRegistered: true }, userId);
@@ -318,12 +385,13 @@ describe("the document workflow: upload, look at it, then confirm", () => {
     if (!document) throw new Error("expected the upload to have produced a document");
     expect(await storageAdapter.get(document.filePath)).toEqual(FILE.bytes);
 
-    const verified = verifyDocument(requirementId, userId, "PAN readable.");
+    const verifierId = loginExecutiveId();
+    const verified = verifyDocument(requirementId, verifierId, "PAN readable.");
     expect(verified.ok).toBe(true);
 
     expect(requirementsOf(caseId).find((r) => r.id === requirementId)?.status).toBe("verified");
     const confirmed = getDb().documents.find((d) => d.id === document.id);
-    expect(confirmed?.verifiedBy).toBe(userId);
+    expect(confirmed?.verifiedBy).toBe(verifierId);
     expect(confirmed?.verificationNotes).toBe("PAN readable.");
     // A human said what it is. There is no OCR, and the confirmed type is the
     // one a person stood behind.
@@ -399,7 +467,7 @@ describe("a document added for one case only", () => {
     await uploadDocument(custom.id, { ...FILE, name: "noc.png" }, userId);
     expect(requirementsOf(caseId).find((r) => r.id === custom.id)?.status).toBe("received");
 
-    verifyDocument(custom.id, userId);
+    verifyDocument(custom.id, loginExecutiveId());
     expect(requirementsOf(caseId).find((r) => r.id === custom.id)?.status).toBe("verified");
   });
 
@@ -456,9 +524,11 @@ describe("a file with mandatory documents outstanding", () => {
     const pending = requirementsOf(caseId).filter((r) => r.status === "pending");
 
     // Everything but one, verified properly.
+    const verifierId = loginExecutiveId();
     for (const requirement of pending.slice(1)) {
       await uploadDocument(requirement.id, FILE, userId);
-      verifyDocument(requirement.id, userId);
+      const verified = verifyDocument(requirement.id, verifierId);
+      if (!verified.ok) throw new Error(`test setup: verification unexpectedly refused — ${verified.message}`);
     }
 
     const progress = progressFor(caseId);

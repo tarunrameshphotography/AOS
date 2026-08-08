@@ -41,8 +41,10 @@
  *    that ask a gold-loan customer for two years of ITR are the single most
  *    common way a generic checklist embarrasses a branch.
  *  - Recurring documents are asked for in FINANCIAL YEARS, and lenders ask for
- *    two years of ITR and financials, one year of GST returns, and a rolling
- *    6–12 months of banking. Those counts are the trailing-year defaults here.
+ *    two years of personal ITR and financials, three years of business ITR
+ *    and GST returns (a two-point comparison is barely a trend; three makes
+ *    one), and a rolling 6–12 months of banking. Those counts are the
+ *    trailing-year defaults here.
  *
  * WHAT THE MILESTONE 9.1 AUDIT CHANGED, AND WHY
  *
@@ -88,9 +90,9 @@
  *     type to be set, and both start empty — so the newest business loan in
  *     the system had the emptiest checklist. Six rules keyed on the customer
  *     product itself close that gap; see the block below.
- *  3. GST RETURNS ARE ASKED FOR ACROSS TWO FINANCIAL YEARS, not one. Lenders
- *     read GSTR-3B to see whether turnover is growing, and one year shows no
- *     trend.
+ *  3. GST RETURNS AND BUSINESS ITR ARE ASKED FOR ACROSS THREE FINANCIAL YEARS,
+ *     not two. Lenders read GSTR-3B and the business ITR to see whether
+ *     turnover is growing, and two points barely show a trend — three do.
  *
  * HOW TO ADD A RULE: see Docs/Document Requirement Engine.md. Short version —
  * add a row here (or in the admin screen), name the document type, choose the
@@ -463,7 +465,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: INCOME_ROLES,
     partyKind: "person",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_true")],
     order: ORDER.income,
     notes:
@@ -735,7 +737,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    financialYears: 2,
+    financialYears: 3,
     order: ORDER.firm,
   }),
   rule({
@@ -792,7 +794,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [isTrue("party.is_gst_registered")],
     order: ORDER.firm,
     notes: "GSTR-3B and GSTR-1 for the last financial year — the turnover the NBFC prices off.",
@@ -819,7 +821,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: INCOME_ROLES,
     partyKind: "person",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [
       isTrue("case.is_gst_registered"),
       fact("case.has_borrower_firm", "is_false"),
@@ -870,7 +872,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["borrower_firm"],
     partyKind: "organisation",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [gstRequiredByProduct()],
     order: ORDER.firm,
     notes: "GSTR-3B and GSTR-1 for the last financial year — the turnover the NBFC prices off.",
@@ -900,7 +902,7 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["applicant"],
     partyKind: "person",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [gstRequiredByProduct(), fact("case.has_borrower_firm", "is_false")],
     order: ORDER.firm,
   }),
@@ -989,11 +991,11 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "party",
     partyRoles: ["applicant"],
     partyKind: "person",
-    financialYears: 2,
+    financialYears: 3,
     conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_false")],
     order: ORDER.business,
     notes:
-      "Two assessment years with computation. The business ITR rather than the personal one, " +
+      "Three assessment years with computation. The business ITR rather than the personal one, " +
       "which is what Amaze asks for and what the lender reads — on a proprietorship they are " +
       "the same filing, and `income_itr` stands down on a business loan so the checklist does " +
       "not name one document twice.",

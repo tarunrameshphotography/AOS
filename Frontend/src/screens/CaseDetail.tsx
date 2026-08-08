@@ -39,6 +39,7 @@ import {
   addFinancialYearRequirement,
   addNote,
   addParty,
+  assignOwner,
   changeLoanProduct,
   contactLabel,
   counterpartyOf,
@@ -57,6 +58,7 @@ import {
   snapshotOf,
   updateCaseFacts,
   updateCaseProperty,
+  updateOrganisation,
   updatePartyProfile,
   updateSubmissionStatus,
   uploadDocument,
@@ -88,10 +90,12 @@ import {
 } from "./document-status.js";
 import {
   bytes,
+  enteredCurrentStageAt,
   exactly,
   lakhs,
   maskedPan,
   money,
+  originatorName,
   ownerName,
   panOf,
   partyName,
@@ -366,6 +370,7 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
   const toast = useToast();
   const [lostOpen, setLostOpen] = useState(false);
   const [holdOpen, setHoldOpen] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
 
   const loanCase = db.cases.find((c) => c.id === caseId);
   if (!loanCase) return null;
@@ -417,7 +422,18 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
             </div>
             <p className="tnum mt-1 text-sm text-ink-500">
               {loanCase.caseNumber} · {productLabel(db, loanCase)} ·{" "}
-              {money(loanCase.requestedAmount)} · owner {ownerName(db, loanCase)}
+              {money(loanCase.requestedAmount)}
+            </p>
+            {/* "Owner" used to mean two different things at once — who
+                brought the case in, and who currently has it. Split so
+                management can actually answer "which telecaller sourced
+                this?" without it being confused with "who's holding it now?"
+                (Part 4). */}
+            <p className="mt-0.5 text-xs text-ink-500">
+              Originated by {originatorName(db, loanCase)} · Currently with{" "}
+              {ownerName(db, loanCase)}
+              {" · "}
+              {CASE_STAGE_LABELS[loanCase.stage]} since {when(enteredCurrentStageAt(db, loanCase))}
             </p>
             {loanCase.stage === "lost" && (
               <p className="mt-2 rounded bg-red-50 px-3 py-2 text-sm text-red-900">
@@ -470,6 +486,16 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
                   Mark lost
                 </Button>
               )}
+
+            {/* Who currently holds the case, changeable — the manager-only
+                move that makes "who processed it in Login" answerable at all
+                (Part 4). Reuses the existing assignOwner, wired in for the
+                first time. */}
+            {session.can("case.assign", "all") && (
+              <Button variant="ghost" onClick={() => setReassignOpen(true)}>
+                Reassign
+              </Button>
+            )}
           </div>
         </div>
 
@@ -509,7 +535,73 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
         onClose={() => setLostOpen(false)}
       />
       <HoldDialog open={holdOpen} caseId={caseId} onClose={() => setHoldOpen(false)} />
+      <ReassignDialog open={reassignOpen} caseId={caseId} onClose={() => setReassignOpen(false)} />
     </>
+  );
+}
+
+/**
+ * Hand the case to someone else — the manager-only move behind "Reassign"
+ * (Part 4). Writes through the already-existing `assignOwner`; this dialog
+ * is the first thing that ever calls it.
+ */
+function ReassignDialog({
+  open,
+  caseId,
+  onClose,
+}: {
+  open: boolean;
+  caseId: string;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  const [ownerUserId, setOwnerUserId] = useState("");
+
+  useEffect(() => {
+    if (open && loanCase) setOwnerUserId(loanCase.ownerUserId);
+  }, [open, loanCase]);
+
+  if (!loanCase) return null;
+
+  return (
+    <Modal open={open} title="Reassign this case" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          Changes who is currently responsible. It does not change who originated the case — that
+          stays on the record permanently.
+        </p>
+        <Field label="New owner">
+          <Select value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)}>
+            {db.users
+              .filter((user) => user.isActive)
+              .map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!ownerUserId}
+            onClick={() => {
+              const result = assignOwner(caseId, ownerUserId, session.user.id);
+              toast.show(result.ok ? "Reassigned" : (result.message ?? ""), result.ok ? "good" : "bad");
+              if (result.ok) onClose();
+            }}
+          >
+            Reassign
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -629,6 +721,7 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
   const [profileFor, setProfileFor] = useState<string | null>(null);
   const [propertyFor, setPropertyFor] = useState<string | null>(null);
   const [addPropertyOpen, setAddPropertyOpen] = useState(false);
+  const [editOrganisationFor, setEditOrganisationFor] = useState<string | null>(null);
 
   const parties = db.caseParties.filter((p) => p.caseId === caseId && !p.removedAt);
   const caseProperties = db.caseProperties.filter((p) => p.caseId === caseId);
@@ -743,6 +836,14 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
                         ? (panOf(person) ?? "")
                         : (maskedPan(person) ?? "")}
                     </span>
+                  )}
+                  {/* The business's own record — name, address, GST/Udyam
+                      (Part 3). Distinct from "Profile" below: this edits the
+                      shared organisation, not this case's view of it. */}
+                  {organisation && session.can("organisation.update", "all") && (
+                    <Button variant="ghost" onClick={() => setEditOrganisationFor(organisation.id)}>
+                      Edit business
+                    </Button>
                   )}
                   {/* How this party is underwritten ON THIS CASE — the facts
                       the Document Requirement Engine reads (Milestone 9). */}
@@ -898,6 +999,10 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
         onClose={() => setAddPropertyOpen(false)}
       />
       <EditPropertyDialog casePropertyId={propertyFor} onClose={() => setPropertyFor(null)} />
+      <EditOrganisationDialog
+        organisationId={editOrganisationFor}
+        onClose={() => setEditOrganisationFor(null)}
+      />
     </div>
   );
 }
@@ -1173,6 +1278,195 @@ function PartyProfileDialog({
   );
 }
 
+/**
+ * Correct a business's own record — name, address, and its GST/Udyam
+ * registration as the business reports it (Part 3).
+ *
+ * NOT the same thing as "Profile" above. `PartyProfileDialog` records how
+ * THIS CASE underwrites the organisation and never touches the shared row;
+ * this dialog writes through `updateOrganisation` and changes what every
+ * case involving this organisation shows. The GST/Udyam fields here are
+ * explicitly the business's OWN record, kept apart from the case-level GST
+ * question on "What this case is" above — the two are allowed to disagree,
+ * and this dialog says so rather than quietly overwriting one with the
+ * other.
+ */
+function EditOrganisationDialog({
+  organisationId,
+  onClose,
+}: {
+  organisationId: string | null;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+
+  const organisation = db.organisations.find((o) => o.id === organisationId);
+
+  const [canonicalName, setCanonicalName] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [city, setCity] = useState("");
+  const [addressLine, setAddressLine] = useState("");
+  const [locality, setLocality] = useState("");
+  const [pincode, setPincode] = useState("");
+  const [district, setDistrict] = useState("");
+  const [state, setState] = useState("");
+  const [constitutionId, setConstitutionId] = useState("");
+  const [gstRegistered, setGstRegistered] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [udyamRegistered, setUdyamRegistered] = useState("");
+  const [udyamNumber, setUdyamNumber] = useState("");
+
+  useEffect(() => {
+    if (!organisation) return;
+    setCanonicalName(organisation.canonicalName);
+    setIndustry(organisation.industry ?? "");
+    setCity(organisation.city ?? "");
+    setAddressLine(organisation.addressLine ?? "");
+    setLocality(organisation.locality ?? "");
+    setPincode(organisation.pincode ?? "");
+    setDistrict(organisation.district ?? "");
+    setState(organisation.state ?? "");
+    setConstitutionId(organisation.businessConstitutionId ?? "");
+    setGstRegistered(
+      organisation.isGstRegistered === undefined ? "" : String(organisation.isGstRegistered),
+    );
+    setGstin(organisation.gstin ?? "");
+    setUdyamRegistered(
+      organisation.udyamRegistered === undefined ? "" : String(organisation.udyamRegistered),
+    );
+    setUdyamNumber(organisation.udyamNumber ?? "");
+  }, [organisation]);
+
+  if (!organisation) return null;
+
+  const parseTri = (value: string): boolean | undefined =>
+    value === "" ? undefined : value === "true";
+
+  const save = (): void => {
+    const result = updateOrganisation(
+      organisation.id,
+      {
+        canonicalName,
+        industry,
+        city,
+        addressLine,
+        locality,
+        pincode,
+        district,
+        state,
+        ...(constitutionId ? { businessConstitutionId: constitutionId } : {}),
+        isGstRegistered: parseTri(gstRegistered),
+        gstin,
+        udyamRegistered: parseTri(udyamRegistered),
+        udyamNumber,
+      },
+      session.user.id,
+    );
+    if (!result.ok) {
+      toast.show(result.message ?? "", "bad");
+      return;
+    }
+    toast.show("Saved.");
+    onClose();
+  };
+
+  return (
+    <Modal open={organisationId !== null} title={`Edit ${organisation.canonicalName}`} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Business name">
+          <Input value={canonicalName} onChange={(event) => setCanonicalName(event.target.value)} />
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Industry">
+            <Input value={industry} onChange={(event) => setIndustry(event.target.value)} />
+          </Field>
+          <Field label="Constitution">
+            <Select value={constitutionId} onChange={(event) => setConstitutionId(event.target.value)}>
+              <option value="">—</option>
+              {db.businessConstitutions
+                .filter((type) => type.isActive)
+                .map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        </div>
+
+        <Field label="Address">
+          <Input
+            value={addressLine}
+            onChange={(event) => setAddressLine(event.target.value)}
+            placeholder="14 Mettupalayam Road"
+          />
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Locality">
+            <Input value={locality} onChange={(event) => setLocality(event.target.value)} />
+          </Field>
+          <Field label="City">
+            <Input value={city} onChange={(event) => setCity(event.target.value)} />
+          </Field>
+          <Field label="District">
+            <Input value={district} onChange={(event) => setDistrict(event.target.value)} />
+          </Field>
+          <Field label="State">
+            <Input value={state} onChange={(event) => setState(event.target.value)} />
+          </Field>
+          <Field label="PIN code">
+            <Input value={pincode} onChange={(event) => setPincode(event.target.value)} />
+          </Field>
+        </div>
+
+        <div className="border-t border-ink-100 pt-3">
+          <p className="text-xs font-medium text-ink-700">GST &amp; Udyam — on this business's record</p>
+          <p className="mt-0.5 text-xs text-ink-500">
+            This is the business's own record, not this case's answer — see the GST question under
+            "What this case is" above. The two are allowed to differ.
+          </p>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <Field label="GST registered?">
+              <Select value={gstRegistered} onChange={(event) => setGstRegistered(event.target.value)}>
+                <option value="">Not recorded</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </Select>
+            </Field>
+            <Field label="GSTIN">
+              <Input value={gstin} onChange={(event) => setGstin(event.target.value)} />
+            </Field>
+            <Field label="Udyam registered?">
+              <Select
+                value={udyamRegistered}
+                onChange={(event) => setUdyamRegistered(event.target.value)}
+              >
+                <option value="">Not recorded</option>
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </Select>
+            </Field>
+            <Field label="Udyam number">
+              <Input value={udyamNumber} onChange={(event) => setUdyamNumber(event.target.value)} />
+            </Field>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          <Button variant="primary" onClick={save}>
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function AddPartyDialog({
   open,
   caseId,
@@ -1440,20 +1734,35 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
     event.target.value = "";
     if (!file || !requirementId) return;
 
-    void file.arrayBuffer().then((buffer) => {
-      void uploadDocument(
-        requirementId,
-        {
-          name: file.name,
-          size: file.size,
-          bytes: new Uint8Array(buffer),
-          ...(file.type ? { contentType: file.type } : {}),
-        },
-        session.user.id,
-      ).then(() => {
-        toast.show(`${file.name} uploaded. It still needs a human to verify it.`);
+    void file
+      .arrayBuffer()
+      .then((buffer) =>
+        uploadDocument(
+          requirementId,
+          {
+            name: file.name,
+            size: file.size,
+            bytes: new Uint8Array(buffer),
+            ...(file.type ? { contentType: file.type } : {}),
+          },
+          session.user.id,
+        ),
+      )
+      .then((result) => {
+        if (result.ok) {
+          toast.show(`${file.name} uploaded. It still needs a human to verify it.`);
+        } else {
+          toast.show(result.message ?? "Upload failed.", "bad");
+        }
+      })
+      // storageAdapter.put talks to a real local server (Backend/storage-server.mjs)
+      // and rejects rather than returning ok:false when it cannot be reached at
+      // all — a dropped connection is a thrown error, not a business refusal. Both
+      // must reach the user: an upload that silently does nothing teaches nobody
+      // that anything went wrong (Part 2).
+      .catch((error: unknown) => {
+        toast.show(error instanceof Error ? error.message : "Upload failed.", "bad");
       });
-    });
   };
 
   /**

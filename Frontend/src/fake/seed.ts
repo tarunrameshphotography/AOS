@@ -101,6 +101,17 @@ export function buildSeed(): Database {
         { id: id("pid", 8), type: "phone", value: "+91 99404 71122", isPrimary: true, verificationSource: "self_declared" },
       ],
     },
+    {
+      id: id("per", 95),
+      fullName: "Rajendran M",
+      dateOfBirth: "1979-06-14",
+      locality: "Ganapathy",
+      city: "Coimbatore",
+      aliases: [],
+      identifiers: [
+        { id: id("pid", 10), type: "phone", value: "+91 98430 27651", isPrimary: true, verificationSource: "self_declared" },
+      ],
+    },
     // Staff
     { id: id("per", 90), fullName: "Priya Raman", aliases: [], identifiers: [] },
     { id: id("per", 91), fullName: "Karthik V", aliases: [], identifiers: [] },
@@ -128,6 +139,9 @@ export function buildSeed(): Database {
     { id: id("org", 20), canonicalName: "ABC Textiles Pvt Ltd", roles: ["employer"], industry: "Textiles", city: "Madurai", aliases: ["ABC Textiles"] },
     { id: id("org", 21), canonicalName: "Meenakshi Mission Hospital", roles: ["employer"], industry: "Healthcare", city: "Madurai", aliases: [] },
     { id: id("org", 22), canonicalName: "Sri Lakshmi Traders", roles: ["employer", "borrower"], industry: "Wholesale", city: "Madurai", aliases: [] },
+    // Case 9's firm — a GST-registered proprietorship taking a Machinery and
+    // Equipment Loan (Part 1: the ₹65L checklist a telecaller found empty).
+    { id: id("org", 24), canonicalName: "Kovai Precision Engineering", roles: ["employer", "borrower"], industry: "Engineering", city: "Coimbatore", businessConstitutionId: id("bct", 1), aliases: [] },
     { id: id("org", 23), canonicalName: "Vaigai Constructions", roles: ["builder", "developer"], industry: "Construction", city: "Madurai", aliases: [] },
   ];
 
@@ -136,6 +150,7 @@ export function buildSeed(): Database {
     { id: id("emp", 2), personId: id("per", 2), organisationId: id("org", 21), designation: "Staff Nurse", monthlyIncome: 32000, employmentType: "salaried", isCurrent: true },
     { id: id("emp", 3), personId: id("per", 4), organisationId: id("org", 22), designation: "Proprietor", monthlyIncome: 145000, employmentType: "business_owner", isCurrent: true },
     { id: id("emp", 4), personId: id("per", 5), organisationId: id("org", 20), designation: "Accounts Executive", monthlyIncome: 27000, employmentType: "salaried", isCurrent: true },
+    { id: id("emp", 5), personId: id("per", 95), organisationId: id("org", 24), designation: "Proprietor", monthlyIncome: 210000, employmentType: "business_owner", isCurrent: true },
   ];
 
   const properties: Database["properties"] = [
@@ -421,18 +436,18 @@ export function buildSeed(): Database {
     [13, "hl_nri", "home_loan", "NRI Home Loan", "NRI", "immovable_property", "mandatory", "not_applicable", "nri_individual", "salaried,self_employed", "", 60, 300, 1000000, 100000000, "Home loan to a non-resident Indian. Same security, different documentation — passport and visa, overseas income proof, a resident power of attorney holder.", "NRI", "Passport, Visa, Overseas Income Proof, NRE/NRO Bank Statement (6 Months), Power of Attorney, Property Documents"],
     [14, "hl_affordable", "home_loan", "Affordable Housing Loan", "Affordable Housing", "immovable_property", "mandatory", "optional", "resident_individual", "salaried,self_employed,business_owner", "", 60, 240, 200000, 5000000, "Small-ticket home loan for the informal-income segment, the space affordable housing finance companies specialise in.", "Salaried Employee (Informal Income), Self-Employed with modest income", "PAN, Aadhaar, Income Proof or Self-Declaration, Bank Statement (6 Months), Property Documents"],
 
-    [6, "bl_working_capital", "business_loan", "Working Capital Facility (Cash Credit)", "Working Capital", "stock_book_debts", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 500000, 100000000, "A revolving limit against stock and receivables, renewed annually rather than repaid in EMIs. The standard facility for Coimbatore's pump, foundry and textile units financing raw material and work-in-progress.", "MSME Manufacturer, Textile Unit", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Stock Statement, Financial Statements"],
-    [15, "bl_overdraft", "business_loan", "Business Overdraft", "Overdraft", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 200000, 50000000, "A drawing limit on the current account, secured by property or deposits. Interest on the drawn balance only.", "MSME Manufacturer, Retail Shop", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Property Documents"],
-    [7, "bl_term_loan", "business_loan", "Business Term Loan", "Term Loan", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 120, 500000, 100000000, "A fixed-tenure loan repaid in EMIs, for a defined business purpose.", "MSME Manufacturer, Textile Unit, Retail Shop", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Project Report, Property Documents"],
-    [16, "bl_unsecured", "business_loan", "Unsecured Business Loan", "Unsecured", "unsecured", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited", 12, 60, 100000, 7500000, "Clean business lending priced against banking turnover and GST returns. The NBFC segment's core offering.", "Retail Shop, Trading Firm, Small Business Owner", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months)"],
-    [17, "bl_machinery", "business_loan", "Machinery and Equipment Loan", "Machinery", "plant_machinery", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 12, 84, 300000, 50000000, "Finance for plant, machinery or equipment, secured by the asset being financed. Common in Coimbatore's engineering and textile units.", "MSME Manufacturer, Textile Unit, Engineering Workshop", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Machinery Quotation, Udyam Registration"],
-    [18, "bl_msme_cgtmse", "business_loan", "MSME Term Loan (CGTMSE-backed)", "MSME CGTMSE", "guarantee_backed", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 12, 84, 100000, 20000000, "Collateral-free term finance to a registered MSME under the CGTMSE guarantee scheme. Needs Udyam registration. Common among Coimbatore's smaller engineering and job-work units taking their first formal credit line.", "MSME Manufacturer, Textile Unit", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Udyam Registration"],
+    [6, "bl_working_capital", "business_loan", "Working Capital Facility (Cash Credit)", "Working Capital", "stock_book_debts", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 500000, 100000000, "A revolving limit against stock and receivables, renewed annually rather than repaid in EMIs. The standard facility for Coimbatore's pump, foundry and textile units financing raw material and work-in-progress.", "MSME Manufacturer, Textile Unit", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Stock Statement, Financial Statements"],
+    [15, "bl_overdraft", "business_loan", "Business Overdraft", "Overdraft", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 12, 200000, 50000000, "A drawing limit on the current account, secured by property or deposits. Interest on the drawn balance only.", "MSME Manufacturer, Retail Shop", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Property Documents"],
+    [7, "bl_term_loan", "business_loan", "Business Term Loan", "Term Loan", "immovable_property", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 12, 120, 500000, 100000000, "A fixed-tenure loan repaid in EMIs, for a defined business purpose.", "MSME Manufacturer, Textile Unit, Retail Shop", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Project Report, Property Documents"],
+    [16, "bl_unsecured", "business_loan", "Unsecured Business Loan", "Unsecured", "unsecured", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited", 12, 60, 100000, 7500000, "Clean business lending priced against banking turnover and GST returns. The NBFC segment's core offering.", "Retail Shop, Trading Firm, Small Business Owner", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months)"],
+    [17, "bl_machinery", "business_loan", "Machinery and Equipment Loan", "Machinery", "plant_machinery", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 12, 84, 300000, 50000000, "Finance for plant, machinery or equipment, secured by the asset being financed. Common in Coimbatore's engineering and textile units.", "MSME Manufacturer, Textile Unit, Engineering Workshop", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Machinery Quotation, Udyam Registration"],
+    [18, "bl_msme_cgtmse", "business_loan", "MSME Term Loan (CGTMSE-backed)", "MSME CGTMSE", "guarantee_backed", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 12, 84, 100000, 20000000, "Collateral-free term finance to a registered MSME under the CGTMSE guarantee scheme. Needs Udyam registration. Common among Coimbatore's smaller engineering and job-work units taking their first formal credit line.", "MSME Manufacturer, Textile Unit", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Udyam Registration"],
     [19, "bl_mudra", "business_loan", "Mudra Loan (PMMY)", "Mudra", "guarantee_backed", "not_applicable", "optional", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,huf", 12, 60, 10000, 2000000, "Micro-enterprise finance under the Pradhan Mantri Mudra Yojana, in the Shishu, Kishore, Tarun and Tarun Plus tiers.", "Micro Enterprise, Retail Shop, Small Trader", "PAN, Aadhaar, Business Proof, Bank Statement (6 Months)"],
     [20, "bl_bill_discounting", "business_loan", "Bill and Invoice Discounting", "Bill Discounting", "stock_book_debts", "not_applicable", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 1, 12, 500000, 50000000, "Advance against accepted invoices or bills of exchange, repaid when the buyer pays.", "MSME Manufacturer, Trading Firm supplying larger buyers", "PAN, Aadhaar, GST, Invoices/Bills, Buyer Acceptance, Bank Statement (6 Months)"],
-    [21, "bl_non_fund_based", "business_loan", "Bank Guarantee and Letter of Credit", "Non-Fund Based", "guarantee_backed", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 1, 36, 100000, 50000000, "Non-fund-based limits. No money moves unless the instrument is invoked, but the limit is assessed like any other exposure.", "MSME Manufacturer, Contractor, Trading Firm", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Contract or Tender Document"],
+    [21, "bl_non_fund_based", "business_loan", "Bank Guarantee and Letter of Credit", "Non-Fund Based", "guarantee_backed", "optional", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited", 1, 36, 100000, 50000000, "Non-fund-based limits. No money moves unless the instrument is invoked, but the limit is assessed like any other exposure.", "MSME Manufacturer, Contractor, Trading Firm", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Contract or Tender Document"],
 
     [8, "lap", "lap", "Loan Against Property — Residential", "Loan Against Property", "immovable_property", "mandatory", "optional", "resident_individual,nri_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 36, 240, 500000, 100000000, "Mortgage of a residential property the borrower already owns, for a declared end use.", "Salaried Employee, MSME Manufacturer, Retail Shop owner", "PAN, Aadhaar, Income Proof or GST/ITR, Bank Statement (12 Months), Property Documents"],
-    [22, "lap_commercial", "lap", "Loan Against Property — Commercial", "Commercial Property", "immovable_property", "mandatory", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 36, 180, 500000, 100000000, "Mortgage of a shop, office, godown or industrial unit. Lower funding ratio and tighter valuation than residential LAP. Frequently taken against a factory shed or godown by a Coimbatore engineering or textile business raising working-capital margin.", "MSME Manufacturer, Textile Unit, Trading Firm", "PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months), Property Documents"],
+    [22, "lap_commercial", "lap", "Loan Against Property — Commercial", "Commercial Property", "immovable_property", "mandatory", "mandatory", "resident_individual,non_individual", "self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 36, 180, 500000, 100000000, "Mortgage of a shop, office, godown or industrial unit. Lower funding ratio and tighter valuation than residential LAP. Frequently taken against a factory shed or godown by a Coimbatore engineering or textile business raising working-capital margin.", "MSME Manufacturer, Textile Unit, Trading Firm", "PAN, Aadhaar, GST, ITR (3 FY), Bank Statement (12 Months), Property Documents"],
     [23, "lap_lrd", "lap", "Lease Rental Discounting", "Lease Rental Discounting", "immovable_property", "mandatory", "optional", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,public_limited,huf,trust_society", 36, 180, 2000000, 200000000, "Lending against rent receivable under a registered lease, repaid from the rent itself. Assessed on the tenant's covenant, not the landlord's income.", "Property Owner with a leased commercial property", "PAN, Aadhaar, Registered Lease Deed, Tenant KYC, Bank Statement (12 Months), Property Documents"],
     [24, "lap_balance_transfer", "lap", "LAP Balance Transfer and Top-up", "Balance Transfer", "immovable_property", "mandatory", "optional", "resident_individual,non_individual", "salaried,self_employed,business_owner", "proprietorship,partnership,llp,private_limited,huf", 36, 240, 500000, 100000000, "Takeover of an existing loan against property, usually with additional lending on the same security.", "Existing LAP Customer, MSME Manufacturer", "PAN, Aadhaar, Existing Loan Statement, Foreclosure Letter, Bank Statement (12 Months), Property Documents"],
 
@@ -941,6 +956,17 @@ export function buildSeed(): Database {
       stage: "disbursed", ownerUserId: id("usr", 2), source: "Referral",
       isOnHold: false, isInvoiceRaised: false, tags: [], createdAt: daysAgo(140),
     },
+    {
+      id: id("cas", 9), caseNumber: num(48), loanProductId: id("lpr", 17), requestedAmount: 6500000,
+      stage: "documents_pending", ownerUserId: id("usr", 2), source: "Referral",
+      // A GST-registered proprietorship taking a Machinery and Equipment Loan —
+      // the ₹65L scenario a real telecaller reported as producing an
+      // "obviously incomplete" checklist. It was not incomplete; the GST
+      // returns and business ITR rules were simply asking for two trailing
+      // years where the market norm is three (Part 1 of this milestone).
+      isGstRegistered: true,
+      isOnHold: false, isInvoiceRaised: false, tags: [], createdAt: daysAgo(6),
+    },
   ];
 
   const caseParties: Database["caseParties"] = [
@@ -958,6 +984,9 @@ export function buildSeed(): Database {
     { id: id("cpt", 9), caseId: id("cas", 6), personId: id("per", 4), role: "applicant", isPrimary: true },
     { id: id("cpt", 10), caseId: id("cas", 7), personId: id("per", 1), role: "applicant", isPrimary: true },
     { id: id("cpt", 11), caseId: id("cas", 8), personId: id("per", 1), role: "applicant", isPrimary: true },
+    // 9 — Machinery and Equipment Loan: proprietor plus the firm being financed
+    { id: id("cpt", 12), caseId: id("cas", 9), personId: id("per", 95), role: "applicant", isPrimary: true },
+    { id: id("cpt", 13), caseId: id("cas", 9), organisationId: id("org", 24), role: "borrower_firm", isPrimary: false },
   ];
 
   const caseProperties: Database["caseProperties"] = [

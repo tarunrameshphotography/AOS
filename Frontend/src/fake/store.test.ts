@@ -37,16 +37,23 @@ vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() 
 
 const {
   addCustomRequirement,
+  assignOwner,
   counterpartyOf,
   createCase,
   createSubmission,
   getDb,
+  moveStage,
   recipientsOf,
+  rejectDocument,
   removeCustomRequirement,
   resetDatabase,
   updateBranch,
   updateCaseFacts,
+  updateOrganisation,
+  updatePerson,
+  updatePersonIdentifiers,
   uploadDocument,
+  verifyDocument,
 } = await import("./store.js");
 const { storageAdapter } = await import("./storage.js");
 
@@ -258,6 +265,92 @@ describe("uploadDocument — automatic organisation (Issue #13)", () => {
     const secondBytes = await storageAdapter.get(secondDocument.filePath);
     expect([...secondBytes]).toEqual([2, 2, 2]);
   });
+
+  /**
+   * Upload → View → Verify → Reject → re-upload → Verify again (Part 2 of
+   * the real-world-issues milestone). A rejected document is not deleted and
+   * not silently re-verified over — the next upload supersedes it exactly as
+   * any other replacement does (BR-031), and the rejection stays readable in
+   * the superseded document's own history.
+   */
+  it("re-verifies cleanly after a rejection, without losing the rejected version", async () => {
+    resetDatabase();
+    const db = getDb();
+    // Upload is a telecaller's job; verify and reject are the Login Team's
+    // (Part 7) — two different actors, matching who actually holds each
+    // grant.
+    const uploaderId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    const verifierId = db.users.find((u) => u.roles.includes("login_executive"))?.id;
+    if (!uploaderId || !verifierId) {
+      throw new Error("test setup: expected a seeded telecaller and login executive");
+    }
+
+    const requirement = db.requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+
+    const uploaded = await uploadDocument(
+      requirement.id,
+      { name: "blurry.jpg", size: 3, bytes: new Uint8Array([9, 9, 9]) },
+      uploaderId,
+    );
+    expect(uploaded.ok).toBe(true);
+
+    const afterUpload = getDb();
+    const receivedRequirement = afterUpload.requirements.find((r) => r.id === requirement.id);
+    const firstDocument = afterUpload.documents.find(
+      (d) => d.id === receivedRequirement?.satisfiedByDocumentId,
+    );
+    if (!firstDocument) throw new Error("upload did not produce a document");
+    expect(receivedRequirement?.status).toBe("received");
+
+    const rejected = rejectDocument(requirement.id, "Blurry — asked customer to re-upload", verifierId);
+    expect(rejected.ok).toBe(true);
+
+    const afterReject = getDb();
+    const rejectedRequirement = afterReject.requirements.find((r) => r.id === requirement.id);
+    const rejectedDocument = afterReject.documents.find((d) => d.id === firstDocument.id);
+    expect(rejectedRequirement?.status).toBe("rejected");
+    // The rejected document is kept, unmodified except for its rejection
+    // fields — never deleted, never silently marked verified.
+    expect(rejectedDocument?.rejectedAt).toBeDefined();
+    expect(rejectedDocument?.rejectionReason).toBe("Blurry — asked customer to re-upload");
+    expect(rejectedDocument?.verifiedAt).toBeUndefined();
+
+    const reuploaded = await uploadDocument(
+      requirement.id,
+      { name: "clear.jpg", size: 3, bytes: new Uint8Array([8, 8, 8]) },
+      uploaderId,
+    );
+    expect(reuploaded.ok).toBe(true);
+
+    const afterReupload = getDb();
+    const receivedAgain = afterReupload.requirements.find((r) => r.id === requirement.id);
+    const secondDocument = afterReupload.documents.find(
+      (d) => d.id === receivedAgain?.satisfiedByDocumentId,
+    );
+    if (!secondDocument) throw new Error("re-upload did not produce a document");
+
+    // The re-upload is a new version superseding the rejected one — not an
+    // overwrite of it and not a second attempt at the same document row.
+    expect(receivedAgain?.status).toBe("received");
+    expect(secondDocument.version).toBe(2);
+    expect(secondDocument.supersedesDocumentId).toBe(firstDocument.id);
+    expect(afterReupload.documents.some((d) => d.id === firstDocument.id)).toBe(true);
+
+    const verifiedAgain = verifyDocument(requirement.id, verifierId, "Clear this time.");
+    expect(verifiedAgain.ok).toBe(true);
+
+    const finalState = getDb();
+    const finalRequirement = finalState.requirements.find((r) => r.id === requirement.id);
+    const finalDocument = finalState.documents.find((d) => d.id === secondDocument.id);
+    expect(finalRequirement?.status).toBe("verified");
+    expect(finalDocument?.verifiedBy).toBe(verifierId);
+
+    // The rejected v1 is still there, untouched by the later verification.
+    const stillRejected = finalState.documents.find((d) => d.id === firstDocument.id);
+    expect(stillRejected?.rejectionReason).toBe("Blurry — asked customer to re-upload");
+    expect(stillRejected?.verifiedAt).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -289,6 +382,14 @@ describe("adding a bank to a case", () => {
     return { branch, institution };
   };
 
+  /** Sending a file to a bank is the Login Team's job, not a telecaller's
+   * (Part 7) — createSubmission now checks it. */
+  const loginExecutiveId = (): string => {
+    const id = getDb().users.find((u) => u.roles.includes("login_executive"))?.id;
+    if (!id) throw new Error("test setup: expected a seeded login executive");
+    return id;
+  };
+
   it("records the bankers it was addressed to, in order, with one primary", () => {
     resetDatabase();
     const { branch } = someBranch();
@@ -301,7 +402,7 @@ describe("adding a bank to a case", () => {
           { email: "Manager@Bank.com", name: "Suresh K", designation: "Branch Manager", isPrimary: true },
         ],
       },
-      "usr_1",
+      loginExecutiveId(),
     );
     expect(result.ok).toBe(true);
 
@@ -327,7 +428,7 @@ describe("adding a bank to a case", () => {
     const before = getDb().submissions.length;
     const result = createSubmission(
       { caseId: firstCase().id, branchOrganisationId: branch.id, recipients: [] },
-      "usr_1",
+      loginExecutiveId(),
     );
     expect(result.ok).toBe(false);
     expect(result.message).toContain("at least one");
@@ -344,7 +445,7 @@ describe("adding a bank to a case", () => {
         branchOrganisationId: branch.id,
         recipients: [{ email: "Suresh Kumar" }],
       },
-      "usr_1",
+      loginExecutiveId(),
     );
     expect(result.ok).toBe(false);
     expect(getDb().submissionRecipients).toEqual([]);
@@ -363,7 +464,7 @@ describe("adding a bank to a case", () => {
         branchOrganisationId: branch.id,
         recipients: [{ email: "rm@bank.com" }],
       },
-      "usr_1",
+      loginExecutiveId(),
     );
 
     const submission = getDb().submissions.at(-1);
@@ -546,5 +647,341 @@ describe("uploading against a requirement whose document type belongs to a busin
     expect(stored?.ownerKind).toBe("person");
     expect(stored?.personId).toBeDefined();
     expect(stored?.filePath).toContain("balance_sheet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Customer profile — correcting the shared Person/Organisation record itself,
+// not a case's view of it (real-world-issues milestone, Part 3).
+// ---------------------------------------------------------------------------
+
+describe("updatePerson — the shared record, not a case's override of it", () => {
+  function seededPersonAndTelecaller(): { personId: string; telecallerId: string } {
+    resetDatabase();
+    const db = getDb();
+    const personId = db.people[0]?.id;
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!personId || !telecallerId) {
+      throw new Error("test setup: expected a seeded person and telecaller");
+    }
+    return { personId, telecallerId };
+  }
+
+  it("corrects name, date of birth and address, and records why", () => {
+    const { personId, telecallerId } = seededPersonAndTelecaller();
+
+    const result = updatePerson(
+      personId,
+      { dateOfBirth: "1990-05-14", addressLine: "12 Mill Road", pincode: "641001" },
+      telecallerId,
+    );
+
+    expect(result.ok).toBe(true);
+    const person = getDb().people.find((p) => p.id === personId);
+    expect(person?.dateOfBirth).toBe("1990-05-14");
+    expect(person?.addressLine).toBe("12 Mill Road");
+    expect(person?.pincode).toBe("641001");
+
+    const event = getDb().events.find(
+      (e) => e.entityType === "person" && e.entityId === personId && e.eventType === "person.updated",
+    );
+    expect(event?.summary).toContain("Date of birth");
+  });
+
+  it("changes the person everywhere they appear, not a case-specific copy", () => {
+    const { personId, telecallerId } = seededPersonAndTelecaller();
+    updatePerson(personId, { city: "Salem" }, telecallerId);
+    // Re-reading from scratch, not from a case — this is the shared record.
+    expect(getDb().people.find((p) => p.id === personId)?.city).toBe("Salem");
+  });
+
+  it("is a no-op, not an error, when nothing actually changed", () => {
+    const { personId, telecallerId } = seededPersonAndTelecaller();
+    const before = getDb().events.length;
+    const result = updatePerson(personId, {}, telecallerId);
+    expect(result.ok).toBe(true);
+    expect(getDb().events.length).toBe(before);
+  });
+
+  it("refuses an actor who holds no person.update grant", () => {
+    resetDatabase();
+    const db = getDb();
+    const personId = db.people[0]?.id;
+    const financeUserId = db.users.find((u) => u.roles.includes("finance"))?.id;
+    if (!personId || !financeUserId) {
+      throw new Error("test setup: expected a seeded person and a finance-roled user");
+    }
+
+    const result = updatePerson(personId, { city: "Salem" }, financeUserId);
+    expect(result.ok).toBe(false);
+    expect(getDb().people.find((p) => p.id === personId)?.city).not.toBe("Salem");
+  });
+});
+
+describe("updatePersonIdentifiers — an alternate phone is a second identifier, not a new field", () => {
+  it("adds a second phone number without disturbing the first", () => {
+    resetDatabase();
+    const db = getDb();
+    const person = db.people.find((p) => p.identifiers.some((i) => i.type === "phone"));
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!person || !telecallerId) {
+      throw new Error("test setup: expected a seeded person with a phone and a telecaller");
+    }
+    const originalPrimary = person.identifiers.find((i) => i.type === "phone" && i.isPrimary);
+    if (!originalPrimary) throw new Error("test setup: expected a primary phone");
+
+    const result = updatePersonIdentifiers(
+      person.id,
+      { type: "phone", value: "+91 90000 11111", isPrimary: false },
+      telecallerId,
+    );
+    expect(result.ok).toBe(true);
+
+    const identifiers = getDb().people.find((p) => p.id === person.id)?.identifiers ?? [];
+    const phones = identifiers.filter((i) => i.type === "phone");
+    expect(phones).toHaveLength(2);
+    // The original primary is untouched — adding a non-primary number must
+    // not demote it.
+    expect(identifiers.find((i) => i.id === originalPrimary.id)?.isPrimary).toBe(true);
+  });
+
+  it("demotes the previous primary when a new one is marked primary", () => {
+    resetDatabase();
+    const db = getDb();
+    const person = db.people.find((p) => p.identifiers.some((i) => i.type === "phone"));
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!person || !telecallerId) {
+      throw new Error("test setup: expected a seeded person with a phone and a telecaller");
+    }
+    const originalPrimary = person.identifiers.find((i) => i.type === "phone" && i.isPrimary);
+    if (!originalPrimary) throw new Error("test setup: expected a primary phone");
+
+    updatePersonIdentifiers(
+      person.id,
+      { type: "phone", value: "+91 90000 22222", isPrimary: true },
+      telecallerId,
+    );
+
+    const identifiers = getDb().people.find((p) => p.id === person.id)?.identifiers ?? [];
+    const primaries = identifiers.filter((i) => i.type === "phone" && i.isPrimary);
+    // Exactly one primary phone survives, and it is the new one.
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0]?.value).toBe("+91 90000 22222");
+    expect(identifiers.find((i) => i.id === originalPrimary.id)?.isPrimary).toBe(false);
+  });
+
+  it("edits an existing identifier's value in place rather than adding a duplicate", () => {
+    resetDatabase();
+    const db = getDb();
+    const person = db.people.find((p) => p.identifiers.some((i) => i.type === "phone"));
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!person || !telecallerId) {
+      throw new Error("test setup: expected a seeded person with a phone and a telecaller");
+    }
+    const existing = person.identifiers.find((i) => i.type === "phone");
+    if (!existing) throw new Error("test setup: expected a phone identifier");
+    const before = person.identifiers.length;
+
+    updatePersonIdentifiers(
+      person.id,
+      { id: existing.id, type: "phone", value: "+91 90000 33333", isPrimary: existing.isPrimary },
+      telecallerId,
+    );
+
+    const identifiers = getDb().people.find((p) => p.id === person.id)?.identifiers ?? [];
+    expect(identifiers).toHaveLength(before);
+    expect(identifiers.find((i) => i.id === existing.id)?.value).toBe("+91 90000 33333");
+  });
+});
+
+describe("updateOrganisation — the business's own record, and its GST/Udyam facts", () => {
+  function seededOrgAndTelecaller(): { organisationId: string; telecallerId: string } {
+    resetDatabase();
+    const db = getDb();
+    const organisationId = db.organisations[0]?.id;
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!organisationId || !telecallerId) {
+      throw new Error("test setup: expected a seeded organisation and telecaller");
+    }
+    return { organisationId, telecallerId };
+  }
+
+  it("records the business's own address and GST/Udyam facts", () => {
+    const { organisationId, telecallerId } = seededOrgAndTelecaller();
+
+    const result = updateOrganisation(
+      organisationId,
+      {
+        addressLine: "14 Mettupalayam Road",
+        city: "Coimbatore",
+        isGstRegistered: true,
+        gstin: "33ABCDE1234F1Z5",
+        udyamRegistered: true,
+        udyamNumber: "UDYAM-TN-01-1234567",
+      },
+      telecallerId,
+    );
+
+    expect(result.ok).toBe(true);
+    const organisation = getDb().organisations.find((o) => o.id === organisationId);
+    expect(organisation?.addressLine).toBe("14 Mettupalayam Road");
+    expect(organisation?.isGstRegistered).toBe(true);
+    expect(organisation?.gstin).toBe("33ABCDE1234F1Z5");
+    expect(organisation?.udyamRegistered).toBe(true);
+    expect(organisation?.udyamNumber).toBe("UDYAM-TN-01-1234567");
+  });
+
+  it("can record false as a real answer, not just true", () => {
+    const { organisationId, telecallerId } = seededOrgAndTelecaller();
+    updateOrganisation(organisationId, { isGstRegistered: true }, telecallerId);
+    updateOrganisation(organisationId, { isGstRegistered: false }, telecallerId);
+    expect(getDb().organisations.find((o) => o.id === organisationId)?.isGstRegistered).toBe(false);
+  });
+
+  it("never touches loan_case.isGstRegistered on any case — the engine's fact is untouched", () => {
+    const { organisationId, telecallerId } = seededOrgAndTelecaller();
+    const casesBefore = JSON.stringify(getDb().cases);
+
+    updateOrganisation(organisationId, { isGstRegistered: true, udyamRegistered: true }, telecallerId);
+
+    // The organisation's profile fact changed; no case's own GST fact — the
+    // one the Document Requirement Engine actually reads — moved at all.
+    expect(JSON.stringify(getDb().cases)).toBe(casesBefore);
+  });
+
+  it("refuses an actor who holds no organisation.update grant", () => {
+    resetDatabase();
+    const db = getDb();
+    const organisationId = db.organisations[0]?.id;
+    const financeUserId = db.users.find((u) => u.roles.includes("finance"))?.id;
+    if (!organisationId || !financeUserId) {
+      throw new Error("test setup: expected a seeded organisation and a finance-roled user");
+    }
+
+    const result = updateOrganisation(organisationId, { isGstRegistered: true }, financeUserId);
+    expect(result.ok).toBe(false);
+    expect(getDb().organisations.find((o) => o.id === organisationId)?.isGstRegistered).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Authorization at the store boundary (real-world-issues milestone, Part 7).
+//
+// "Hiding 'Send to Bank' from a telecaller is insufficient. The underlying
+// operation must reject a telecaller attempting to send a case to a bank."
+// These call the mutations directly — no component, no hidden button — the
+// same way a determined caller or a future API client would.
+// ---------------------------------------------------------------------------
+
+describe("authorization at the store boundary", () => {
+  function caseOwnedByTelecaller(): { caseId: string; telecallerId: string } {
+    resetDatabase();
+    const db = getDb();
+    const productId = db.loanProducts[0]?.id;
+    const telecallerId = db.users.find((u) => u.roles.includes("telecaller"))?.id;
+    if (!productId || !telecallerId) {
+      throw new Error("test setup: expected a seeded product and telecaller");
+    }
+    return {
+      caseId: createCase({ newApplicantName: "Test Applicant", loanProductId: productId }, telecallerId),
+      telecallerId,
+    };
+  }
+
+  function caseById(db: ReturnType<typeof getDb>, caseId: string) {
+    const loanCase = db.cases.find((c) => c.id === caseId);
+    if (!loanCase) throw new Error(`expected case ${caseId} to exist`);
+    return loanCase;
+  }
+
+  it("rejects a telecaller sending a case to a bank — the milestone's own example", () => {
+    const { caseId, telecallerId } = caseOwnedByTelecaller();
+    const db = getDb();
+    const branch = db.organisations.find(
+      (org) => org.roles.includes("branch") && org.parentOrganisationId !== undefined,
+    );
+    if (!branch) throw new Error("test setup: expected a seeded branch");
+
+    const result = createSubmission(
+      { caseId, branchOrganisationId: branch.id, recipients: [{ email: "rm@bank.com" }] },
+      telecallerId,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("submission.create");
+    expect(getDb().submissions.some((s) => s.caseId === caseId)).toBe(false);
+  });
+
+  it("lets the Login Team send the same case to the same bank", () => {
+    const { caseId } = caseOwnedByTelecaller();
+    const db = getDb();
+    const branch = db.organisations.find(
+      (org) => org.roles.includes("branch") && org.parentOrganisationId !== undefined,
+    );
+    const loginExecutiveId = db.users.find((u) => u.roles.includes("login_executive"))?.id;
+    if (!branch || !loginExecutiveId) {
+      throw new Error("test setup: expected a seeded branch and login executive");
+    }
+
+    const result = createSubmission(
+      { caseId, branchOrganisationId: branch.id, recipients: [{ email: "rm@bank.com" }] },
+      loginExecutiveId,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(getDb().submissions.some((s) => s.caseId === caseId)).toBe(true);
+  });
+
+  it("rejects moving a case for an actor with no case.update grant at any scope", () => {
+    const { caseId } = caseOwnedByTelecaller();
+    const financeUserId = getDb().users.find((u) => u.roles.includes("finance"))?.id;
+    if (!financeUserId) throw new Error("test setup: expected a seeded finance user");
+
+    const result = moveStage(caseId, "contacted", financeUserId);
+
+    expect(result.ok).toBe(false);
+    expect(caseById(getDb(), caseId).stage).toBe("new");
+  });
+
+  it("rejects uploading for an actor with no document.upload grant", async () => {
+    const { caseId } = caseOwnedByTelecaller();
+    const requirement = getDb().requirements.find(
+      (r) => r.caseId === caseId && r.status === "pending",
+    );
+    const financeUserId = getDb().users.find((u) => u.roles.includes("finance"))?.id;
+    if (!requirement || !financeUserId) {
+      throw new Error("test setup: expected a pending requirement and a seeded finance user");
+    }
+
+    const result = await uploadDocument(
+      requirement.id,
+      { name: "x.pdf", size: 3, bytes: new Uint8Array([1, 2, 3]) },
+      financeUserId,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(getDb().requirements.find((r) => r.id === requirement.id)?.status).toBe("pending");
+  });
+
+  it("rejects verifying for the uploader themselves, when they hold no document.verify grant", async () => {
+    const { caseId, telecallerId } = caseOwnedByTelecaller();
+    const requirement = getDb().requirements.find(
+      (r) => r.caseId === caseId && r.status === "pending",
+    );
+    if (!requirement) throw new Error("test setup: expected a pending requirement");
+
+    await uploadDocument(
+      requirement.id,
+      { name: "x.pdf", size: 3, bytes: new Uint8Array([1, 2, 3]) },
+      telecallerId,
+    );
+    expect(getDb().requirements.find((r) => r.id === requirement.id)?.status).toBe("received");
+
+    // The same telecaller who uploaded it cannot also verify it — upload and
+    // verify are different grants, held by different roles.
+    const result = verifyDocument(requirement.id, telecallerId);
+
+    expect(result.ok).toBe(false);
+    expect(getDb().requirements.find((r) => r.id === requirement.id)?.status).toBe("received");
   });
 });

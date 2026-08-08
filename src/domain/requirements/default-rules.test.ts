@@ -110,7 +110,7 @@ describe("the default pack — income by employment type", () => {
     expect(asked).toContain("qualification_proof");
   });
 
-  it("asks two financial years of ITR and one of banking", () => {
+  it("asks three financial years of business ITR and one of banking", () => {
     const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
       productCode: "bl_unsecured",
       customerProductCode: "business_loan",
@@ -120,7 +120,7 @@ describe("the default pack — income by employment type", () => {
 
     // A business loan asks for the BUSINESS return (org_itr); the personal
     // ITR rule stands down there so one filing is not named twice.
-    expect(rows.find((row) => row.documentTypeCode === "org_itr")?.financialYears).toBe(2);
+    expect(rows.find((row) => row.documentTypeCode === "org_itr")?.financialYears).toBe(3);
     expect(rows.find((row) => row.documentTypeCode === "bank_statement")?.financialYears).toBe(1);
   });
 });
@@ -724,7 +724,7 @@ describe("the checklist a telecaller actually reads out", () => {
     expect(firmDocs).toContain("partnership_deed");
   });
 
-  it("asks for two financial years of GST returns, because one year shows a number and two show a trend", () => {
+  it("asks for three financial years of GST returns, because a two-point comparison is barely a trend", () => {
     const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
       productCode: "bl_working_capital",
       customerProductCode: "business_loan",
@@ -736,7 +736,48 @@ describe("the checklist a telecaller actually reads out", () => {
     const gstReturns = rows.find(
       (row) => row.documentTypeCode === "gst_returns" && row.casePartyId === "cpt_firm",
     );
-    expect(gstReturns?.financialYears).toBe(2);
+    expect(gstReturns?.financialYears).toBe(3);
+  });
+
+  /**
+   * The scenario this test guards: a real ₹65L Machinery & Equipment Loan for
+   * a GST-registered proprietor, reported by a telecaller as producing an
+   * "obviously incomplete" checklist. It was not — every document below
+   * already fired — but GST returns and business ITR fired at two trailing
+   * years instead of three, which is the actual defect this milestone fixes.
+   */
+  it("asks a GST-registered proprietor on a ₹65L Machinery & Equipment Loan for the full business set", () => {
+    const rows = evaluateRules(DEFAULT_REQUIREMENT_RULES, {
+      productCode: "bl_machinery",
+      customerProductCode: "business_loan",
+      gstRequirement: "mandatory",
+      requestedAmount: 6_500_000,
+      parties: [individual({ employmentTypeCode: "business_owner", isGstRegistered: true })],
+      properties: [],
+    });
+    const asked = rows.map((row) => row.documentTypeCode);
+
+    // KYC — universal.
+    expect(asked).toContain("pan_card");
+    expect(asked).toContain("aadhaar_card");
+    expect(asked).toContain("address_proof");
+    expect(asked).toContain("photograph");
+
+    // Business registration — mandatory on the MSME schemes, machinery among them.
+    expect(asked).toContain("udyam_certificate");
+
+    // GST — driven by the product's own gst_requirement, not by anyone having
+    // to answer a question first.
+    expect(asked).toContain("gst_certificate");
+    const gstReturns = rows.find((row) => row.documentTypeCode === "gst_returns");
+    expect(gstReturns?.financialYears).toBe(3);
+
+    // Business ITR — three assessment years, the fix this test exists for.
+    const businessItr = rows.find((row) => row.documentTypeCode === "org_itr");
+    expect(businessItr?.financialYears).toBe(3);
+
+    // The asset being financed.
+    expect(asked).toContain("machinery_quotation");
   });
 
   it("asks for the Tamil Nadu property core the moment a property exists, and not a moment before", () => {

@@ -38,6 +38,8 @@ import {
   resolveDocumentOwner,
 } from "@domain/storage/index.js";
 
+import { hasPermission, type Role, type Scope } from "@domain/permissions/index.js";
+
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import { storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
@@ -77,6 +79,7 @@ import type {
   MasterDataRecord,
   Organisation,
   Person,
+  PersonIdentifier,
   Submission,
   SubmissionRecipient,
   SubmissionStatus,
@@ -275,6 +278,87 @@ function record(input: EventInput): void {
 }
 
 // ---------------------------------------------------------------------------
+// Authorization — every mutation checks who is asking, not just the UI
+// (real-world-issues milestone, Part 7)
+//
+// Before this, `actorUserId` was threaded through every mutation here and
+// used for exactly one thing: whose name goes on the event. Nothing checked
+// whether that actor was ALLOWED to do what they were doing — a telecaller
+// could call `createSubmission` directly, at the store layer, despite having
+// no `submission.create` grant at any scope, because the only thing standing
+// between them and a bank submission was a hidden button.
+//
+// The helpers below close that gap by reusing `hasPermission` from
+// `@domain/permissions` — the SAME function `session.can()` wraps for the UI,
+// and the same one the server's `app.has_permission()` is seeded from — so
+// there is one definition of "is this allowed", not a second one that could
+// quietly disagree.
+//
+// WHAT THIS DOES NOT DO. `db` is a plain in-memory object and `getDb()`
+// hands the whole thing to any component that asks — there is no row-level
+// READ filtering here, and there cannot be without a real backend boundary,
+// which is out of scope for this prototype. What follows makes every WRITE
+// check permission and ownership before it takes effect, which is what
+// "reject a telecaller sending a case to a bank" actually requires. It does
+// not make another user's case invisible to a determined reader of browser
+// state — that is a known, stated limitation, not something silently
+// declared solved.
+// ---------------------------------------------------------------------------
+
+function actorRoles(actorUserId: Id): readonly Role[] {
+  return db.users.find((u) => u.id === actorUserId)?.roles ?? [];
+}
+
+/**
+ * Refuse the action unless `actorUserId` holds `permission` at least at
+ * `scope`. Returns the refusal to return straight from the caller, or
+ * `undefined` when the actor may proceed — so a guard reads as
+ * `const refusal = authorize(...); if (refusal) return refusal;`.
+ */
+function authorize(
+  actorUserId: Id,
+  permission: string,
+  scope: Scope = "all",
+): ActionResult | undefined {
+  if (hasPermission(actorRoles(actorUserId), permission, scope)) {
+    return undefined;
+  }
+  return { ok: false, message: `You do not have permission to do that (${permission}).` };
+}
+
+/**
+ * Whether `actorUserId` may act on `loanCase` for `permission` — holding it
+ * at `all` scope, or at `own` scope while actually owning the case.
+ *
+ * The exact OR the UI already computes inline in several places
+ * (`session.can(x, "all") || (session.can(x, "own") && loanCase.ownerUserId
+ * === session.user.id)`, e.g. `CaseDetail.tsx`'s `canEdit`/`mayRead`).
+ * Exported so the store's own guards below and the UI can eventually share
+ * one implementation instead of two that could drift apart — the UI's
+ * existing inline checks are not refactored to call this in this milestone,
+ * but any new call site should.
+ */
+export function canActOnCase(actorUserId: Id, loanCase: LoanCase, permission: string): boolean {
+  const roles = actorRoles(actorUserId);
+  return (
+    hasPermission(roles, permission, "all") ||
+    (hasPermission(roles, permission, "own") && loanCase.ownerUserId === actorUserId)
+  );
+}
+
+/** `canActOnCase`, as a refusal-or-undefined guard for a mutation to return early on. */
+function authorizeOnCase(
+  actorUserId: Id,
+  loanCase: LoanCase,
+  permission: string,
+): ActionResult | undefined {
+  if (canActOnCase(actorUserId, loanCase, permission)) {
+    return undefined;
+  }
+  return { ok: false, message: `You do not have permission to do that (${permission}).` };
+}
+
+// ---------------------------------------------------------------------------
 // Derived reads
 // ---------------------------------------------------------------------------
 
@@ -410,6 +494,14 @@ export function moveStage(
     return { ok: false, message: "Case not found." };
   }
 
+  // Is this actor allowed to move THIS case at all — separate from whether
+  // the move itself is legal, which evaluateTransition below decides
+  // (real-world-issues milestone, Part 7). autoAdvance and
+  // reconcileReadiness mutate db.cases directly rather than calling this
+  // function, so system-driven transitions are never subject to this check.
+  const refusal = authorizeOnCase(actorUserId, loanCase, "case.update");
+  if (refusal) return refusal;
+
   const outcome = evaluateTransition(snapshotOf(loanCase), {
     to,
     actor: "user",
@@ -530,6 +622,10 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
     ...(input.requestedAmount ? { requestedAmount: input.requestedAmount } : {}),
     stage: "new",
     ownerUserId: actorUserId,
+    // Who brought this case in, set once and never touched again — distinct
+    // from ownerUserId, which assignOwner changes as the case moves through
+    // Login (real-world-issues milestone, Part 4).
+    createdByUserId: actorUserId,
     // `source` is derived from the master-data pick so anything still
     // reading the free-text field (search, MIS exports) keeps working
     // (Milestone 5 — the field itself is kept for backward compatibility).
@@ -732,8 +828,27 @@ export function setHold(
   return { ok: true };
 }
 
+/**
+ * Change who currently holds the case — not who brought it in
+ * (`createdByUserId`, set once at creation and never touched here).
+ *
+ * This is how "who processed it in Login" becomes answerable at all: the
+ * single-owner model (BR-011) keeps exactly one accountable holder at a time
+ * rather than a list of processors, and the sequence of who held a case and
+ * when is reconstructed from `case.assigned` events like this one, in order
+ * (real-world-issues milestone, Part 4).
+ */
 export function assignOwner(caseId: Id, ownerUserId: Id, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "case.assign", "all");
+  if (refusal) return refusal;
+
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
   const to = db.users.find((u) => u.id === ownerUserId);
+  if (!to) return { ok: false, message: "That user does not exist." };
+  if (loanCase.ownerUserId === ownerUserId) return { ok: true };
+
   db.cases = db.cases.map((c) => (c.id === caseId ? { ...c, ownerUserId } : c));
   record({
     actorUserId,
@@ -741,7 +856,7 @@ export function assignOwner(caseId: Id, ownerUserId: Id, actorUserId: Id): Actio
     entityType: "case",
     entityId: caseId,
     eventType: "case.assigned",
-    summary: `Owner changed to ${to?.name ?? "unknown"}`,
+    summary: `Owner changed to ${to.name}`,
   });
   commit();
   return { ok: true };
@@ -1127,6 +1242,300 @@ export function updatePartyProfile(
 }
 
 // ---------------------------------------------------------------------------
+// Person and organisation records — the shared entity, not a case's view of
+// it (real-world-issues milestone, Part 3)
+//
+// Before this, a Person or an Organisation could be CREATED — inline, at
+// case creation or when adding a party — and never corrected afterward.
+// `PersonProfile.tsx` was read-only, and `updatePartyProfile` above edits a
+// case's OVERRIDE of a party, never the shared record itself. A telecaller
+// who mistyped a date of birth, or who learned a customer's actual address
+// three calls into a case, had no way to fix either.
+//
+// These are the only places `db.people` or `db.organisations` are mutated
+// outside of creation. Guarded by `person.update`/`organisation.update`
+// (already granted to telecaller, login_executive and manager at `all`
+// scope — no permission-grid change needed), because a shared record touches
+// every case the person or organisation is on, not just the one open on
+// screen.
+// ---------------------------------------------------------------------------
+
+export interface PersonUpdateInput {
+  fullName?: string | undefined;
+  dateOfBirth?: string | undefined;
+  addressLine?: string | undefined;
+  locality?: string | undefined;
+  city?: string | undefined;
+  pincode?: string | undefined;
+  district?: string | undefined;
+  state?: string | undefined;
+}
+
+/**
+ * Correct a person's own record — name, date of birth, residential address.
+ *
+ * NOT case-specific. This changes what every case involving this person
+ * shows, which is the point: a date of birth is a fact about the person, not
+ * about the loan they happen to be applying for.
+ */
+export function updatePerson(personId: Id, input: PersonUpdateInput, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "person.update", "all");
+  if (refusal) return refusal;
+
+  const person = db.people.find((p) => p.id === personId);
+  if (!person) return { ok: false, message: "Person not found." };
+
+  const fullName = input.fullName?.trim();
+  const dateOfBirth = input.dateOfBirth?.trim();
+  const addressLine = input.addressLine?.trim();
+  const locality = input.locality?.trim();
+  const city = input.city?.trim();
+  const pincode = input.pincode?.trim();
+  const district = input.district?.trim();
+  const state = input.state?.trim();
+
+  const changes: string[] = [];
+  const describe = (label: string, value: string | undefined, before: string | undefined): void => {
+    if (!value || value === before) return;
+    changes.push(`${label}: ${value}`);
+  };
+  describe("Name", fullName, person.fullName);
+  describe("Date of birth", dateOfBirth, person.dateOfBirth);
+  describe("Address", addressLine, person.addressLine);
+  describe("Locality", locality, person.locality);
+  describe("City", city, person.city);
+  describe("PIN code", pincode, person.pincode);
+  describe("District", district, person.district);
+  describe("State", state, person.state);
+
+  if (changes.length === 0) return { ok: true };
+
+  db.people = db.people.map((p) =>
+    p.id !== personId
+      ? p
+      : {
+          ...p,
+          ...(fullName ? { fullName } : {}),
+          ...(dateOfBirth ? { dateOfBirth } : {}),
+          ...(addressLine ? { addressLine } : {}),
+          ...(locality ? { locality } : {}),
+          ...(city ? { city } : {}),
+          ...(pincode ? { pincode } : {}),
+          ...(district ? { district } : {}),
+          ...(state ? { state } : {}),
+        },
+  );
+
+  record({
+    actorUserId,
+    entityType: "person",
+    entityId: personId,
+    eventType: "person.updated",
+    summary: `Profile updated: ${changes.join("; ")}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+export interface PersonIdentifierInput {
+  /** Editing an existing identifier by id; adding a new one when absent. */
+  id?: Id | undefined;
+  type: PersonIdentifier["type"];
+  value: string;
+  isPrimary?: boolean | undefined;
+}
+
+/**
+ * Add or edit one of a person's identifiers — most often "another phone
+ * number" (Part 3's "alternate mobile"), which is not a distinct concept in
+ * this schema, only a second `phone`-type row that is not primary.
+ *
+ * Enforces one primary per type per person, the same invariant
+ * `person_identifier_one_primary_per_type` holds in the database
+ * (Database/migrations/0002): marking a new or edited identifier primary
+ * demotes whichever one previously held that title, in the same write.
+ */
+export function updatePersonIdentifiers(
+  personId: Id,
+  input: PersonIdentifierInput,
+  actorUserId: Id,
+): ActionResult {
+  const refusal = authorize(actorUserId, "person.update", "all");
+  if (refusal) return refusal;
+
+  const person = db.people.find((p) => p.id === personId);
+  if (!person) return { ok: false, message: "Person not found." };
+
+  const value = input.value.trim();
+  if (!value) return { ok: false, message: "Give it a value." };
+
+  const makePrimary = input.isPrimary ?? false;
+  const existing = input.id ? person.identifiers.find((i) => i.id === input.id) : undefined;
+  if (input.id && !existing) {
+    return { ok: false, message: "That identifier is not on this person." };
+  }
+
+  const identifiers = existing
+    ? person.identifiers.map((i) =>
+        i.id === existing.id
+          ? { ...i, value, isPrimary: makePrimary }
+          : makePrimary && i.type === input.type
+            ? { ...i, isPrimary: false }
+            : i,
+      )
+    : [
+        ...person.identifiers.map((i) =>
+          makePrimary && i.type === input.type ? { ...i, isPrimary: false } : i,
+        ),
+        {
+          id: nextId(),
+          type: input.type,
+          value,
+          isPrimary: makePrimary,
+          verificationSource: "self_declared" as const,
+        },
+      ];
+
+  db.people = db.people.map((p) => (p.id === personId ? { ...p, identifiers } : p));
+
+  record({
+    actorUserId,
+    entityType: "person",
+    entityId: personId,
+    eventType: "person.identifier_updated",
+    summary: existing
+      ? `${input.type} updated`
+      : `${input.type} added: ${value}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+export interface OrganisationUpdateInput {
+  canonicalName?: string | undefined;
+  industry?: string | undefined;
+  city?: string | undefined;
+  addressLine?: string | undefined;
+  locality?: string | undefined;
+  pincode?: string | undefined;
+  district?: string | undefined;
+  state?: string | undefined;
+  businessConstitutionId?: Id | undefined;
+  /**
+   * Three-valued, like every other GST fact in this codebase — undefined
+   * means "leave as recorded". These are PROFILE facts on the business's own
+   * record (Database/migrations/0028) and are never read by the Document
+   * Requirement Engine, which evaluates `LoanCase.isGstRegistered` instead —
+   * see the field comments on `Organisation` in types.ts. Recording one here
+   * changes nothing about what any case is asked for.
+   */
+  isGstRegistered?: boolean | undefined;
+  gstin?: string | undefined;
+  udyamRegistered?: boolean | undefined;
+  udyamNumber?: string | undefined;
+}
+
+/**
+ * Correct a business's own record — name, address, and its GST/Udyam
+ * registration as the business reports it.
+ */
+export function updateOrganisation(
+  organisationId: Id,
+  input: OrganisationUpdateInput,
+  actorUserId: Id,
+): ActionResult {
+  const refusal = authorize(actorUserId, "organisation.update", "all");
+  if (refusal) return refusal;
+
+  const organisation = db.organisations.find((o) => o.id === organisationId);
+  if (!organisation) return { ok: false, message: "Organisation not found." };
+
+  const constitution = input.businessConstitutionId
+    ? db.businessConstitutions.find((c) => c.id === input.businessConstitutionId)
+    : undefined;
+
+  const canonicalName = input.canonicalName?.trim();
+  const industry = input.industry?.trim();
+  const city = input.city?.trim();
+  const addressLine = input.addressLine?.trim();
+  const locality = input.locality?.trim();
+  const pincode = input.pincode?.trim();
+  const district = input.district?.trim();
+  const state = input.state?.trim();
+  const gstin = input.gstin?.trim();
+  const udyamNumber = input.udyamNumber?.trim();
+
+  const changes: string[] = [];
+  const describeText = (label: string, value: string | undefined, before: string | undefined): void => {
+    if (!value || value === before) return;
+    changes.push(`${label}: ${value}`);
+  };
+  const describeFlag = (label: string, value: boolean | undefined, before: boolean | undefined): void => {
+    if (value === undefined || value === before) return;
+    changes.push(`${label}: ${value ? "yes" : "no"}`);
+  };
+  describeText("Name", canonicalName, organisation.canonicalName);
+  describeText("Industry", industry, organisation.industry);
+  describeText("City", city, organisation.city);
+  describeText("Address", addressLine, organisation.addressLine);
+  describeText("Locality", locality, organisation.locality);
+  describeText("PIN code", pincode, organisation.pincode);
+  describeText("District", district, organisation.district);
+  describeText("State", state, organisation.state);
+  if (constitution && constitution.id !== organisation.businessConstitutionId) {
+    changes.push(`Constitution: ${constitution.name}`);
+  }
+  describeFlag(
+    "GST registered (on this business's record)",
+    input.isGstRegistered,
+    organisation.isGstRegistered,
+  );
+  describeText("GSTIN", gstin, organisation.gstin);
+  describeFlag("Udyam registered", input.udyamRegistered, organisation.udyamRegistered);
+  describeText("Udyam number", udyamNumber, organisation.udyamNumber);
+
+  if (changes.length === 0) return { ok: true };
+
+  db.organisations = db.organisations.map((o) =>
+    o.id !== organisationId
+      ? o
+      : {
+          ...o,
+          ...(canonicalName ? { canonicalName } : {}),
+          ...(industry ? { industry } : {}),
+          ...(city ? { city } : {}),
+          ...(addressLine ? { addressLine } : {}),
+          ...(locality ? { locality } : {}),
+          ...(pincode ? { pincode } : {}),
+          ...(district ? { district } : {}),
+          ...(state ? { state } : {}),
+          ...(constitution ? { businessConstitutionId: constitution.id } : {}),
+          ...(input.isGstRegistered !== undefined
+            ? { isGstRegistered: input.isGstRegistered }
+            : {}),
+          ...(gstin ? { gstin } : {}),
+          ...(input.udyamRegistered !== undefined
+            ? { udyamRegistered: input.udyamRegistered }
+            : {}),
+          ...(udyamNumber ? { udyamNumber } : {}),
+        },
+  );
+
+  record({
+    actorUserId,
+    entityType: "organisation",
+    entityId: organisationId,
+    eventType: "organisation.updated",
+    summary: `Profile updated: ${changes.join("; ")}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Document requirement rules — the engine's configuration (Milestone 9)
 // ---------------------------------------------------------------------------
 
@@ -1283,6 +1692,15 @@ export async function uploadDocument(
   const requirement = db.requirements.find((r) => r.id === requirementId);
   if (!requirement) return { ok: false, message: "Requirement not found." };
 
+  // Real-world-issues milestone, Part 7: the store boundary, not just the
+  // hidden Upload button, refuses an actor with no document.upload grant on
+  // this case.
+  const uploadCase = db.cases.find((c) => c.id === requirement.caseId);
+  if (uploadCase) {
+    const refusal = authorizeOnCase(actorUserId, uploadCase, "document.upload");
+    if (refusal) return refusal;
+  }
+
   const party = db.caseParties.find((p) => p.id === requirement.requiredOfCasePartyId);
   const caseProperty = db.caseProperties.find(
     (p) => p.id === requirement.requiredOfCasePropertyId,
@@ -1397,6 +1815,15 @@ export function verifyDocument(
     return { ok: false, message: "Nothing has been uploaded against this requirement yet." };
   }
 
+  // Real-world-issues milestone, Part 7: a telecaller holds no
+  // document.verify grant at any scope, so calling this directly is refused
+  // here, not merely left without a Verify button.
+  const verifyCase = db.cases.find((c) => c.id === requirement.caseId);
+  if (verifyCase) {
+    const refusal = authorizeOnCase(actorUserId, verifyCase, "document.verify");
+    if (refusal) return refusal;
+  }
+
   const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
   const trimmedNotes = notes?.trim();
 
@@ -1449,6 +1876,15 @@ export function rejectDocument(requirementId: Id, reason: string, actorUserId: I
   const requirement = db.requirements.find((r) => r.id === requirementId);
   if (!requirement?.satisfiedByDocumentId) {
     return { ok: false, message: "Nothing has been uploaded against this requirement yet." };
+  }
+
+  // Rejecting is the other half of the same judgement call as verifying, and
+  // the UI offers both from the same dialog behind the same grant — the
+  // store-level check matches (Part 7).
+  const rejectCase = db.cases.find((c) => c.id === requirement.caseId);
+  if (rejectCase) {
+    const refusal = authorizeOnCase(actorUserId, rejectCase, "document.verify");
+    if (refusal) return refusal;
   }
 
   const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
@@ -1798,7 +2234,22 @@ function snapshotOfBranch(branchOrganisationId: Id): {
   };
 }
 
+/**
+ * Send a case to a bank.
+ *
+ * Guarded by `submission.create` (real-world-issues milestone, Part 7): a
+ * telecaller holds no grant for this action at any scope, so this is the
+ * concrete case the milestone names — "the underlying operation must reject
+ * a telecaller attempting to send a case to a bank" — not just a hidden
+ * button.
+ */
 export function createSubmission(input: AddBankInput, actorUserId: Id): ActionResult {
+  const loanCase = db.cases.find((c) => c.id === input.caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
+  const refusal = authorizeOnCase(actorUserId, loanCase, "submission.create");
+  if (refusal) return refusal;
+
   const branch = db.organisations.find((o) => o.id === input.branchOrganisationId);
   if (!branch) return { ok: false, message: "That branch no longer exists." };
 

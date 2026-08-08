@@ -2,7 +2,10 @@
 
 ```
 npm install
-npm run dev      # http://localhost:5173
+npm run dev      # http://localhost:5173 — starts Vite AND the local document
+                 # storage backend (Backend/storage-server.mjs, port 4319)
+                 # together. Uploads need both; `npm run dev` is the only
+                 # command you should need for local development.
 ```
 
 ## What this is
@@ -53,9 +56,15 @@ watch the others go to *Withdrawn*, not *Rejected*.
 
 ## What is deliberately missing
 
-No auth, no file storage (uploads record a name and a size), no masked views —
-the PAN masking here is a UI stand-in for what ADR-026 does in the database. No
-RLS, because the policies are not written yet.
+No auth, no masked views — the PAN masking here is a UI stand-in for what
+ADR-026 does in the database. No RLS, because the policies are not written yet.
+
+File storage is real, not simulated: uploads go through `@domain/storage` to
+`Backend/storage-server.mjs`, a local Node server that writes the actual bytes
+to disk under a configurable root (`AOS_STORAGE_ROOT`, defaulting to
+`C:\AOS\Data`). `npm run dev` starts it alongside Vite automatically; if you
+ever run Vite alone, uploads will fail with a clear error rather than silently
+doing nothing.
 
 Screens not built: appointment scheduling, reporting, admin master-data editing,
 merge flows.

@@ -91,6 +91,37 @@ export function ownerName(db: Database, loanCase: LoanCase): string {
   return db.users.find((u) => u.id === loanCase.ownerUserId)?.name ?? "Unassigned";
 }
 
+/**
+ * Who first brought this case in — distinct from `ownerName`, which is who
+ * currently holds it (real-world-issues milestone, Part 4).
+ *
+ * `createdByUserId` is undefined on the handful of cases seeded before this
+ * field existed; for those, the case's own `case.created` event names the
+ * actor, and if even that is missing the current owner is the only honest
+ * answer left.
+ */
+export function originatorName(db: Database, loanCase: LoanCase): string {
+  const originatorId =
+    loanCase.createdByUserId ??
+    db.events.find((e) => e.caseId === loanCase.id && e.eventType === "case.created")
+      ?.actorUserId ??
+    loanCase.ownerUserId;
+  return db.users.find((u) => u.id === originatorId)?.name ?? "Unknown";
+}
+
+/**
+ * How long the case has been in its current stage — the most recent
+ * `case.stage_changed` event's timestamp, or the case's own creation if it
+ * has never moved. Purely derived from the existing event log (Part 4);
+ * nothing new is stored for this.
+ */
+export function enteredCurrentStageAt(db: Database, loanCase: LoanCase): string {
+  const lastStageChange = db.events
+    .filter((e) => e.caseId === loanCase.id && e.eventType === "case.stage_changed")
+    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))[0];
+  return lastStageChange?.occurredAt ?? loanCase.createdAt;
+}
+
 export function primaryPhone(person?: Person): string | undefined {
   return person?.identifiers.find((i) => i.type === "phone" && i.isPrimary)?.value;
 }

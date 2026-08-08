@@ -246,8 +246,8 @@ years of ITR is the single most common way a generic checklist embarrasses a
 branch, and the income rules carry an explicit exclusion for it.
 
 **Recurring documents are asked for in financial years**, and the market norms
-the pack seeds are: two years of ITR and financials, two years of GST returns,
-and a rolling six to twelve months of banking.
+the pack seeds are: two years of personal ITR and financials, three years of
+business ITR and GST returns, and a rolling six to twelve months of banking.
 
 **Scheme-linked products have hard prerequisites.** CGTMSE and PMMY are only
 available to a registered MSME, so Udyam registration is mandatory there and
@@ -336,7 +336,7 @@ start empty, so the newest business loan in the system had the emptiest
 checklist, at exactly the moment the telecaller needed it. Six new rules key on
 the one fact that *is* known then, the customer product: if someone opened a
 business loan, there is a business. They ask the applicant for business proof,
-business address proof, a current account statement, the business ITR ×2,
+business address proof, a current account statement, the business ITR ×3,
 balance sheet ×2
 and P&L ×2, and they stand down the moment a real firm is added, because from
 then on the firm's own rules ask for the same papers in the firm's name. The
@@ -344,8 +344,9 @@ GST-by-product rules lost their employment-type condition for the same reason,
 and narrowed from all income-supplying parties to the applicant — a salaried
 co-applicant on a Commercial LAP has no GSTIN to produce.
 
-**Two years of GST returns, not one.** Lenders read GSTR-3B to see whether
-turnover is growing. One year shows a number; two show a trend.
+**Three years of GST returns, not two.** Lenders read GSTR-3B to see whether
+turnover is growing, and business ITR alongside it for the same reason. Two
+points barely show a trend; three do.
 
 **A document type's declared owner no longer overrides the requirement's
 subject.** A proprietor is asked for a balance sheet and a current account
@@ -359,8 +360,8 @@ subject, and falls back to the case only when there is no subject at all.
 ### Corrections from the engine audit
 
 **The checklist looked like it was asking for the same document twice.** It was
-not. A business loan asks for two years of GST returns, two of the ITR, two of
-the balance sheet and two of the P&L — eight rows, each a distinct year with
+not. A business loan asks for three years of GST returns, three of the ITR, two
+of the balance sheet and two of the P&L — ten rows, each a distinct year with
 its own upload, its own verification and its own storage path. But every pair
 rendered under one name, so the list read as four documents asked for twice,
 and a list that looks buggy is a list people stop trusting *including the parts
@@ -443,19 +444,20 @@ call runs: *KYC* — PAN, Aadhaar, address proof, passport size photograph,
 signature proof (optional), loan consent form; *Business Registration* —
 business registration proof, GST registration certificate (GST REG-06),
 business PAN, business address proof, Udyam registration (optional);
-*Business Financials* — GST 3B ×2 years, business ITR ×2 assessment years,
+*Business Financials* — GST 3B ×3 years, business ITR ×3 assessment years,
 balance sheet ×2, P&L ×2, current account statement, and whatever the specific
 facility adds (stock statement and debtors/creditors list on a cash credit
 limit); *Additional* — loan application form, bank login form, NACH mandate.
 
 All of it appears because the *product* says so, before anyone has been asked
 whether the borrower is registered or what kind of business it is. Each
-recurring row names its own year, so the two GST returns and the two business
-ITRs read as four distinct asks rather than two documents listed twice.
+recurring row names its own year, so the three GST returns and the three
+business ITRs read as six distinct asks rather than two documents listed
+three times over.
 
 **Working capital, GST-registered partnership.** The individual's KYC and ITR,
 plus for the firm: business PAN, address proof, business registration, twelve
-months' current account, two years' business ITR, balance sheet ×2, P&L ×2, GST
+months' current account, three years' business ITR, balance sheet ×2, P&L ×2, GST
 certificate, GST returns, partnership deed, director list, stock statement,
 debtors/creditors statement. The firm's GST rows, not the individual's: once a
 firm is on the file the proprietor rules stand down, so the checklist names one

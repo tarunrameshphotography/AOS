@@ -155,11 +155,11 @@ describe("regenerateRequirements — financial-year scoping", () => {
       generated.filter((r) => r.documentTypeId === DOCUMENT_TYPES.find((t) => t.code === code)?.id).length;
 
     expect(byType("gst_certificate")).toBe(1); // not financial-year-scoped — one row, unchanged
-    // 2 trailing years since the Telecaller Workflow milestone: one year of
-    // GSTR-3B shows a turnover figure, two show whether it is growing.
-    expect(byType("gst_returns")).toBe(2);
-    expect(byType("balance_sheet")).toBe(2); // 2 trailing years
-    expect(byType("profit_and_loss")).toBe(2); // 2 trailing years
+    // 3 trailing years since the real-world-issues milestone: two points
+    // barely show a trend in GSTR-3B turnover; three do.
+    expect(byType("gst_returns")).toBe(3);
+    expect(byType("balance_sheet")).toBe(2); // 2 trailing years — unchanged
+    expect(byType("profit_and_loss")).toBe(2); // 2 trailing years — unchanged
 
     // Every generated id is unique — no year's row silently reused another's slot.
     expect(new Set(generated.map((r) => r.id)).size).toBe(generated.length);

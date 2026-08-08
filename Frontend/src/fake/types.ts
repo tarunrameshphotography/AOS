@@ -26,8 +26,20 @@ export interface Person {
   id: Id;
   fullName: string;
   dateOfBirth?: string;
+  /** Mirrors person.address_line (Database/migrations/0002) — carried by the
+   * schema since the beginning, only now exposed and editable in the
+   * frontend (Telecaller Real-World Issues milestone, Part 3). */
+  addressLine?: string;
   locality?: string;
   city?: string;
+  /** Mirrors person.pincode (Database/migrations/0002), same story as
+   * addressLine. */
+  pincode?: string;
+  /** Free text, matching the precedent set by LoanCase.source before
+   * referralSourceId existed: a plain answer now, a master-data link a
+   * later, separate decision (Database/migrations/0028). */
+  district?: string;
+  state?: string;
   aliases: string[];
   identifiers: PersonIdentifier[];
 }
@@ -46,11 +58,36 @@ export interface Organisation {
   roles: Array<"employer" | "borrower" | "builder" | "developer" | "vendor" | "lender" | "branch">;
   industry?: string;
   city?: string;
+  /** The business's own address (Database/migrations/0028), mirroring what
+   * Person has carried since the beginning. */
+  addressLine?: string;
+  locality?: string;
+  pincode?: string;
+  district?: string;
+  state?: string;
   parentOrganisationId?: Id;
   aliases: string[];
   /** Meaningful only for organisations holding the `borrower` role
    * (ADR-014). Master data — see MasterDataRecord below. */
   businessConstitutionId?: Id;
+  /**
+   * PROFILE facts about this business — Database/migrations/0028. Set once,
+   * on the business's own record, and shown on the customer profile.
+   *
+   * DELIBERATELY NOT READ BY THE REQUIREMENT ENGINE. `LoanCase.isGstRegistered`
+   * (below) is the fact `@domain/requirements` evaluates to decide what ONE
+   * case is asked for; this is what the business itself reports, independent
+   * of any case. The two are allowed to disagree — a business's own record
+   * and what was recorded for one particular loan are different questions —
+   * and nothing in `Frontend/src/fake/requirements.ts`'s `buildCaseFacts` may
+   * read these four fields. If a future milestone wants them to inform the
+   * engine, that is a deliberate design decision to make then, not a wire to
+   * connect now.
+   */
+  isGstRegistered?: boolean;
+  gstin?: string;
+  udyamRegistered?: boolean;
+  udyamNumber?: string;
   /** Does this organisation still exist? Absent means yes, matching the
    * column's default (Database/migrations/0003). For a lender this is
    * deliberately NOT panel status: Lakshmi Vilas Bank is inactive because it
@@ -468,6 +505,19 @@ export interface LoanCase {
   requestedAmount?: number;
   stage: CaseStage;
   ownerUserId: Id;
+  /**
+   * Who first brought this case in — set once, at creation, and never
+   * changed afterward (Database/migrations/0004's `created_by`, exposed here
+   * for the first time in the real-world-issues milestone, Part 4).
+   *
+   * Deliberately distinct from `ownerUserId`, which is who is CURRENTLY
+   * responsible and does change (`assignOwner`). "Which telecaller brought
+   * this case in" and "who has it right now" are different questions, and
+   * collapsing them into one field is what made the case header's old
+   * "owner" label ambiguous. Undefined on cases created before this field
+   * existed — the UI falls back to the case's earliest `case.created` event.
+   */
+  createdByUserId?: Id;
   source?: string;
   /** Master-data replacement for `source` (Milestone 5). `source` is kept
    * for backward compatibility and for cases created before this milestone. */

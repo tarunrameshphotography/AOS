@@ -144,15 +144,15 @@ describe("the checklist every product family generates", () => {
       (r) => r.label,
     );
 
-    // Two years of GST returns and two of the business ITR — four rows that
-    // used to render as two identical-looking pairs.
+    // Three years of GST returns and three of the business ITR — six rows
+    // that used to render as three identical-looking pairs.
     const gst = labels.filter((l) => l.startsWith("GST 3B"));
     const itr = labels.filter((l) => l.startsWith("Business ITR"));
 
-    expect(gst).toHaveLength(2);
-    expect(itr).toHaveLength(2);
-    expect(new Set(gst).size).toBe(2);
-    expect(new Set(itr).size).toBe(2);
+    expect(gst).toHaveLength(3);
+    expect(itr).toHaveLength(3);
+    expect(new Set(gst).size).toBe(3);
+    expect(new Set(itr).size).toBe(3);
     for (const label of gst) expect(label).toMatch(/ – FY \d{4}-\d{2}$/);
     // The returns are named by ASSESSMENT year — the number on the document
     // the customer is holding.

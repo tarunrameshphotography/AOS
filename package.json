@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "seed:permissions": "vitest run src/domain/permissions/seed.test.ts -u",
-    "dev": "vite",
+    "dev": "concurrently -k -n vite,storage -c blue,green \"vite\" \"node Backend/storage-server.mjs\"",
     "storage-server": "node Backend/storage-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
@@ -24,6 +24,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
+    "concurrently": "^10.0.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.7.2",
     "vitest": "^3.0.5"

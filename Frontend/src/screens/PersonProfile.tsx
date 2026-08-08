@@ -7,13 +7,14 @@
  * that referenced it (ADR-007).
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { CASE_STAGE_LABELS } from "@domain/case/stages.js";
 
+import { updatePerson, updatePersonIdentifiers } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { CaseParty } from "../fake/types.js";
+import type { CaseParty, PersonIdentifier } from "../fake/types.js";
 import {
   bytes,
   casesForPerson,
@@ -27,7 +28,18 @@ import {
   when,
 } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, StageBadge } from "../ui/index.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  Field,
+  Input,
+  Modal,
+  Select,
+  StageBadge,
+  useToast,
+} from "../ui/index.js";
 import { StorageLocation } from "../ui/storage-location.js";
 
 export function PersonProfile(): ReactNode {
@@ -35,9 +47,13 @@ export function PersonProfile(): ReactNode {
   const db = useDatabase();
   const session = useSession();
   const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [addPhoneOpen, setAddPhoneOpen] = useState(false);
 
   const person = db.people.find((p) => p.id === personId);
   if (!person) return <Empty>Person not found.</Empty>;
+
+  const canEdit = session.can("person.update", "all");
 
   const cases = casesForPerson(db, person.id);
   const documents = db.documents.filter((d) => d.personId === person.id);
@@ -64,26 +80,43 @@ export function PersonProfile(): ReactNode {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{person.fullName}</h1>
-        <p className="tnum mt-1 text-sm text-ink-500">
-          {primaryPhone(person) ?? "No number"}
-          {" · "}
-          {session.can("identifier.view_full", "all")
-            ? (panOf(person) ?? "No PAN")
-            : (maskedPan(person) ?? "No PAN")}
-          {person.locality && ` · ${person.locality}, ${person.city}`}
-        </p>
-        {person.aliases.length > 0 && (
-          <p className="mt-1 text-xs text-ink-500">
-            Also known as {person.aliases.map((alias) => `"${alias}"`).join(", ")} — every spelling
-            stays searchable, because that is what somebody will type next time.
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">{person.fullName}</h1>
+          <p className="tnum mt-1 text-sm text-ink-500">
+            {primaryPhone(person) ?? "No number"}
+            {" · "}
+            {session.can("identifier.view_full", "all")
+              ? (panOf(person) ?? "No PAN")
+              : (maskedPan(person) ?? "No PAN")}
+            {person.locality && ` · ${person.locality}, ${person.city}`}
           </p>
-        )}
-        {!session.can("identifier.view_full", "all") && (
-          <p className="mt-1 text-xs text-ink-400">
-            PAN is masked. This user does not hold <code>identifier.view_full</code>.
-          </p>
+          {(person.addressLine || person.pincode || person.district || person.state) && (
+            <p className="mt-0.5 text-xs text-ink-500">
+              {[person.addressLine, person.district, person.state, person.pincode]
+                .filter(Boolean)
+                .join(", ")}
+            </p>
+          )}
+          {person.dateOfBirth && (
+            <p className="mt-0.5 text-xs text-ink-500">Born {person.dateOfBirth}</p>
+          )}
+          {person.aliases.length > 0 && (
+            <p className="mt-1 text-xs text-ink-500">
+              Also known as {person.aliases.map((alias) => `"${alias}"`).join(", ")} — every
+              spelling stays searchable, because that is what somebody will type next time.
+            </p>
+          )}
+          {!session.can("identifier.view_full", "all") && (
+            <p className="mt-1 text-xs text-ink-400">
+              PAN is masked. This user does not hold <code>identifier.view_full</code>.
+            </p>
+          )}
+        </div>
+        {canEdit && (
+          <div className="flex shrink-0 gap-1.5">
+            <Button onClick={() => setEditOpen(true)}>Edit</Button>
+          </div>
         )}
       </div>
 
@@ -160,6 +193,32 @@ export function PersonProfile(): ReactNode {
         </div>
 
         <div className="space-y-6">
+          <Card
+            title="Contact details"
+            subtitle="A person can have more than one phone or email — an alternate number is a second entry, not a second person."
+            actions={
+              canEdit && <Button onClick={() => setAddPhoneOpen(true)}>Add phone or email</Button>
+            }
+          >
+            {person.identifiers.length === 0 ? (
+              <Empty>Nothing on file.</Empty>
+            ) : (
+              <ul className="space-y-1.5">
+                {person.identifiers.map((identifier) => (
+                  <li key={identifier.id} className="flex items-center gap-2 text-sm">
+                    <span className="tnum flex-1">
+                      {identifier.type === "pan" && !session.can("identifier.view_full", "all")
+                        ? maskedPan(person)
+                        : identifier.value}
+                    </span>
+                    <Badge>{titleCase(identifier.type)}</Badge>
+                    {identifier.isPrimary && <Badge tone="info">Primary</Badge>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
           {employment && employer && (
             <Card title="Employment">
               <p className="text-sm font-medium">{employer.canonicalName}</p>
@@ -234,6 +293,211 @@ export function PersonProfile(): ReactNode {
           )}
         </div>
       </div>
+
+      <EditPersonDialog personId={person.id} open={editOpen} onClose={() => setEditOpen(false)} />
+      <AddIdentifierDialog
+        personId={person.id}
+        open={addPhoneOpen}
+        onClose={() => setAddPhoneOpen(false)}
+      />
     </div>
+  );
+}
+
+/**
+ * Correct a person's own record — name, date of birth, residential address.
+ *
+ * NOT case-specific (Telecaller Real-World Issues milestone, Part 3). This
+ * writes through `updatePerson`, which changes what every case involving
+ * this person shows — a date of birth is a fact about the person, not about
+ * whichever loan happened to be open when someone learned it.
+ */
+function EditPersonDialog({
+  personId,
+  open,
+  onClose,
+}: {
+  personId: string;
+  open: boolean;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const person = db.people.find((p) => p.id === personId);
+
+  const [fullName, setFullName] = useState("");
+  const [dateOfBirth, setDateOfBirth] = useState("");
+  const [addressLine, setAddressLine] = useState("");
+  const [locality, setLocality] = useState("");
+  const [city, setCity] = useState("");
+  const [pincode, setPincode] = useState("");
+  const [district, setDistrict] = useState("");
+  const [state, setState] = useState("");
+
+  useEffect(() => {
+    if (!open || !person) return;
+    setFullName(person.fullName);
+    setDateOfBirth(person.dateOfBirth ?? "");
+    setAddressLine(person.addressLine ?? "");
+    setLocality(person.locality ?? "");
+    setCity(person.city ?? "");
+    setPincode(person.pincode ?? "");
+    setDistrict(person.district ?? "");
+    setState(person.state ?? "");
+  }, [open, person]);
+
+  if (!person) return null;
+
+  const save = (): void => {
+    const result = updatePerson(
+      personId,
+      { fullName, dateOfBirth, addressLine, locality, city, pincode, district, state },
+      session.user.id,
+    );
+    if (!result.ok) {
+      toast.show(result.message ?? "", "bad");
+      return;
+    }
+    toast.show("Saved.");
+    onClose();
+  };
+
+  return (
+    <Modal open={open} title={`Edit ${person.fullName}`} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Full name">
+          <Input value={fullName} onChange={(event) => setFullName(event.target.value)} />
+        </Field>
+        <Field label="Date of birth">
+          <Input
+            type="date"
+            value={dateOfBirth}
+            onChange={(event) => setDateOfBirth(event.target.value)}
+          />
+        </Field>
+        <Field label="Address">
+          <Input
+            value={addressLine}
+            onChange={(event) => setAddressLine(event.target.value)}
+            placeholder="12 Mill Road"
+          />
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Locality">
+            <Input value={locality} onChange={(event) => setLocality(event.target.value)} />
+          </Field>
+          <Field label="City">
+            <Input value={city} onChange={(event) => setCity(event.target.value)} />
+          </Field>
+          <Field label="District">
+            <Input value={district} onChange={(event) => setDistrict(event.target.value)} />
+          </Field>
+          <Field label="State">
+            <Input value={state} onChange={(event) => setState(event.target.value)} />
+          </Field>
+          <Field label="PIN code">
+            <Input value={pincode} onChange={(event) => setPincode(event.target.value)} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={onClose}>
+            Back
+          </Button>
+          <Button variant="primary" onClick={save}>
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Add another phone number or email — an "alternate mobile" is a second
+ * identifier, not a field this schema has a dedicated place for (Part 3).
+ * Editing an existing one is not offered here; the value shown on the
+ * profile is corrected by adding a fresh one and leaving the old one on
+ * file, exactly like every other identifier already on the person.
+ */
+function AddIdentifierDialog({
+  personId,
+  open,
+  onClose,
+}: {
+  personId: string;
+  open: boolean;
+  onClose: () => void;
+}): ReactNode {
+  const session = useSession();
+  const toast = useToast();
+  const [type, setType] = useState<PersonIdentifier["type"]>("phone");
+  const [value, setValue] = useState("");
+  const [makePrimary, setMakePrimary] = useState(false);
+
+  const close = (): void => {
+    setValue("");
+    setMakePrimary(false);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} title="Add a phone number or email" onClose={close}>
+      <div className="space-y-3">
+        <Field label="Kind">
+          <Select
+            value={type}
+            onChange={(event) => setType(event.target.value as PersonIdentifier["type"])}
+          >
+            <option value="phone">Phone</option>
+            <option value="email">Email</option>
+          </Select>
+        </Field>
+        <Field label="Value">
+          <Input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={type === "phone" ? "+91 90000 00000" : "name@example.com"}
+          />
+        </Field>
+        <label className="flex items-center gap-2 text-sm text-ink-700">
+          <input
+            type="checkbox"
+            checked={makePrimary}
+            onChange={(event) => setMakePrimary(event.target.checked)}
+          />
+          Make this the primary {type}
+        </label>
+        <p className="text-xs text-ink-500">
+          {makePrimary
+            ? `The current primary ${type}, if there is one, stops being primary — it stays on file.`
+            : `Kept alongside the existing ${type} numbers, not instead of them.`}
+        </p>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="ghost" onClick={close}>
+            Back
+          </Button>
+          <Button
+            variant="primary"
+            disabled={value.trim().length < 3}
+            onClick={() => {
+              const result = updatePersonIdentifiers(
+                personId,
+                { type, value, isPrimary: makePrimary },
+                session.user.id,
+              );
+              if (!result.ok) {
+                toast.show(result.message ?? "", "bad");
+                return;
+              }
+              toast.show("Added.");
+              close();
+            }}
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

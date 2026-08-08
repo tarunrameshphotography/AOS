@@ -293,7 +293,7 @@ describe("the document catalogue as a telecaller reads it", () => {
 
   it("calls documents what the customer calls them", () => {
     expect(documentTypeByCode("credit_bureau_consent")?.name).toBe("Loan Consent Form");
-    expect(documentTypeByCode("application_form")?.name).toBe("Loan Application Form");
+    expect(documentTypeByCode("application_form")?.name).toBe("Amaze Loans Application Form");
     expect(documentTypeByCode("photograph")?.name).toBe("Passport Size Photograph");
     expect(documentTypeByCode("gst_certificate")?.name).toBe(
       "GST Registration Certificate (GST REG-06)",

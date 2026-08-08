@@ -36,11 +36,7 @@ export {
   type RuleScope,
 } from "./rules.js";
 
-export {
-  DEFAULT_REQUIREMENT_RULES,
-  defaultRuleDocumentTypeCodes,
-  findRule,
-} from "./default-rules.js";
+export { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
 
 export {
   CUSTOM_DOCUMENT_TYPE_CODE,

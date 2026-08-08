@@ -1548,11 +1548,6 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
 ];
 
-/** Lookup by rule code, for the "why is this being asked for?" panel. */
-export function findRule(code: string): RequirementRule | undefined {
-  return DEFAULT_REQUIREMENT_RULES.find((rule) => rule.code === code);
-}
-
 /** Every document type code the default pack can ask for. */
 export function defaultRuleDocumentTypeCodes(): string[] {
   return [...new Set(DEFAULT_REQUIREMENT_RULES.map((rule) => rule.documentTypeCode))].sort();

@@ -19,6 +19,7 @@
     "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.18",

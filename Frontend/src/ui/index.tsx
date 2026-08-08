@@ -132,13 +132,17 @@ const TONE_STYLES: Record<Tone, string> = {
 
 export function Badge({
   tone = "neutral",
+  title,
   children,
 }: {
   tone?: Tone;
+  /** What the badge means, in a sentence, on hover. */
+  title?: string | undefined;
   children: ReactNode;
 }): ReactNode {
   return (
     <span
+      {...(title ? { title } : {})}
       className={cx(
         "inline-flex items-center rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         TONE_STYLES[tone],

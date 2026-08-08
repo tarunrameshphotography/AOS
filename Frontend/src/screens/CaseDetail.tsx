@@ -63,12 +63,29 @@ import {
   verifyDocument,
   waiveRequirement,
 } from "../fake/store.js";
-import { clearDrafts, useDraft } from "../fake/drafts.js";
+import { clearDraft, clearDrafts, getDraft, useDraft } from "../fake/drafts.js";
 import { storageAdapter } from "../fake/storage.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { CasePartyRole, Id, SubmissionStatus } from "../fake/types.js";
+import type { CasePartyRole, DocumentFile, Id, SubmissionStatus } from "../fake/types.js";
+import {
+  CASE_TABS,
+  CASE_TAB_LABELS,
+  CASE_TAB_PURPOSE,
+  nextCaseTab,
+  previousCaseTab,
+  resolveCaseTab,
+  type CaseTab,
+} from "./case-tabs.js";
 import type { FyGroup } from "./document-financial-years.js";
 import { financialYearGroups } from "./document-financial-years.js";
+import {
+  DOCUMENT_STATE_PRESENTATION,
+  documentStateCounts,
+  documentStateLabel,
+  documentStateOf,
+  documentStateTone,
+  isDocumentCollectionComplete,
+} from "./document-status.js";
 import {
   bytes,
   exactly,
@@ -103,9 +120,6 @@ import {
 import { OrganisationSearchField, PersonSearchField } from "../ui/pickers.js";
 import { StorageLocation } from "../ui/storage-location.js";
 
-const TABS = ["overview", "documents", "banks", "timeline"] as const;
-type Tab = (typeof TABS)[number];
-
 export function CaseDetail(): ReactNode {
   const { caseId = "" } = useParams();
   const db = useDatabase();
@@ -122,11 +136,14 @@ export function CaseDetail(): ReactNode {
    * remembered.
    */
   const [params, setParams] = useSearchParams();
-  const requested = params.get("tab");
-  const tab: Tab = (TABS as readonly string[]).includes(requested ?? "")
-    ? (requested as Tab)
-    : "overview";
-  const setTab = (next: Tab): void => {
+  const tab = resolveCaseTab(params.get("tab"));
+  /**
+   * Only the `tab` parameter is rewritten, and the case id is not a parameter
+   * at all — it is the path. That is what makes moving between sections
+   * incapable of opening a different case: there is nothing in this function
+   * that could name one.
+   */
+  const setTab = (next: CaseTab): void => {
     const merged = new URLSearchParams(params);
     merged.set("tab", next);
     setParams(merged, { replace: false });
@@ -158,40 +175,30 @@ export function CaseDetail(): ReactNode {
   const applicant = primaryApplicant(db, loanCase.id);
   const progress = progressFor(loanCase.id);
 
-  const tabs: Array<{ id: Tab; label: string; count?: number }> = [
-    { id: "overview", label: "Overview" },
-    {
-      id: "documents",
-      label: "Documents",
-      count: progress.outstandingCount,
-    },
-    {
-      id: "banks",
-      label: "Banks",
-      count: db.submissions.filter((s) => s.caseId === caseId).length,
-    },
-    { id: "timeline", label: "Timeline" },
-  ];
+  const counts: Partial<Record<CaseTab, number>> = {
+    documents: progress.outstandingCount,
+    banks: db.submissions.filter((s) => s.caseId === caseId).length,
+  };
 
   return (
     <div className="space-y-4">
       <CaseHeader caseId={caseId} />
 
       <div className="flex items-center gap-1 border-b border-ink-200">
-        {tabs.map((entry) => (
+        {CASE_TABS.map((entry) => (
           <button
-            key={entry.id}
-            onClick={() => setTab(entry.id)}
+            key={entry}
+            onClick={() => setTab(entry)}
             className={cx(
               "flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium",
-              tab === entry.id
+              tab === entry
                 ? "border-brand-600 text-ink-900"
                 : "border-transparent text-ink-500 hover:text-ink-700",
             )}
           >
-            {entry.label}
-            {entry.count !== undefined && entry.count > 0 && (
-              <span className="tnum rounded bg-ink-100 px-1.5 text-xs">{entry.count}</span>
+            {CASE_TAB_LABELS[entry]}
+            {(counts[entry] ?? 0) > 0 && (
+              <span className="tnum rounded bg-ink-100 px-1.5 text-xs">{counts[entry]}</span>
             )}
           </button>
         ))}
@@ -201,6 +208,150 @@ export function CaseDetail(): ReactNode {
       {tab === "documents" && <Documents caseId={caseId} />}
       {tab === "banks" && <Banks caseId={caseId} />}
       {tab === "timeline" && <Timeline caseId={caseId} />}
+
+      <CaseSectionFooter caseId={caseId} tab={tab} onGo={setTab} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save & continue — the path through a case (Part 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The draft keys one case owns, named once.
+ *
+ * The footer has to save the same half-written note the Overview is editing,
+ * and two components agreeing on a string by coincidence is how a "Save"
+ * button quietly stops saving anything.
+ */
+function caseDraftKeys(caseId: string): { note: string } {
+  return { note: `case:${caseId}:note` };
+}
+
+/**
+ * The bar at the foot of every section: what is saved, and where to go next.
+ *
+ * WHAT "SAVE" MEANS HERE, AND WHAT IT DELIBERATELY DOES NOT
+ *
+ * Every fact on this screen is written through a store mutation the moment it
+ * is entered — there is no pending edit buffer anywhere in the case, and there
+ * was none before this milestone either. A "Save" button that pretended
+ * otherwise would be theatre, and worse, would teach people that the work they
+ * did *before* pressing it was at risk.
+ *
+ * So this bar does two honest things. It SAYS, on every section, that what is
+ * on the page is already saved — which is the reassurance the button was being
+ * asked for in the first place. And it flushes the one kind of work that
+ * genuinely is not part of the case yet: text typed into a box and not
+ * submitted, which is kept as a draft (fake/drafts.ts) and would otherwise sit
+ * there indefinitely looking saved without being.
+ *
+ * INCOMPLETE IS SAVEABLE (Part 3). Nothing here is disabled by an outstanding
+ * document, and moving on is never refused for one. A telecaller on a first
+ * call has almost nothing collected, and that is the normal state of a case
+ * rather than an error to block on. The only thing an incomplete file cannot
+ * do is reach a stage whose guard the domain layer refuses — which is a
+ * different question, asked in the header, with the refusal's own words.
+ *
+ * NO EVENT IS RECORDED FOR PRESSING THIS (Part 12). Moving between sections is
+ * not something that happened to the case. Adding a note is, and that records
+ * one — because a note was added, not because a button was pressed.
+ */
+function CaseSectionFooter({
+  caseId,
+  tab,
+  onGo,
+}: {
+  caseId: string;
+  tab: CaseTab;
+  onGo: (tab: CaseTab) => void;
+}): ReactNode {
+  const session = useSession();
+  const toast = useToast();
+  const progress = progressFor(caseId);
+
+  const next = nextCaseTab(tab);
+  const previous = previousCaseTab(tab);
+  const keys = caseDraftKeys(caseId);
+
+  /**
+   * Commit whatever this section is holding that is not yet part of the case.
+   * Returns what was saved, so the toast can say something true rather than a
+   * blanket "Saved".
+   */
+  const commitSection = (): string[] => {
+    const saved: string[] = [];
+    if (tab === "overview") {
+      const note = getDraft(keys.note).trim();
+      if (note && session.can("note.create", "own")) {
+        const result = addNote(caseId, note, session.user.id);
+        if (result.ok) {
+          clearDraft(keys.note);
+          saved.push("note");
+        } else {
+          toast.show(result.message ?? "", "bad");
+        }
+      }
+    }
+    return saved;
+  };
+
+  const describe = (saved: string[]): string =>
+    saved.length === 0
+      ? "Nothing was waiting — everything on this page was already saved."
+      : `Saved your ${saved.join(" and ")}.`;
+
+  const outstanding = progress.outstandingCount;
+
+  return (
+    <div className="rounded-lg bg-white p-4 ring-1 ring-ink-100">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm text-ink-700">
+            {next
+              ? `Next: ${CASE_TAB_LABELS[next]} — ${CASE_TAB_PURPOSE[next]}`
+              : "This is the end of the case workflow."}
+          </p>
+          <p className="mt-0.5 text-xs text-ink-500">
+            Everything on this page is saved as you enter it. Nothing is lost by moving on.
+            {outstanding > 0 && (
+              <>
+                {" "}
+                {outstanding} document{outstanding === 1 ? "" : "s"} still outstanding — that does
+                not stop you saving or continuing.
+              </>
+            )}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {previous && (
+            <Button variant="ghost" onClick={() => onGo(previous)}>
+              Back to {CASE_TAB_LABELS[previous]}
+            </Button>
+          )}
+          <Button
+            onClick={() => {
+              const saved = commitSection();
+              toast.show(describe(saved));
+            }}
+          >
+            Save draft
+          </Button>
+          {next && (
+            <Button
+              variant="primary"
+              onClick={() => {
+                commitSection();
+                onGo(next);
+              }}
+            >
+              Save &amp; continue
+            </Button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -473,7 +624,7 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
   const [addOpen, setAddOpen] = useState(false);
   // Persisted: switching to Documents and back must not eat a half-written
   // note (Part 7).
-  const [note, setNote] = useDraft(`case:${caseId}:note`);
+  const [note, setNote] = useDraft(caseDraftKeys(caseId).note);
   const [logOpen, setLogOpen] = useState(false);
   const [profileFor, setProfileFor] = useState<string | null>(null);
   const [propertyFor, setPropertyFor] = useState<string | null>(null);
@@ -499,6 +650,8 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
             the Overview listed facts a user could read and not change, which
             is the most frustrating possible state for a screen to be in. */}
         <CaseFacts caseId={caseId} />
+
+        <ExistingObligations caseId={caseId} />
 
         <Card
           title="People on this case"
@@ -1235,6 +1388,7 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   const [waiveReason, setWaiveReason] = useDraft(`case:${caseId}:waive-reason`);
   const [addingYearFor, setAddingYearFor] = useState<FyGroup | null>(null);
   const [verifyFor, setVerifyFor] = useState<string | null>(null);
+  const [viewFor, setViewFor] = useState<string | null>(null);
   const [addCustomOpen, setAddCustomOpen] = useState(false);
   const [removeCustomFor, setRemoveCustomFor] = useState<string | null>(null);
 
@@ -1366,18 +1520,10 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         ? "Property"
         : "The case";
 
-    const tone =
-      requirement.status === "verified"
-        ? "good"
-        : requirement.status === "received"
-          ? "info"
-          : requirement.status === "rejected"
-            ? "bad"
-            : requirement.status === "waived"
-              ? "warn"
-              : requirement.status === "not_applicable"
-                ? "neutral"
-                : "neutral";
+    // What the row is CALLED, as against what the domain calls it. "Pending"
+    // covered both "the customer has sent nothing" and "a file is sitting here
+    // unread"; those are two different phone calls (Part 8).
+    const state = documentStateOf(requirement.status, requirement.applicability);
 
     // Why this is being asked for. A checklist nobody can interrogate is a
     // checklist people work around (Milestone 9).
@@ -1432,8 +1578,13 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
           )}
         </div>
 
-        {isOptional && <Badge>Optional</Badge>}
-        <Badge tone={tone}>{titleCase(requirement.status)}</Badge>
+        {isOptional && !["pending"].includes(requirement.status) && <Badge>Optional</Badge>}
+        <Badge
+          tone={DOCUMENT_STATE_PRESENTATION[state].tone}
+          title={DOCUMENT_STATE_PRESENTATION[state].meaning}
+        >
+          {DOCUMENT_STATE_PRESENTATION[state].label}
+        </Badge>
 
         <div className="flex shrink-0 gap-1.5">
           {["pending", "rejected"].includes(requirement.status) &&
@@ -1447,6 +1598,15 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
                 {requirement.status === "rejected" ? "Upload again" : "Upload"}
               </Button>
             )}
+          {/* View, at every stage after upload and not only on the way to
+              verifying (Part 6). A verified document that cannot be reopened
+              is one nobody can check a query against three weeks later, and
+              the file is right there. */}
+          {document && (
+            <Button variant="ghost" onClick={() => setViewFor(requirement.id)}>
+              View
+            </Button>
+          )}
           {requirement.status === "received" && session.can("document.verify", "own") && (
             <Button variant="primary" onClick={() => setVerifyFor(requirement.id)}>
               Verify
@@ -1513,6 +1673,8 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
       <input ref={fileInput} type="file" className="hidden" onChange={onFileChosen} />
 
       <CaseFacts caseId={caseId} />
+
+      <DocumentStateSummary caseId={caseId} />
 
       <Card
         title="Still needed"
@@ -1692,8 +1854,235 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         onClose={() => setAddingYearFor(null)}
       />
 
+      <ViewDocumentDialog requirementId={viewFor} onClose={() => setViewFor(null)} />
+
       <VerifyDialog requirementId={verifyFor} onClose={() => setVerifyFor(null)} />
     </div>
+  );
+}
+
+/**
+ * Where this case's collection actually stands (Part 8).
+ *
+ * Six words a telecaller uses, with the number against each, so "how far along
+ * is this file?" has one answer instead of an impression formed from scrolling
+ * the list. Every figure is derived from the same ProgressSummary the bar in
+ * the header draws — see documentStateCounts — so the strip and the bar cannot
+ * tell two different stories.
+ *
+ * The distinction this exists to make: UPLOADED IS NOT DONE. A case with
+ * fifteen files uploaded and none verified is 0% complete, and it should look
+ * it here.
+ */
+function DocumentStateSummary({ caseId }: { caseId: string }): ReactNode {
+  const progress = progressFor(caseId);
+  const counts = documentStateCounts(progress);
+
+  const cells: Array<{ label: string; value: number; tone?: string }> = [
+    { label: "Required", value: counts.required },
+    { label: "Missing", value: counts.missing, tone: counts.missing > 0 ? "text-ink-900" : "" },
+    { label: "Awaiting verification", value: counts.awaitingVerification },
+    { label: "Rejected", value: counts.rejected, tone: counts.rejected > 0 ? "text-red-700" : "" },
+    { label: "Verified", value: counts.verified, tone: counts.verified > 0 ? "text-green-700" : "" },
+    { label: "Optional", value: counts.optional },
+    { label: "Waived", value: counts.waived },
+    { label: "Not due yet", value: counts.notDueYet },
+  ];
+
+  return (
+    <Card
+      title="Where this file stands"
+      subtitle={
+        counts.awaitingVerification > 0
+          ? "Uploaded is not collected. Everything awaiting verification still needs a human to open it."
+          : isDocumentCollectionComplete(progress)
+            ? "Everything mandatory and due has been verified."
+            : "Counted the same way the progress bar counts — verified, not uploaded."
+      }
+    >
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+        {cells.map((cell) => (
+          <div key={cell.label}>
+            <dt className="text-xs text-ink-500">{cell.label}</dt>
+            <dd className={cx("tnum text-lg font-semibold", cell.tone)}>{cell.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </Card>
+  );
+}
+
+/**
+ * The uploaded file itself, on screen.
+ *
+ * Shared by View and by Verify, because they are the same act — looking at
+ * what arrived — differing only in what may be done afterwards. Two copies of
+ * this would be two ways for a preview to be subtly wrong.
+ */
+function DocumentPreview({ document }: { document: DocumentFile }): ReactNode {
+  const [preview, setPreview] = useState<
+    { status: "loading" } | { status: "error" } | { status: "ready"; url: string; isImage: boolean }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    setPreview({ status: "loading" });
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    Promise.all([storageAdapter.get(document.filePath), storageAdapter.list(document.filePath)])
+      .then(([fileBytes, entries]) => {
+        if (cancelled) return;
+        const contentType = entries.find((entry) => entry.path === document.filePath)?.contentType;
+        const blob = new Blob(
+          [fileBytes as BlobPart],
+          contentType ? { type: contentType } : undefined,
+        );
+        objectUrl = URL.createObjectURL(blob);
+        setPreview({
+          status: "ready",
+          url: objectUrl,
+          isImage: (contentType ?? "").startsWith("image/"),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPreview({ status: "error" });
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [document.filePath]);
+
+  return (
+    <div className="flex min-h-40 items-center justify-center overflow-hidden rounded-md bg-ink-50 ring-1 ring-ink-200">
+      {preview.status === "loading" && <p className="p-6 text-xs text-ink-500">Loading preview…</p>}
+      {preview.status === "error" && (
+        <p className="p-6 text-xs text-red-700">
+          Could not load a preview from the storage backend.
+        </p>
+      )}
+      {preview.status === "ready" &&
+        (preview.isImage ? (
+          <img
+            src={preview.url}
+            alt={document.fileName}
+            className="max-h-80 w-full object-contain"
+          />
+        ) : (
+          <iframe src={preview.url} title={document.fileName} className="h-80 w-full" />
+        ))}
+    </div>
+  );
+}
+
+/** What is known about an uploaded file, without any judgement on it. */
+function DocumentFacts({ document }: { document: DocumentFile }): ReactNode {
+  const db = useDatabase();
+  const uploader = db.users.find((u) => u.id === document.uploadedBy);
+  const verifier = db.users.find((u) => u.id === document.verifiedBy);
+
+  return (
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+      <div>
+        <dt className="text-xs text-ink-500">Filename</dt>
+        <dd className="truncate">{document.fileName}</dd>
+      </div>
+      <div>
+        <dt className="text-xs text-ink-500">Current version</dt>
+        <dd>v{document.version}</dd>
+      </div>
+      {document.periodStart && (
+        <div>
+          <dt className="text-xs text-ink-500">Financial year</dt>
+          <dd>FY {financialYearOf(new Date(document.periodStart)).label}</dd>
+        </div>
+      )}
+      <div>
+        <dt className="text-xs text-ink-500">Uploaded by</dt>
+        <dd>{uploader?.name ?? "—"}</dd>
+      </div>
+      <div>
+        <dt className="text-xs text-ink-500">Uploaded on</dt>
+        <dd>{exactly(document.uploadedAt)}</dd>
+      </div>
+      {document.verifiedAt && (
+        <div>
+          <dt className="text-xs text-ink-500">Verified</dt>
+          <dd>
+            {verifier?.name ?? "Someone"} · {exactly(document.verifiedAt)}
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+/**
+ * View — the step between Upload and Verify (Part 6).
+ *
+ * Read-only on purpose. Opening a document to check what the customer sent, or
+ * to answer a bank's query about a file verified three weeks ago, should not
+ * put a Verify button under the reader's cursor.
+ */
+function ViewDocumentDialog({
+  requirementId,
+  onClose,
+}: {
+  requirementId: string | null;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  const document = db.documents.find((d) => d.id === requirement?.satisfiedByDocumentId);
+  const documentType = db.documentTypes.find((t) => t.id === requirement?.documentTypeId);
+
+  if (!requirement || !document) return null;
+
+  const state = documentStateOf(requirement.status, requirement.applicability);
+
+  return (
+    <Modal
+      open={requirementId !== null}
+      title={requirement.customName ?? documentType?.name ?? "Document"}
+      onClose={onClose}
+    >
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Badge tone={DOCUMENT_STATE_PRESENTATION[state].tone}>
+            {DOCUMENT_STATE_PRESENTATION[state].label}
+          </Badge>
+          <span className="text-xs text-ink-500">
+            {DOCUMENT_STATE_PRESENTATION[state].meaning}
+          </span>
+        </div>
+
+        <DocumentPreview document={document} />
+        <DocumentFacts document={document} />
+
+        {document.verificationNotes && (
+          <p className="rounded bg-ink-50 px-3 py-2 text-sm text-ink-700">
+            Verification note: {document.verificationNotes}
+          </p>
+        )}
+        {document.rejectionReason && (
+          <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-900">
+            Rejected: {document.rejectionReason}
+          </p>
+        )}
+
+        <div>
+          <p className="mb-1 text-xs font-medium text-ink-700">Storage location</p>
+          <StorageLocation filePath={document.filePath} />
+        </div>
+
+        <div className="flex justify-end">
+          <Button onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1907,6 +2296,7 @@ function CaseFacts({ caseId }: { caseId: string }): ReactNode {
           <Fact
             label="Existing obligations"
             value={tri(loanCase.hasExistingObligations)}
+            hint="Asked and answered under Existing loans and EMIs, on the Overview"
           />
           <Fact
             label="Construction stage"
@@ -1952,6 +2342,242 @@ function CaseFacts({ caseId }: { caseId: string }): ReactNode {
       />
     </>
   );
+}
+
+/**
+ * The existing-obligations question, as a workflow rather than a field
+ * (Part 2).
+ *
+ * WHAT THE DOMAIN ACTUALLY MODELS, AND WHY THIS IS SHAPED THAT WAY
+ *
+ * One three-valued fact on the case: `loan_case.has_existing_obligations`
+ * (Database/migrations/0021). There is no obligations table, no EMI column and
+ * no per-loan row anywhere in the schema — and inventing one here would be a
+ * data model this milestone was told not to design. So the FACT stays exactly
+ * what the engine reads, and what is added is the missing half: a way to ask
+ * the question, in place, on the screen where its answer is displayed.
+ *
+ * Before this, the only route to the answer was the fourth dropdown of a modal
+ * behind an "Edit facts" button, while the Overview showed "Existing
+ * obligations: Not asked" with nothing to press. "Not asked" is a true and
+ * useful state — it is not the same as "no" and must never be recorded as one
+ * — but it should read as a question outstanding, not as a gap in the screen.
+ *
+ * MULTIPLE LOANS. A customer servicing three loans needs three statements, and
+ * the rule raises one row per party. The extra ones are added through the
+ * existing per-case custom-requirement mechanism — named for the lender they
+ * belong to, collected and verified like any other document, touching no rule
+ * and no other case. That is the multiplicity the domain supports today; a
+ * structured obligation record with amounts and tenures is a different
+ * milestone and is deliberately not started here.
+ */
+function ExistingObligations({ caseId }: { caseId: string }): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const [addOpen, setAddOpen] = useState(false);
+  const [lender, setLender] = useDraft(`case:${caseId}:obligation-lender`);
+
+  const loanCase = db.cases.find((c) => c.id === caseId);
+  if (!loanCase) return null;
+
+  const canEdit =
+    session.can("case.update", "all") ||
+    (session.can("case.update", "own") && loanCase.ownerUserId === session.user.id);
+
+  const answer = loanCase.hasExistingObligations;
+
+  const statementType = db.documentTypes.find((t) => t.code === "existing_loan_statement");
+  // Both halves of what is being collected: the rows the rule raised, and the
+  // extra ones a user added for a second and third live loan.
+  const statements = db.requirements.filter(
+    (r) =>
+      r.caseId === caseId &&
+      r.status !== "not_applicable" &&
+      (r.documentTypeId === statementType?.id ||
+        (r.isCustom === true && r.customName?.toLowerCase().includes("loan statement") === true)),
+  );
+
+  const answerLabel =
+    answer === undefined
+      ? "Not asked yet"
+      : answer
+        ? "Yes — already servicing a loan"
+        : "No live loans";
+
+  const record = (value: boolean | undefined): void => {
+    const result = updateCaseFacts(
+      caseId,
+      { hasExistingObligations: value, ...factsToPreserve(loanCase) },
+      session.user.id,
+    );
+    if (!result.ok) {
+      toast.show(result.message ?? "", "bad");
+      return;
+    }
+    toast.show(
+      value === undefined
+        ? "Back to unanswered. The loan statement is no longer being asked for."
+        : value
+          ? "Recorded. The existing loan statement is on the documents list."
+          : "Recorded. No loan statement is being asked for.",
+    );
+  };
+
+  const addStatement = (): void => {
+    const name = `Existing Loan Statement — ${lender.trim()}`;
+    const result = addCustomRequirement(
+      caseId,
+      {
+        category: "income",
+        name,
+        applicability: "mandatory",
+        description:
+          "Statement for a second live loan, showing the EMI and how regularly it is paid.",
+      },
+      session.user.id,
+    );
+    if (!result.ok) {
+      toast.show(result.message ?? "", "bad");
+      return;
+    }
+    toast.show(`${name} added to this case's list.`);
+    setLender("");
+    setAddOpen(false);
+  };
+
+  return (
+    <>
+      <Card
+        title="Existing loans and EMIs"
+        subtitle="Whether anyone on this file is already repaying a loan. It decides whether a loan statement is collected, and it is half of what a bank reads as FOIR."
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={answer === undefined ? "warn" : answer ? "info" : "neutral"}>
+            {answerLabel}
+          </Badge>
+          {canEdit && (
+            <div className="flex flex-wrap gap-1.5">
+              <Button variant={answer === true ? "primary" : "ghost"} onClick={() => record(true)}>
+                Yes
+              </Button>
+              <Button variant={answer === false ? "primary" : "ghost"} onClick={() => record(false)}>
+                No
+              </Button>
+              {answer !== undefined && (
+                <Button variant="ghost" onClick={() => record(undefined)}>
+                  Clear the answer
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {answer === undefined && (
+          <p className="mt-2 text-sm text-amber-700">
+            Still to ask. Nothing is assumed from silence — no loan statement is being requested,
+            and none is being ruled out either.
+          </p>
+        )}
+
+        {answer === false && (
+          <p className="mt-2 text-sm text-ink-500">
+            Recorded as no. If the customer mentions a live loan later, answer Yes here and the
+            statement appears on the documents list immediately.
+          </p>
+        )}
+
+        {answer === true && (
+          <div className="mt-3 border-t border-ink-100 pt-3">
+            <div className="mb-1 flex items-baseline justify-between gap-2">
+              <p className="text-xs font-medium text-ink-700">Statements being collected</p>
+              {session.can("document.upload", "own") && (
+                <Button variant="ghost" onClick={() => setAddOpen(true)}>
+                  + Another loan
+                </Button>
+              )}
+            </div>
+            {statements.length === 0 ? (
+              <Empty>
+                No statement row yet — the rule raises one per applicant from the documents-pending
+                stage.
+              </Empty>
+            ) : (
+              <ul className="divide-y divide-ink-100">
+                {statements.map((requirement) => (
+                  <li key={requirement.id} className="flex items-center gap-3 py-2">
+                    <span className="min-w-0 flex-1 text-sm">
+                      {requirement.customName ?? statementType?.name ?? "Existing Loan Statement"}
+                      <span className="ml-1.5 text-xs text-ink-500">
+                        {requirement.requiredOfCasePartyId
+                          ? partyName(db, requirement.requiredOfCasePartyId)
+                          : "The case"}
+                      </span>
+                    </span>
+                    <Badge tone={documentStateTone(requirement.status, requirement.applicability)}>
+                      {documentStateLabel(requirement.status, requirement.applicability)}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-xs text-ink-500">
+              A customer repaying more than one loan needs a statement for each. Add the others
+              here — they land on this case only and are uploaded and verified like any other
+              document.
+            </p>
+          </div>
+        )}
+      </Card>
+
+      <Modal open={addOpen} title="Another live loan" onClose={() => setAddOpen(false)}>
+        <div className="space-y-3">
+          <p className="text-sm text-ink-700">
+            Name the lender, so the two statements are told apart on the list and on the phone.
+            This adds one document to <em>this case</em> — no rule changes.
+          </p>
+          <Field label="Who is the loan with?" hint="e.g. HDFC, Bajaj, the local chit fund.">
+            <Input
+              value={lender}
+              onChange={(event) => setLender(event.target.value)}
+              placeholder="HDFC Bank"
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setAddOpen(false)}>Back</Button>
+            <Button variant="primary" disabled={lender.trim().length < 2} onClick={addStatement}>
+              Add the statement
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+/**
+ * The other case facts, restated so that saving one does not clear the rest.
+ *
+ * `updateCaseFacts` takes the whole set and treats an absent key as "cleared
+ * back to unasked" — deliberately, because clearing an answer has to be
+ * possible. A caller changing ONE fact therefore has to say what the others
+ * still are, and doing that by hand at each call site is how a Yes/No button
+ * quietly wipes a construction stage.
+ */
+function factsToPreserve(loanCase: {
+  isGstRegistered?: boolean | undefined;
+  constructionStage?: (typeof CONSTRUCTION_STAGES)[number] | undefined;
+  requestedAmount?: number | undefined;
+}): Parameters<typeof updateCaseFacts>[1] {
+  return {
+    ...(loanCase.isGstRegistered !== undefined
+      ? { isGstRegistered: loanCase.isGstRegistered }
+      : {}),
+    ...(loanCase.constructionStage ? { constructionStage: loanCase.constructionStage } : {}),
+    ...(loanCase.requestedAmount !== undefined
+      ? { requestedAmount: loanCase.requestedAmount }
+      : {}),
+  };
 }
 
 function Fact({
@@ -2241,97 +2867,54 @@ function VerifyDialog({
   const [notes, setNotes] = useState("");
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
-  const [preview, setPreview] = useState<
-    { status: "loading" } | { status: "error" } | { status: "ready"; url: string; isImage: boolean }
-  >({ status: "loading" });
 
   const requirement = db.requirements.find((r) => r.id === requirementId);
   const document = db.documents.find((d) => d.id === requirement?.satisfiedByDocumentId);
   const expectedType = db.documentTypes.find((t) => t.id === requirement?.documentTypeId);
-  const suggestedType = db.documentTypes.find((t) => t.id === document?.suggestedDocumentTypeId);
-  const uploader = db.users.find((u) => u.id === document?.uploadedBy);
 
   useEffect(() => {
     setNotes("");
     setRejecting(false);
     setRejectReason("");
-    setPreview({ status: "loading" });
-    if (!document) return;
-
-    let cancelled = false;
-    let objectUrl: string | null = null;
-
-    Promise.all([storageAdapter.get(document.filePath), storageAdapter.list(document.filePath)])
-      .then(([fileBytes, entries]) => {
-        if (cancelled) return;
-        const contentType = entries.find((entry) => entry.path === document.filePath)?.contentType;
-        const blob = new Blob([fileBytes as BlobPart], contentType ? { type: contentType } : undefined);
-        objectUrl = URL.createObjectURL(blob);
-        setPreview({ status: "ready", url: objectUrl, isImage: (contentType ?? "").startsWith("image/") });
-      })
-      .catch(() => {
-        if (!cancelled) setPreview({ status: "error" });
-      });
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [document?.id]);
+  }, [requirementId]);
 
   if (!requirement || !document) return null;
 
+  // What was ASKED FOR, in the words on the checklist row — including the
+  // financial year, which is half the question on an ITR or a GST return.
+  const askedFor =
+    requirement.customName ??
+    documentRowLabel(
+      expectedType?.name ?? "Document",
+      requirement.periodStart
+        ? financialYearOf(new Date(requirement.periodStart)).label
+        : undefined,
+      expectedType?.periodKind,
+    );
+
   return (
-    <Modal open={requirementId !== null} title="Review before verifying" onClose={onClose}>
+    <Modal open={requirementId !== null} title="Is this the right document?" onClose={onClose}>
       <div className="space-y-3">
-        <div className="flex min-h-40 items-center justify-center overflow-hidden rounded-md bg-ink-50 ring-1 ring-ink-200">
-          {preview.status === "loading" && <p className="p-6 text-xs text-ink-500">Loading preview…</p>}
-          {preview.status === "error" && (
-            <p className="p-6 text-xs text-red-700">
-              Could not load a preview from the storage backend.
-            </p>
-          )}
-          {preview.status === "ready" &&
-            (preview.isImage ? (
-              <img src={preview.url} alt={document.fileName} className="max-h-80 w-full object-contain" />
-            ) : (
-              <iframe src={preview.url} title={document.fileName} className="h-80 w-full" />
-            ))}
+        {/* THE QUESTION, ASKED OUT LOUD (Part 6).
+            AOS cannot tell whether these bytes are an ITR, a PAN card or a
+            photograph of a wall, and pretending otherwise would put a
+            confident wrong answer where a human judgement belongs. There is no
+            OCR here and none is implied: a person looks at the file and says
+            yes or no, and that judgement — with their name on it — is what
+            "verified" means in this system. */}
+        <div className="rounded-md bg-brand-100 px-3 py-2">
+          <p className="text-sm font-medium text-ink-900">
+            Is the file below the <span className="underline">{askedFor}</span> that was asked for?
+          </p>
+          <p className="mt-0.5 text-xs text-ink-700">
+            Open it and look. AOS cannot read the file — confirming is your judgement, recorded
+            against your name, and it is what marks this requirement verified.
+          </p>
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-          <div>
-            <dt className="text-xs text-ink-500">Filename</dt>
-            <dd className="truncate">{document.fileName}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-500">Current version</dt>
-            <dd>v{document.version}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-500">Expected document type</dt>
-            <dd>{expectedType?.name ?? "—"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-500">Uploaded document type</dt>
-            <dd>{suggestedType?.name ?? "—"}</dd>
-          </div>
-          {document.periodStart && (
-            <div>
-              <dt className="text-xs text-ink-500">Financial year</dt>
-              <dd>FY {financialYearOf(new Date(document.periodStart)).label}</dd>
-            </div>
-          )}
-          <div>
-            <dt className="text-xs text-ink-500">Uploaded by</dt>
-            <dd>{uploader?.name ?? "—"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-500">Uploaded on</dt>
-            <dd>{exactly(document.uploadedAt)}</dd>
-          </div>
-        </dl>
+        <DocumentPreview document={document} />
+
+        <DocumentFacts document={document} />
 
         <div>
           <p className="mb-1 text-xs font-medium text-ink-700">Storage location</p>
@@ -2358,8 +2941,8 @@ function VerifyDialog({
           </Field>
         )}
 
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose}>Not now</Button>
           {rejecting ? (
             <Button
               variant="danger"
@@ -2372,21 +2955,24 @@ function VerifyDialog({
               Confirm rejection
             </Button>
           ) : (
-            <Button variant="danger" onClick={() => setRejecting(true)}>
-              Reject
-            </Button>
-          )}
-          {!rejecting && (
-            <Button
-              variant="primary"
-              onClick={() => {
-                const result = verifyDocument(requirement.id, session.user.id, notes);
-                toast.show(result.ok ? "Verified" : (result.message ?? ""), result.ok ? "good" : "bad");
-                if (result.ok) onClose();
-              }}
-            >
-              Confirm & Verify
-            </Button>
+            <>
+              <Button variant="danger" onClick={() => setRejecting(true)}>
+                No — wrong or unreadable
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const result = verifyDocument(requirement.id, session.user.id, notes);
+                  toast.show(
+                    result.ok ? "Verified" : (result.message ?? ""),
+                    result.ok ? "good" : "bad",
+                  );
+                  if (result.ok) onClose();
+                }}
+              >
+                Yes — confirm &amp; verify
+              </Button>
+            </>
           )}
         </div>
       </div>

@@ -604,6 +604,110 @@ describe("custom requirements — the exception the rules could not have known a
   });
 });
 
+// ---------------------------------------------------------------------------
+// "Existing Loans and EMIs" → "+ Another loan" — the missing-STORAGE_KEY-bump
+// bug.
+//
+// Reported: entering a lender and pressing "Add the statement" failed with
+// "The 'Other Document' type is missing from master data." CaseDetail's
+// addStatement() calls addCustomRequirement exactly as any other hand-added
+// document does (Part 6 of the Telecaller Workflow milestone) — there is no
+// separate "Existing Loan Statement" type for a second lender, by design
+// (see the doc comment on ExistingObligations in CaseDetail.tsx): the rule
+// still owns `existing_loan_statement` for the first, per-party statement,
+// and every additional one is a per-case custom requirement named after the
+// lender, anchored to the `other_document` catalogue row.
+//
+// That row was added to the catalogue in the same commit that introduced
+// this feature, but STORAGE_KEY was not bumped alongside it — so a browser
+// whose store predates that commit keeps a `documentTypes` array with no
+// `other_document` row forever, and `addCustomRequirement`'s lookup fails.
+// The fix is the version bump (v6 -> v7), not a new master document type.
+// ---------------------------------------------------------------------------
+
+describe("existing loans and EMIs — 'Add another loan' (regression for the STORAGE_KEY bug)", () => {
+  it("discards a pre-milestone store instead of reusing it, so a second lender's statement can be added", async () => {
+    // A snapshot shaped like what a real browser had before the Telecaller
+    // Workflow milestone shipped `other_document`: a documentTypes array
+    // that simply does not contain it. Written under the OLD key literally,
+    // the way a real stale browser's localStorage would still hold it.
+    const staleUserId = "usr_stale";
+    const staleCaseId = "cas_stale";
+    localStorage.setItem(
+      "aos.prototype.v6",
+      JSON.stringify({
+        cases: [{ id: staleCaseId, caseNumber: "STALE-1", stage: "documents_pending" }],
+        caseParties: [],
+        people: [],
+        organisations: [],
+        users: [{ id: staleUserId, fullName: "Stale User" }],
+        loanProducts: [],
+        documentTypes: [{ id: "dt_pan", code: "pan_card", name: "PAN Card" }],
+        requirements: [],
+        documents: [],
+        documentRequirementRules: [],
+        events: [],
+      }),
+    );
+
+    // A fresh module instance, reading that same localStorage — precisely
+    // what re-opening the app in that stale browser is.
+    vi.resetModules();
+    vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+    const reloaded = await import("./store.js");
+
+    // The stale v6 snapshot must not have been used: the current store reads
+    // a different key, so it bootstrapped a fresh seed instead — one whose
+    // catalogue does carry `other_document`.
+    const freshOtherDocument = reloaded
+      .getDb()
+      .documentTypes.find((t) => t.code === "other_document");
+    expect(freshOtherDocument).toBeDefined();
+    expect(reloaded.getDb().cases.some((c) => c.id === staleCaseId)).toBe(false);
+
+    // The exact call CaseDetail's addStatement() makes for "+ Another loan".
+    const db = reloaded.getDb();
+    const productId = db.loanProducts[0]?.id;
+    const userId = db.users[0]?.id;
+    if (!productId || !userId) throw new Error("test setup: expected a seeded product and user");
+    const caseId = reloaded.createCase(
+      { newApplicantName: "Ravi Kumar", loanProductId: productId },
+      userId,
+    );
+
+    const catalogueSizeBefore = reloaded.getDb().documentTypes.length;
+
+    const result = reloaded.addCustomRequirement(
+      caseId,
+      {
+        category: "income",
+        name: "Existing Loan Statement — HDFC Bank",
+        applicability: "mandatory",
+        description:
+          "Statement for a second live loan, showing the EMI and how regularly it is paid.",
+      },
+      userId,
+    );
+
+    expect(result.ok).toBe(true);
+
+    const added = reloaded
+      .getDb()
+      .requirements.find((r) => r.caseId === caseId && r.isCustom && r.customName?.includes("HDFC"));
+    expect(added).toBeDefined();
+    expect(added?.customName).toBe("Existing Loan Statement — HDFC Bank");
+    // Anchored to the existing 'Other Document' catalogue type — no new
+    // master document type was created for the lender.
+    expect(added?.documentTypeId).toBe(freshOtherDocument?.id);
+    // The lender-specific requirement is still found by the same filter
+    // ExistingObligations uses to list "Statements being collected".
+    expect(added?.customName?.toLowerCase().includes("loan statement")).toBe(true);
+
+    // No new master document type was created for this lender.
+    expect(reloaded.getDb().documentTypes.length).toBe(catalogueSizeBefore);
+  });
+});
+
 describe("uploading against a requirement whose document type belongs to a business", () => {
   /**
    * The bug: a proprietor borrowing in their own name is asked for a balance

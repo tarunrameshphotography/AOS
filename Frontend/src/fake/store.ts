@@ -114,8 +114,20 @@ import type {
  * is actually lodged at. Adding a bank would fail on a missing array, which
  * is the kind of failure that reads as a broken feature rather than as stale
  * data.
+ *
+ * v7 for the Telecaller Workflow refinement (Milestone 11, commit 917c7c5),
+ * which this bump should have shipped with and did not. That milestone added
+ * `other_document` to the catalogue as the anchor every hand-added custom
+ * requirement points at (see `CUSTOM_DOCUMENT_TYPE_CODE` in
+ * document-catalogue.ts) and the `isCustom`/`customName` fields on
+ * `Requirement`. A stale v6 store predates that row entirely, so the first
+ * time anyone on it used "Existing Loans and EMIs" → "+ Another loan" (or any
+ * other hand-added document), `addCustomRequirement` looked up a document
+ * type that simply was not in that store and failed with "The 'Other
+ * Document' type is missing from master data." — reported as a bug in the
+ * loan-statement flow, but really this same missed bump.
  */
-const STORAGE_KEY = "aos.prototype.v6";
+const STORAGE_KEY = "aos.prototype.v7";
 
 /**
  * Row identity.

@@ -31,6 +31,7 @@ import {
 } from "@domain/requirements/document-catalogue.js";
 import { financialYearOf } from "@domain/requirements/financial-year.js";
 import { CONSTRUCTION_STAGES } from "@domain/requirements/rules.js";
+import { versionHistory } from "@domain/storage/index.js";
 
 import {
   acceptOffer,
@@ -52,6 +53,7 @@ import {
   rejectDocument,
   removeCaseProperty,
   removeCustomRequirement,
+  removeDocument,
   ruleBehind,
   selectableFinancialYears,
   setHold,
@@ -1685,6 +1687,12 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   const [viewFor, setViewFor] = useState<string | null>(null);
   const [addCustomOpen, setAddCustomOpen] = useState(false);
   const [removeCustomFor, setRemoveCustomFor] = useState<string | null>(null);
+  // Replace/Remove milestone: replacing asks for the new file straight away
+  // (same file-picker flow as Upload, just gated open by a confirmation
+  // first, since it supersedes an already-received/verified document).
+  // Removing has no file to pick, so it is its own confirm-and-act dialog.
+  const [replaceFor, setReplaceFor] = useState<string | null>(null);
+  const [removeUploadFor, setRemoveUploadFor] = useState<string | null>(null);
 
   if (!session.can("document.read", "own")) {
     return (
@@ -1921,6 +1929,22 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
               Verify
             </Button>
           )}
+          {/* Remove/Replace milestone: once something is uploaded, replacing it
+              (received or already-verified) or removing it outright is always
+              reachable from here — not only while it is still "pending". Both
+              go through a confirmation dialog since both act on a document a
+              human may already have verified. */}
+          {document && ["received", "verified"].includes(requirement.status) &&
+            session.can("document.upload", "own") && (
+              <Button variant="ghost" onClick={() => setReplaceFor(requirement.id)}>
+                Replace
+              </Button>
+            )}
+          {document && session.can("document.upload", "own") && (
+            <Button variant="ghost" onClick={() => setRemoveUploadFor(requirement.id)}>
+              Remove upload
+            </Button>
+          )}
           {["pending", "received", "rejected"].includes(requirement.status) &&
             session.can("requirement.waive", "own") && (
               <Button
@@ -2151,6 +2175,65 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
         </div>
       </Modal>
 
+      <Modal
+        open={replaceFor !== null}
+        title="Replace the uploaded file?"
+        onClose={() => setReplaceFor(null)}
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-ink-700">
+            The current file is kept — nothing is deleted. It stays in this document's version
+            history, and the new file you pick next becomes the active version the requirement is
+            satisfied by. The requirement goes back to awaiting verification.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setReplaceFor(null)}>Back</Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (!replaceFor) return;
+                setUploadingFor(replaceFor);
+                setReplaceFor(null);
+                fileInput.current?.click();
+              }}
+            >
+              Choose replacement file
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={removeUploadFor !== null}
+        title="Remove this upload?"
+        onClose={() => setRemoveUploadFor(null)}
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-ink-700">
+            The file is not deleted — it stays in this document's history, exactly as uploaded. Only
+            the requirement's current upload is cleared: this row goes back to awaiting a file, and
+            you can upload a replacement immediately. The requirement itself is not removed.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setRemoveUploadFor(null)}>Back</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (!removeUploadFor) return;
+                const result = removeDocument(removeUploadFor, session.user.id);
+                toast.show(
+                  result.ok ? "Upload removed" : (result.message ?? ""),
+                  result.ok ? "good" : "bad",
+                );
+                if (result.ok) setRemoveUploadFor(null);
+              }}
+            >
+              Remove upload
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       <AddCustomDocumentDialog
         open={addCustomOpen}
         caseId={caseId}
@@ -2329,6 +2412,54 @@ function DocumentFacts({ document }: { document: DocumentFile }): ReactNode {
 }
 
 /**
+ * Every version this document superseded, most-recent-first — the Remove/
+ * Replace milestone's "do not silently destroy the historical record" made
+ * visible. Deliberately just the superseded versions: the current one is
+ * already on screen via DocumentFacts above, and repeating it here would be
+ * the "visually overwhelming" the milestone specifically asked to avoid.
+ */
+function DocumentVersionHistory({ document }: { document: DocumentFile }): ReactNode {
+  const db = useDatabase();
+  const chain = versionHistory(db.documents, document.id);
+  const previous = chain.slice(1).map((id) => db.documents.find((d) => d.id === id));
+
+  if (previous.length === 0) return null;
+
+  return (
+    <div>
+      <p className="mb-1 text-xs font-medium text-ink-700">Previous uploads</p>
+      <ul className="divide-y divide-ink-100 rounded-md border border-ink-100">
+        {previous.map((doc) => {
+          if (!doc) return null;
+          const uploader = db.users.find((u) => u.id === doc.uploadedBy);
+          const verifier = db.users.find((u) => u.id === doc.verifiedBy);
+          const rejecter = db.users.find((u) => u.id === doc.rejectedBy);
+          const statusText = doc.rejectedAt
+            ? `Rejected by ${rejecter?.name ?? "someone"} · ${exactly(doc.rejectedAt)}`
+            : doc.verifiedAt
+              ? `Verified by ${verifier?.name ?? "someone"} · ${exactly(doc.verifiedAt)}`
+              : "Superseded before it was verified or rejected";
+          return (
+            <li key={doc.id} className="px-2.5 py-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate font-medium text-ink-700">
+                  v{doc.version} · {doc.fileName}
+                </span>
+                <span className="shrink-0 text-ink-400">{exactly(doc.uploadedAt)}</span>
+              </div>
+              <p className="mt-0.5 text-ink-500">
+                Uploaded by {uploader?.name ?? "someone"} · {statusText}
+              </p>
+              {doc.rejectionReason && <p className="mt-0.5 text-ink-500">Reason: {doc.rejectionReason}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * View — the step between Upload and Verify (Part 6).
  *
  * Read-only on purpose. Opening a document to check what the customer sent, or
@@ -2370,6 +2501,7 @@ function ViewDocumentDialog({
 
         <DocumentPreview document={document} />
         <DocumentFacts document={document} />
+        <DocumentVersionHistory document={document} />
 
         {document.verificationNotes && (
           <p className="rounded bg-ink-50 px-3 py-2 text-sm text-ink-700">
@@ -2384,7 +2516,10 @@ function ViewDocumentDialog({
 
         <div>
           <p className="mb-1 text-xs font-medium text-ink-700">Storage location</p>
-          <StorageLocation filePath={document.filePath} />
+          <StorageLocation
+            filePath={document.filePath}
+            {...(document.storageRoot ? { documentStorageRoot: document.storageRoot } : {})}
+          />
         </div>
 
         <div className="flex justify-end">
@@ -3224,10 +3359,14 @@ function VerifyDialog({
         <DocumentPreview document={document} />
 
         <DocumentFacts document={document} />
+        <DocumentVersionHistory document={document} />
 
         <div>
           <p className="mb-1 text-xs font-medium text-ink-700">Storage location</p>
-          <StorageLocation filePath={document.filePath} />
+          <StorageLocation
+            filePath={document.filePath}
+            {...(document.storageRoot ? { documentStorageRoot: document.storageRoot } : {})}
+          />
         </div>
 
         <Field

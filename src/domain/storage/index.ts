@@ -32,3 +32,5 @@ export {
   type StorageAdapter,
   type StoredObject,
 } from "./storage-adapter.js";
+
+export { classifyStorageState, type StorageFileState } from "./storage-state.js";

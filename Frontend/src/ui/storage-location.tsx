@@ -8,6 +8,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { classifyStorageState } from "@domain/storage/index.js";
+
 import { getStorageConfig, objectExists, openStorageFolder } from "../fake/storage.js";
 import { Badge, Button, useToast } from "./index.js";
 
@@ -17,7 +19,17 @@ function toWindowsPath(root: string, filePath: string): string {
   return `${root}${separator}Documents${separator}${relative}`;
 }
 
-export function StorageLocation({ filePath }: { filePath: string }): ReactNode {
+export function StorageLocation({
+  filePath,
+  documentStorageRoot,
+}: {
+  filePath: string;
+  /** The root recorded on this document at upload time
+   * (`DocumentFile.storageRoot`) — lets a mismatch against the backend's
+   * *current* root be told apart from a genuinely missing file. Undefined
+   * for documents uploaded before this was tracked. */
+  documentStorageRoot?: string;
+}): ReactNode {
   const toast = useToast();
   const [state, setState] = useState<
     | { status: "loading" }
@@ -54,6 +66,11 @@ export function StorageLocation({ filePath }: { filePath: string }): ReactNode {
   }
 
   const fullPath = toWindowsPath(state.root, filePath);
+  const fileState = classifyStorageState({
+    ...(documentStorageRoot ? { documentStorageRoot } : {}),
+    currentStorageRoot: state.root,
+    exists: state.exists,
+  });
 
   return (
     <div className="space-y-1.5">
@@ -61,8 +78,20 @@ export function StorageLocation({ filePath }: { filePath: string }): ReactNode {
         <p className="min-w-0 flex-1 truncate font-mono text-xs text-ink-700" title={fullPath}>
           {fullPath}
         </p>
-        {!state.exists && <Badge tone="bad">File missing on disk</Badge>}
+        {fileState === "missing" && <Badge tone="bad">File missing on disk</Badge>}
+        {fileState === "root-changed" && (
+          <Badge tone="bad" title={`Uploaded under "${documentStorageRoot}"; storage is now configured to "${state.root}".`}>
+            Storage root changed since upload
+          </Badge>
+        )}
       </div>
+      {fileState === "root-changed" && (
+        <p className="text-xs text-ink-500">
+          This file was written to a different storage root than the one currently configured. It is
+          most likely still on disk under the old root — this is not the same as the file having been
+          deleted.
+        </p>
+      )}
       <Button
         onClick={() => {
           void openStorageFolder(filePath).then((result) => {

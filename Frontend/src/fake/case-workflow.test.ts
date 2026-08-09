@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { DOCUMENT_CATALOGUE } from "@domain/requirements/index.js";
 
-import { InMemoryStorageAdapter } from "./storage.mock.js";
+import { createStorageModule } from "./storage.mock.js";
 
 /**
  * The case workflow, end to end (Case Workflow Completion, Part 13).
@@ -47,7 +47,7 @@ function installLocalStoragePolyfill(): void {
 
 installLocalStoragePolyfill();
 
-vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+vi.doMock("./storage.js", () => createStorageModule());
 
 const {
   addCustomRequirement,

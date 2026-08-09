@@ -571,6 +571,13 @@ export interface DocumentFile {
    * @domain/storage's buildStoragePath — never chosen by a user.
    * Mirrors document.file_path (Database/migrations/0005). */
   filePath: string;
+  /** The storage root (`StorageConfig.root`) configured on the storage
+   * backend at the moment this document's bytes were written and verified
+   * readable. Lets a later "File missing on disk" be told apart from "the
+   * storage root was reconfigured since" — see @domain/storage's
+   * classifyStorageState. Undefined for documents uploaded before this was
+   * tracked. */
+  storageRoot?: string;
   fileName: string;
   fileSizeBytes: number;
   /** Which period this document covers, e.g. one financial year's ITR — set

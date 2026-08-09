@@ -8,6 +8,13 @@
 
 import type { StorageAdapter, StoredObject } from "@domain/storage/index.js";
 
+/** Matches `getStorageConfig`'s shape from `storage.ts`, without the fetch. */
+export interface MockStorageConfig {
+  readonly root: string;
+}
+
+export const MOCK_STORAGE_ROOT = "mock://storage-root";
+
 export class InMemoryStorageAdapter implements StorageAdapter {
   private readonly objects = new Map<string, { bytes: Uint8Array; stored: StoredObject }>();
 
@@ -39,4 +46,37 @@ export class InMemoryStorageAdapter implements StorageAdapter {
       .filter((entry) => entry.stored.path.startsWith(prefix))
       .map((entry) => entry.stored);
   }
+}
+
+/**
+ * A full stand-in for `./storage.js`, for `vi.doMock("./storage.js", ...)`.
+ *
+ * `store.ts` imports `objectExists`/`getStorageConfig` alongside
+ * `storageAdapter` (upload-time verification, Storage reliability milestone)
+ * — mocking only `storageAdapter` leaves those undefined and breaks every
+ * upload test, so this is the one factory every such mock should use.
+ *
+ * `overrides` lets a specific test simulate a write that reports success but
+ * cannot be read back (`objectExists: async () => false`), or a storage root
+ * that has moved since upload (`getStorageConfig: async () => ({ root: "..." })`).
+ */
+export function createStorageModule(overrides?: {
+  objectExists?: (path: string) => Promise<boolean>;
+  getStorageConfig?: () => Promise<MockStorageConfig>;
+}): {
+  storageAdapter: InMemoryStorageAdapter;
+  objectExists: (path: string) => Promise<boolean>;
+  getStorageConfig: () => Promise<MockStorageConfig>;
+} {
+  const storageAdapter = new InMemoryStorageAdapter();
+  return {
+    storageAdapter,
+    objectExists:
+      overrides?.objectExists ??
+      (async (path: string) => {
+        const entries = await storageAdapter.list(path);
+        return entries.some((entry) => entry.path === path);
+      }),
+    getStorageConfig: overrides?.getStorageConfig ?? (async () => ({ root: MOCK_STORAGE_ROOT })),
+  };
 }

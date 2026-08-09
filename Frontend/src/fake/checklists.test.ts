@@ -21,7 +21,7 @@ import {
 } from "@domain/requirements/document-catalogue.js";
 import { financialYearOf } from "@domain/requirements/financial-year.js";
 
-import { InMemoryStorageAdapter } from "./storage.mock.js";
+import { createStorageModule } from "./storage.mock.js";
 
 const backing = new Map<string, string>();
 (globalThis as unknown as { localStorage: Storage }).localStorage = {
@@ -35,7 +35,7 @@ const backing = new Map<string, string>();
   },
 } as Storage;
 
-vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+vi.doMock("./storage.js", () => createStorageModule());
 
 const { createCase, getDb, resetDatabase, addCaseProperty, updatePartyProfile } =
   await import("./store.js");

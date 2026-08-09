@@ -41,7 +41,7 @@ import {
 import { hasPermission, type Role, type Scope } from "@domain/permissions/index.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
-import { storageAdapter } from "./storage.js";
+import { getStorageConfig, objectExists, storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
 import type { ApplicabilityCode, LendingProduct } from "@domain/products/index.js";
 import type {
@@ -1785,6 +1785,30 @@ export async function uploadDocument(
     file.contentType ? { contentType: file.contentType } : undefined,
   );
 
+  // A "successful" write that cannot actually be read back is worse than a
+  // failed one — it leaves a requirement marked received against a document
+  // nobody can open. Confirm the object is there, on the root the backend is
+  // presently configured with, before this becomes a DocumentFile at all
+  // (Storage reliability milestone).
+  let verifiedRoot: string;
+  try {
+    const [exists, config] = await Promise.all([objectExists(filePath), getStorageConfig()]);
+    if (!exists) {
+      return {
+        ok: false,
+        message:
+          "The file was sent but could not be confirmed on the storage backend. Nothing was recorded — please try the upload again.",
+      };
+    }
+    verifiedRoot = config.root;
+  } catch {
+    return {
+      ok: false,
+      message:
+        "The file was sent but the storage backend could not confirm it was stored. Nothing was recorded — please try the upload again.",
+    };
+  }
+
   const documentId = nextId();
   db.documents = [
     ...db.documents,
@@ -1793,6 +1817,7 @@ export async function uploadDocument(
       documentTypeId: requirement.documentTypeId,
       ...ownerFields,
       filePath,
+      storageRoot: verifiedRoot,
       version,
       ...(previousDocument ? { supersedesDocumentId: previousDocument.id } : {}),
       // A financial-year-scoped requirement (e.g. "ITR — FY2024-25") already
@@ -1938,6 +1963,53 @@ export function rejectDocument(requirementId: Id, reason: string, actorUserId: I
     entityId: rejectedDocumentId,
     eventType: "document.rejected",
     summary: `${documentType?.name ?? "Document"} rejected: ${reason.trim()}`,
+  });
+
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Remove/Replace milestone: taking the current upload off a requirement
+ * without immediately supplying a replacement.
+ *
+ * Never deletes anything. The DocumentFile row stays in `db.documents`
+ * exactly as BR-031 keeps every version — only the requirement's pointer to
+ * it is cleared, same as a fresh requirement that has never had anything
+ * uploaded against it. The requirement itself is never touched beyond its
+ * `status`/`satisfiedByDocumentId`, so it cannot be removed by this action.
+ */
+export function removeDocument(requirementId: Id, actorUserId: Id): ActionResult {
+  const requirement = db.requirements.find((r) => r.id === requirementId);
+  if (!requirement?.satisfiedByDocumentId) {
+    return { ok: false, message: "Nothing has been uploaded against this requirement yet." };
+  }
+
+  // Removing an upload is the mirror image of making one — same grant, same
+  // reasoning as Part 7's upload-boundary check.
+  const removeCase = db.cases.find((c) => c.id === requirement.caseId);
+  if (removeCase) {
+    const refusal = authorizeOnCase(actorUserId, removeCase, "document.upload");
+    if (refusal) return refusal;
+  }
+
+  const documentType = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+  const removedDocumentId = requirement.satisfiedByDocumentId;
+  const removedDocument = db.documents.find((d) => d.id === removedDocumentId);
+
+  db.requirements = db.requirements.map((r) => {
+    if (r.id !== requirementId) return r;
+    const { satisfiedByDocumentId, ...rest } = r;
+    return { ...rest, status: "pending" as const };
+  });
+
+  record({
+    actorUserId,
+    caseId: requirement.caseId,
+    entityType: "document",
+    entityId: removedDocumentId,
+    eventType: "document.removed",
+    summary: `${documentType?.name ?? "Document"} upload removed: ${removedDocument?.fileName ?? "file"}`,
   });
 
   commit();

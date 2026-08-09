@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { InMemoryStorageAdapter } from "./storage.mock.js";
+import { createStorageModule, InMemoryStorageAdapter, MOCK_STORAGE_ROOT } from "./storage.mock.js";
 
 /**
  * store.ts reads localStorage at module load (the prototype's persistence),
@@ -33,7 +33,7 @@ installLocalStoragePolyfill();
 // `storageAdapter.put`/`.get` are exercised against an in-memory fake instead,
 // via `vi.doMock` so it takes effect before `store.js` is dynamically
 // imported below.
-vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+vi.doMock("./storage.js", () => createStorageModule());
 
 const {
   addCustomRequirement,
@@ -46,6 +46,7 @@ const {
   recipientsOf,
   rejectDocument,
   removeCustomRequirement,
+  removeDocument,
   resetDatabase,
   subscribe,
   updateBranch,
@@ -148,7 +149,7 @@ describe("createCase — every case gets an identity of its own", () => {
     // counter could not survive, because its state lived in the module and
     // the data did not.
     vi.resetModules();
-    vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+    vi.doMock("./storage.js", () => createStorageModule());
     const reloaded = await import("./store.js");
 
     const afterReload = reloaded.getDb().cases.filter((c) => c.id === caseId);
@@ -351,6 +352,205 @@ describe("uploadDocument — automatic organisation (Issue #13)", () => {
     const stillRejected = finalState.documents.find((d) => d.id === firstDocument.id);
     expect(stillRejected?.rejectionReason).toBe("Blurry — asked customer to re-upload");
     expect(stillRejected?.verifiedAt).toBeUndefined();
+  });
+
+  // Storage reliability milestone: an upload is not "received" until the
+  // backend has confirmed the bytes are actually readable back, and the root
+  // it confirmed them under is recorded on the document.
+  it("verifies the write on the storage backend before marking the requirement received", async () => {
+    resetDatabase();
+    const db = getDb();
+    const actorUserId = db.users[0]?.id;
+    if (!actorUserId) throw new Error("test setup: expected a seeded user");
+
+    const requirement = db.requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+
+    const result = await uploadDocument(
+      requirement.id,
+      { name: "verified.pdf", size: 3, bytes: new Uint8Array([1, 2, 3]) },
+      actorUserId,
+    );
+    expect(result.ok).toBe(true);
+
+    const updated = getDb();
+    const updatedRequirement = updated.requirements.find((r) => r.id === requirement.id);
+    const document = updated.documents.find((d) => d.id === updatedRequirement?.satisfiedByDocumentId);
+
+    expect(updatedRequirement?.status).toBe("received");
+    expect(document?.storageRoot).toBe(MOCK_STORAGE_ROOT);
+  });
+
+  it("does not create a phantom document when the storage backend cannot confirm the write", async () => {
+    resetDatabase();
+    const seededRequirement = getDb().requirements.find((r) => r.status === "pending");
+    if (!seededRequirement) throw new Error("test setup: expected a pending requirement in the seed");
+    const requirementId = seededRequirement.id;
+    const actorUserId = getDb().users[0]?.id;
+    if (!actorUserId) throw new Error("test setup: expected a seeded user");
+
+    // A fresh module instance, backed by an adapter whose writes succeed
+    // (uploadDocument's `put` does not throw) but which never reports the
+    // object as present — the "successful write nobody can actually read
+    // back" case the milestone calls out.
+    vi.resetModules();
+    vi.doMock("./storage.js", () => createStorageModule({ objectExists: async () => false }));
+    const isolated = await import("./store.js");
+
+    const before = isolated.getDb();
+    const requirementBefore = before.requirements.find((r) => r.id === requirementId);
+    expect(requirementBefore?.status).toBe("pending");
+    const documentCountBefore = before.documents.length;
+
+    const result = await isolated.uploadDocument(
+      requirementId,
+      { name: "unconfirmed.pdf", size: 3, bytes: new Uint8Array([9, 9, 9]) },
+      actorUserId,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/could not be confirmed/i);
+
+    const after = isolated.getDb();
+    const requirementAfter = after.requirements.find((r) => r.id === requirementId);
+    expect(requirementAfter?.status).toBe("pending");
+    expect(requirementAfter?.satisfiedByDocumentId).toBeUndefined();
+    expect(after.documents.length).toBe(documentCountBefore);
+  });
+});
+
+describe("removeDocument (Remove/Replace milestone)", () => {
+  it("clears the active document, returns the requirement to pending, and keeps the document and requirement", async () => {
+    resetDatabase();
+    const db = getDb();
+    const actorUserId = db.users[0]?.id;
+    if (!actorUserId) throw new Error("test setup: expected a seeded user");
+
+    const requirement = db.requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+    const requirementId = requirement.id;
+
+    const uploaded = await uploadDocument(
+      requirementId,
+      { name: "to-be-removed.pdf", size: 3, bytes: new Uint8Array([4, 5, 6]) },
+      actorUserId,
+    );
+    expect(uploaded.ok).toBe(true);
+    const uploadedDocumentId = getDb().requirements.find((r) => r.id === requirementId)
+      ?.satisfiedByDocumentId;
+    if (!uploadedDocumentId) throw new Error("upload did not produce a document");
+
+    const removed = removeDocument(requirementId, actorUserId);
+    expect(removed.ok).toBe(true);
+
+    const after = getDb();
+    const requirementAfter = after.requirements.find((r) => r.id === requirementId);
+    // Requirement remains — status only.
+    expect(requirementAfter).toBeDefined();
+    expect(requirementAfter?.status).toBe("pending");
+    expect(requirementAfter?.satisfiedByDocumentId).toBeUndefined();
+
+    // The document itself is neither deleted nor mutated.
+    const documentAfter = after.documents.find((d) => d.id === uploadedDocumentId);
+    expect(documentAfter).toBeDefined();
+    expect(documentAfter?.fileName).toBe("to-be-removed.pdf");
+
+    // The removal is on the record.
+    expect(
+      after.events.some(
+        (event) => event.eventType === "document.removed" && event.entityId === uploadedDocumentId,
+      ),
+    ).toBe(true);
+
+    // The user can immediately upload a replacement.
+    const replaced = await uploadDocument(
+      requirementId,
+      { name: "replacement.pdf", size: 3, bytes: new Uint8Array([7, 8, 9]) },
+      actorUserId,
+    );
+    expect(replaced.ok).toBe(true);
+    const finalRequirement = getDb().requirements.find((r) => r.id === requirementId);
+    expect(finalRequirement?.status).toBe("received");
+    const replacementDocument = getDb().documents.find(
+      (d) => d.id === finalRequirement?.satisfiedByDocumentId,
+    );
+    // Removal did not feed into the version chain — the replacement's
+    // predecessor is whatever the requirement pointed at before removal, so
+    // it is not a "version 2" of the removed upload but a fresh version 1
+    // against a requirement that (from the version chain's perspective) had
+    // nothing satisfying it.
+    expect(replacementDocument?.version).toBe(1);
+  });
+
+  it("refuses to remove when nothing has been uploaded", () => {
+    resetDatabase();
+    const requirement = getDb().requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+    const actorUserId = getDb().users[0]?.id;
+    if (!actorUserId) throw new Error("test setup: expected a seeded user");
+
+    const result = removeDocument(requirement.id, actorUserId);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("replace-then-verify (Remove/Replace milestone)", () => {
+  it("a replacement document can be verified, and version history reaches both versions", async () => {
+    resetDatabase();
+    const uploaderId = getDb().users.find((u) => u.roles.includes("telecaller"))?.id;
+    const verifierId = getDb().users.find((u) => u.roles.includes("login_executive"))?.id;
+    if (!uploaderId || !verifierId) {
+      throw new Error("test setup: expected a seeded telecaller and login executive");
+    }
+    const requirement = getDb().requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+    const requirementId = requirement.id;
+
+    const first = await uploadDocument(
+      requirementId,
+      { name: "v1.pdf", size: 3, bytes: new Uint8Array([1, 1, 1]) },
+      uploaderId,
+    );
+    expect(first.ok).toBe(true);
+    const firstDocumentId = getDb().requirements.find((r) => r.id === requirementId)
+      ?.satisfiedByDocumentId;
+    if (!firstDocumentId) throw new Error("first upload did not produce a document");
+
+    const verifiedFirst = verifyDocument(requirementId, verifierId);
+    expect(verifiedFirst.ok).toBe(true);
+    expect(getDb().requirements.find((r) => r.id === requirementId)?.status).toBe("verified");
+
+    // Replace: uploading again against an already-verified requirement.
+    const second = await uploadDocument(
+      requirementId,
+      { name: "v2.pdf", size: 3, bytes: new Uint8Array([2, 2, 2]) },
+      uploaderId,
+    );
+    expect(second.ok).toBe(true);
+
+    const afterReplace = getDb();
+    const requirementAfterReplace = afterReplace.requirements.find((r) => r.id === requirementId);
+    // Back to awaiting verification — a verified requirement does not stay
+    // verified against a file nobody has looked at yet.
+    expect(requirementAfterReplace?.status).toBe("received");
+    const secondDocumentId = requirementAfterReplace?.satisfiedByDocumentId;
+    if (!secondDocumentId) throw new Error("replacement upload did not produce a document");
+    expect(secondDocumentId).not.toBe(firstDocumentId);
+
+    const verifiedSecond = verifyDocument(requirementId, verifierId, "Confirmed the replacement.");
+    expect(verifiedSecond.ok).toBe(true);
+    expect(getDb().requirements.find((r) => r.id === requirementId)?.status).toBe("verified");
+
+    const secondDocument = getDb().documents.find((d) => d.id === secondDocumentId);
+    expect(secondDocument?.version).toBe(2);
+    expect(secondDocument?.supersedesDocumentId).toBe(firstDocumentId);
+
+    // Both versions are still present, first one untouched by the second's
+    // later verification.
+    const firstDocument = getDb().documents.find((d) => d.id === firstDocumentId);
+    expect(firstDocument).toBeDefined();
+    expect(firstDocument?.verifiedBy).toBe(verifierId);
+    expect(secondDocument?.verifiedBy).toBe(verifierId);
   });
 });
 
@@ -654,7 +854,7 @@ describe("existing loans and EMIs — 'Add another loan' (regression for the STO
     // A fresh module instance, reading that same localStorage — precisely
     // what re-opening the app in that stale browser is.
     vi.resetModules();
-    vi.doMock("./storage.js", () => ({ storageAdapter: new InMemoryStorageAdapter() }));
+    vi.doMock("./storage.js", () => createStorageModule());
     const reloaded = await import("./store.js");
 
     // The stale v6 snapshot must not have been used: the current store reads

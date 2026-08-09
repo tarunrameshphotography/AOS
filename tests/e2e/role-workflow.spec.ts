@@ -99,7 +99,9 @@ test.describe("Telecaller → Login Team document workflow", () => {
     await expect(reuploadedRow.getByText(/Rejected/i)).toHaveCount(0);
     await reuploadedRow.getByRole("button", { name: "View" }).click();
     // The viewer must show uploader/date facts confirming the new submission was recorded.
-    await expect(page.getByText(/Uploaded by/i)).toBeVisible();
+    // Exact match: the version-history panel's own "Uploaded by <name> · ..." line for the
+    // superseded (rejected) version also substring-matches "Uploaded by".
+    await expect(page.getByText("Uploaded by", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: /Close|Not now/i }).first().click();
   });
 
@@ -209,6 +211,99 @@ test.describe("Case originator and current owner/handler", () => {
     // Originator must remain the original telecaller; current owner must now differ.
     await expect(page.getByText(new RegExp(`Originated by ${USERS.telecaller}`))).toBeVisible();
     await expect(page.getByText(new RegExp(`Currently with ${USERS.manager}`))).toBeVisible();
+  });
+});
+
+test.describe("Document Remove/Replace workflow", () => {
+  test("verified document can be replaced (v2, old version kept, back to awaiting verification), and preview still works", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
+
+    const caseUrl = await createCaseThroughUi(page, {
+      name: "Replace Workflow Applicant",
+      phone: "9843129993",
+      loanTypeLabel: "Personal Loan · Personal Loan",
+      amount: "350000",
+    });
+    await advanceToDocumentsPending(page);
+    await gotoTab(page, "documents");
+
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
+    await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
+
+    // Verify as Login Team so there is an already-verified document to replace.
+    await switchUser(page, USERS.loginExecutive);
+    await page.goto(caseUrl);
+    await gotoTab(page, "documents");
+    const panRow = documentRow(page, "PAN Card", { exact: true });
+    await panRow.getByRole("button", { name: "Verify" }).click();
+    await page.getByRole("button", { name: "Yes — confirm & verify" }).click();
+    await expect(panRow.getByText(/Verified/i)).toBeVisible();
+
+    // A verified document must still offer Replace, not just Upload.
+    await expect(panRow.getByRole("button", { name: "Replace" })).toBeVisible();
+    await panRow.getByRole("button", { name: "Replace" }).click();
+    await expect(page.getByRole("heading", { name: "Replace the uploaded file?" })).toBeVisible();
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Choose replacement file" }).click();
+    const chooser = await fileChooserPromise;
+    await chooser.setFiles(fixture("photo-reupload.png"));
+    await expect(page.getByText(/photo-reupload\.png uploaded/)).toBeVisible();
+
+    // Back to awaiting verification, not still "Verified" against a file nobody looked at.
+    const replacedRow = documentRow(page, "PAN Card", { exact: true });
+    await expect(replacedRow.getByText(/Verified/i)).toHaveCount(0);
+    await expect(replacedRow.getByRole("button", { name: "Verify" })).toBeVisible();
+
+    // View: preview still loads (not "Could not load a preview"), and the previous,
+    // superseded upload is visible in version history rather than having disappeared.
+    await replacedRow.getByRole("button", { name: "View" }).click();
+    await expect(page.getByText("Could not load a preview from the storage backend.")).toHaveCount(0);
+    await expect(page.getByText("Previous uploads")).toBeVisible();
+    await expect(page.getByText(/pan-card\.pdf/)).toBeVisible();
+    await expect(page.getByText(/v1/)).toBeVisible();
+    await page.getByRole("button", { name: /Close|Not now/i }).first().click();
+
+    // The replacement can itself be verified.
+    await replacedRow.getByRole("button", { name: "Verify" }).click();
+    await page.getByRole("button", { name: "Yes — confirm & verify" }).click();
+    await expect(documentRow(page, "PAN Card", { exact: true }).getByText(/Verified/i)).toBeVisible();
+  });
+
+  test("removing an upload returns the requirement to pending, keeps history, and allows immediate re-upload", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
+
+    await createCaseThroughUi(page, {
+      name: "Remove Workflow Applicant",
+      phone: "9843129992",
+      loanTypeLabel: "Personal Loan · Personal Loan",
+      amount: "300000",
+    });
+    await advanceToDocumentsPending(page);
+    await gotoTab(page, "documents");
+
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
+    await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
+
+    const panRow = documentRow(page, "PAN Card", { exact: true });
+    await expect(panRow.getByRole("button", { name: "Remove upload" })).toBeVisible();
+    await panRow.getByRole("button", { name: "Remove upload" }).click();
+    await expect(page.getByRole("heading", { name: "Remove this upload?" })).toBeVisible();
+    // Scoped to the open dialog — its own confirm button shares text with the row's
+    // trigger button that opened it.
+    await dialogButton(page, "Remove upload").click();
+    await expect(page.getByText("Upload removed")).toBeVisible();
+
+    // Requirement returns to pending/awaiting-upload — the row still exists, on the
+    // checklist, offering Upload again rather than having vanished.
+    const clearedRow = documentRow(page, "PAN Card", { exact: true });
+    await expect(clearedRow.getByRole("button", { name: /^Upload$/ })).toBeVisible();
+    await expect(clearedRow.getByRole("button", { name: "View" })).toHaveCount(0);
+
+    // Immediate re-upload works.
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
+    await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
   });
 });
 

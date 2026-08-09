@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_REQUIREMENT_RULES } from "@domain/requirements/default-rules.js";
-import { financialYearOf, recentFinancialYears } from "@domain/requirements/financial-year.js";
+import {
+  financialYearOf,
+  recentCompletedFinancialYears,
+  recentFinancialYears,
+} from "@domain/requirements/financial-year.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import type { Database, DocumentType, LoanProduct } from "./types.js";
@@ -23,7 +27,7 @@ const DOCUMENT_TYPES: DocumentType[] = [
   { id: "dty_aadhaar", code: "aadhaar_card", name: "Aadhaar Card", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 20 },
   { id: "dty_address", code: "address_proof", name: "Address Proof", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 30 },
   { id: "dty_photo", code: "photograph", name: "Photograph", ownerKind: "person", requiresPeriod: false, isActive: true, displayOrder: 40 },
-  { id: "dty_itr", code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 50 },
+  { id: "dty_itr", code: "itr", name: "Income Tax Return", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 50, periodKind: "assessment_year" },
   { id: "dty_bank_stmt", code: "bank_statement", name: "Bank Statement", ownerKind: "person", requiresPeriod: true, isActive: true, displayOrder: 60 },
   { id: "dty_gst_cert", code: "gst_certificate", name: "GST Certificate", ownerKind: "organisation", requiresPeriod: false, isActive: true, displayOrder: 70 },
   { id: "dty_gst_returns", code: "gst_returns", name: "GST Returns", ownerKind: "organisation", requiresPeriod: true, isActive: true, displayOrder: 80 },
@@ -125,10 +129,15 @@ describe("regenerateRequirements — financial-year scoping", () => {
     const itrRows = generated.filter((r) => r.documentTypeId === "dty_itr");
 
     // itr is configured for 2 trailing years (src/domain/requirements/financial-year.ts).
+    // It is an assessment-year document, so its window is the last two
+    // COMPLETED financial years — never the current, still-open one.
     expect(itrRows).toHaveLength(2);
     const periods = itrRows.map((r) => r.periodStart).sort();
-    const expected = recentFinancialYears(2).map((fy) => fy.startDate).sort();
+    const expected = recentCompletedFinancialYears(2).map((fy) => fy.startDate).sort();
     expect(periods).toEqual(expected);
+    // The current, in-progress financial year must never appear as an ITR ask.
+    const currentFy = recentFinancialYears(1)[0];
+    expect(periods).not.toContain(currentFy?.startDate);
     // Every row is independently pending — one year's status must not affect another's.
     expect(itrRows.every((r) => r.status === "pending")).toBe(true);
   });

@@ -69,3 +69,24 @@ export function recentFinancialYears(count: number, asOf: Date = new Date()): Fi
   );
 }
 
+/**
+ * The `count` most recent COMPLETED financial years as of `asOf`, most recent
+ * first — excludes the current, still-open, financial year.
+ *
+ * Assessment-year documents (an ITR, a Form 16) are filed for a financial
+ * year only after it has ended; "previous 3 assessment years" means the last
+ * three financial years that have actually closed, not the one still in
+ * progress. Use `recentFinancialYears` instead for documents (GST returns,
+ * bank statements) that are legitimately asked for mid-year.
+ */
+export function recentCompletedFinancialYears(
+  count: number,
+  asOf: Date = new Date(),
+): FinancialYear[] {
+  if (count < 1) return [];
+  const lastCompletedStartYear = financialYearStartYear(asOf) - 1;
+  return Array.from({ length: count }, (_, offset) =>
+    financialYearFromStartYear(lastCompletedStartYear - offset),
+  );
+}
+

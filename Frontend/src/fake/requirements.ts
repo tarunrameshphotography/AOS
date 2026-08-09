@@ -33,11 +33,13 @@ import {
   FINANCIAL_YEAR_DOCUMENT_TYPES,
   evaluateRules,
   financialYearOf,
+  recentCompletedFinancialYears,
   recentFinancialYears,
   type CaseFacts,
   type FinancialYear,
   type GeneratedRequirement,
   type PartyFacts,
+  type PeriodKind,
   type PropertyFacts,
 } from "@domain/requirements/index.js";
 
@@ -188,6 +190,13 @@ export function buildCaseFacts(db: Database, loanCase: LoanCase): CaseFacts {
  * the default window rolled forward, and a year a user explicitly requested
  * beyond the default (`addFinancialYearRequirement` in fake/store.ts) being
  * discarded the next time anything else on the case triggers regeneration.
+ *
+ * An assessment-year document (an ITR, a Form 16) is filed for a financial
+ * year only once that year has closed, so its trailing window is the last N
+ * COMPLETED financial years, not the current still-open one — "previous 3
+ * assessment years" never includes a return nobody could have filed yet.
+ * Everything else (GST returns, bank statements) is legitimately asked for
+ * mid-year and keeps the current financial year in its window.
  */
 function financialYearsFor(
   db: Database,
@@ -195,9 +204,14 @@ function financialYearsFor(
   documentTypeId: Id,
   subject: { casePartyId?: Id; casePropertyId?: Id },
   trailingYears: number,
+  periodKind: PeriodKind | undefined,
 ): FinancialYear[] {
   const byLabel = new Map<string, FinancialYear>();
-  for (const fy of recentFinancialYears(trailingYears)) {
+  const window =
+    periodKind === "assessment_year"
+      ? recentCompletedFinancialYears(trailingYears)
+      : recentFinancialYears(trailingYears);
+  for (const fy of window) {
     byLabel.set(fy.label, fy);
   }
 
@@ -272,7 +286,14 @@ function expand(
     return [base];
   }
 
-  return financialYearsFor(db, loanCase, documentType.id, subject, trailingYears).map((fy) => ({
+  return financialYearsFor(
+    db,
+    loanCase,
+    documentType.id,
+    subject,
+    trailingYears,
+    documentType.periodKind,
+  ).map((fy) => ({
     ...base,
     periodStart: fy.startDate,
     periodEnd: fy.endDate,

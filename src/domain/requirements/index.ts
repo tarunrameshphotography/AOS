@@ -63,6 +63,7 @@ export {
   financialYearLabel,
   financialYearOf,
   financialYearStartYear,
+  recentCompletedFinancialYears,
   recentFinancialYears,
   type FinancialYear,
 } from "./financial-year.js";

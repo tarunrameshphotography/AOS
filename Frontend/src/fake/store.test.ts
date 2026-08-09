@@ -184,6 +184,67 @@ describe("createCase — every case gets an identity of its own", () => {
     expect(numbers.every((number) => number !== undefined)).toBe(true);
     expect(new Set(numbers).size).toBe(numbers.length);
   });
+
+  // Regression for the live AL-2026-00048 collision found in the Workflow
+  // Polish audit: the seed's caseNumberSequence undercounted the highest
+  // sequence it had actually assigned to a seeded case, so the first case
+  // created after a fresh seed reused a number already on the books.
+  it("never allocates a case number any existing case — seeded or created — already holds", () => {
+    resetDatabase();
+    const productId = anyProductId();
+    const actorUserId = anyUserId();
+
+    const preExisting = getDb().cases.map((loanCase) => loanCase.caseNumber);
+    expect(new Set(preExisting).size).toBe(preExisting.length);
+
+    const created: string[] = [];
+    for (let n = 0; n < 10; n += 1) {
+      const caseId = createCase(
+        { newApplicantName: `Collision Check ${n}`, loanProductId: productId },
+        actorUserId,
+      );
+      const caseNumber = getDb().cases.find((loanCase) => loanCase.id === caseId)?.caseNumber;
+      if (caseNumber === undefined) throw new Error("test setup: case was not written to the store");
+      created.push(caseNumber);
+    }
+
+    // None of the newly created numbers may match anything the seed already used.
+    for (const number of created) {
+      expect(preExisting).not.toContain(number);
+    }
+
+    // And every number in the store — seeded and newly created together — is unique.
+    const allNumbers = getDb().cases.map((loanCase) => loanCase.caseNumber);
+    expect(new Set(allNumbers).size).toBe(allNumbers.length);
+  });
+
+  it("self-heals when the stored counter is behind the highest case number actually on record", () => {
+    resetDatabase();
+    const productId = anyProductId();
+    const actorUserId = anyUserId();
+    const year = new Date().getFullYear();
+
+    // Simulate exactly the bug: the counter claims a sequence lower than a
+    // case number that already exists for this year.
+    const db = getDb();
+    const highestExisting = Math.max(
+      ...db.cases
+        .map((c) => /^AL-(\d{4})-(\d{5,})$/.exec(c.caseNumber))
+        .filter((m): m is RegExpExecArray => m !== null && Number(m[1]) === year)
+        .map((m) => Number(m[2])),
+    );
+    db.caseNumberSequence[year] = Math.max(0, highestExisting - 5);
+
+    const caseId = createCase(
+      { newApplicantName: "Counter Behind Reality", loanProductId: productId },
+      actorUserId,
+    );
+    const newNumber = getDb().cases.find((c) => c.id === caseId)?.caseNumber;
+
+    const allNumbers = getDb().cases.map((c) => c.caseNumber);
+    expect(allNumbers.filter((n) => n === newNumber)).toHaveLength(1);
+    expect(new Set(allNumbers).size).toBe(allNumbers.length);
+  });
 });
 
 describe("uploadDocument — automatic organisation (Issue #13)", () => {

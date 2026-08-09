@@ -18,7 +18,7 @@ import { createCase } from "../fake/store.js";
 import { clearDrafts, useDraft } from "../fake/drafts.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import { useSession } from "../session.js";
-import { Button, Card, Field, Input, Select, cx, useToast } from "../ui/index.js";
+import { Button, Card, Field, Input, PermissionCode, Select, cx, useToast } from "../ui/index.js";
 import { PersonSearchField } from "../ui/pickers.js";
 
 export function NewCase(): ReactNode {
@@ -59,9 +59,8 @@ export function NewCase(): ReactNode {
   if (!session.can("case.create", "all")) {
     return (
       <Card title="Not permitted">
-        <p className="text-sm text-ink-700">
-          This user does not hold <code>case.create</code>.
-        </p>
+        <p className="text-sm text-ink-700">You don't have access to open a new case.</p>
+        <PermissionCode code="case.create" />
       </Card>
     );
   }
@@ -84,7 +83,15 @@ export function NewCase(): ReactNode {
     navigate(`/cases/${caseId}`);
   };
 
-  const ready = productId !== "" && (chosenPersonId !== null || name.trim().length > 1);
+  const hasApplicant = chosenPersonId !== null || name.trim().length > 1;
+  const ready = productId !== "" && hasApplicant;
+  // Same conditions `ready` checks, in the order a telecaller would fix them —
+  // the button going quietly unresponsive is the actual complaint this answers.
+  const readyReason = !hasApplicant
+    ? "Add a customer name to open this case."
+    : productId === ""
+      ? "No loan type is set up to choose from yet."
+      : null;
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
@@ -165,9 +172,21 @@ export function NewCase(): ReactNode {
           >
             Clear
           </Button>
-          <Button variant="primary" disabled={!ready} onClick={submit} className={cx(!ready && "opacity-60")}>
-            Open case
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              variant="primary"
+              disabled={!ready}
+              onClick={submit}
+              className={cx(!ready && "opacity-60")}
+            >
+              Open case
+            </Button>
+            {readyReason ? (
+              <p className="text-xs text-amber-700" role="status">
+                {readyReason}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

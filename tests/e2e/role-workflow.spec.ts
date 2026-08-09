@@ -67,7 +67,10 @@ test.describe("Telecaller → Login Team document workflow", () => {
     const panRowAsLogin = documentRow(page, "PAN Card", { exact: true });
     await expect(panRowAsLogin.getByRole("button", { name: "Verify" })).toBeVisible();
     await panRowAsLogin.getByRole("button", { name: "Verify" }).click();
-    await expect(page.getByRole("heading", { name: "Is this the right document?" })).toBeVisible();
+    // Verify dialog names the document in its title now, rather than a generic
+    // question — a Login Desk user scanning several open-then-closed dialogs
+    // in a row needs to tell them apart at a glance (audit finding 3.3).
+    await expect(page.getByRole("heading", { name: "Verify: PAN Card" })).toBeVisible();
     await page.getByRole("button", { name: "Yes — confirm & verify" }).click();
     // Plain "Verified" text is ambiguous — it also matches the progress summary, a <dt>/<dd>
     // pair, and hint paragraphs elsewhere on the page. Scope to the row's own status badge.
@@ -203,10 +206,10 @@ test.describe("Case originator and current owner/handler", () => {
     await reassign.click();
     const ownerSelect = page.getByLabel("New owner");
     await ownerSelect.selectOption({ label: USERS.manager });
-    // The dialog's own submit button is also just labelled "Reassign" — same text as the
-    // trigger button that opened it, and ".last()" on a regex match isn't a reliable way to
-    // land on the right one. Scope to the open dialog instead.
-    await dialogButton(page, "Reassign").click();
+    // The dialog's own submit button is now "Confirm reassignment", distinct from the
+    // "Reassign" trigger that opened it (audit finding 2.2) — scoped to the open dialog
+    // regardless, since that is the reliable way to land on the right one.
+    await dialogButton(page, "Confirm reassignment").click();
 
     // Originator must remain the original telecaller; current owner must now differ.
     await expect(page.getByText(new RegExp(`Originated by ${USERS.telecaller}`))).toBeVisible();

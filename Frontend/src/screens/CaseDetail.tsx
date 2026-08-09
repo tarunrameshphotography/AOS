@@ -105,6 +105,7 @@ import {
   primaryPhone,
   productLabel,
   titleCase,
+  waitingOn,
   when,
 } from "../lib.js";
 import { useSession } from "../session.js";
@@ -116,6 +117,7 @@ import {
   Field,
   Input,
   Modal,
+  PermissionCode,
   ProgressBar,
   Select,
   StageBadge,
@@ -170,10 +172,10 @@ export function CaseDetail(): ReactNode {
     return (
       <Card title="Not your case">
         <p className="text-sm text-ink-700">
-          This user holds <code>case.read</code> at <code>own</code> scope, and this case belongs to{" "}
-          {ownerName(db, loanCase)}. The row is not hidden by the interface — it would not be
-          returned by the database either.
+          You can only open cases you own, and this one belongs to {ownerName(db, loanCase)}. Ask
+          them, or a manager, if you need something from it.
         </p>
+        <PermissionCode code="case.read (own)" />
       </Card>
     );
   }
@@ -204,7 +206,16 @@ export function CaseDetail(): ReactNode {
           >
             {CASE_TAB_LABELS[entry]}
             {(counts[entry] ?? 0) > 0 && (
-              <span className="tnum rounded bg-ink-100 px-1.5 text-xs">{counts[entry]}</span>
+              <span
+                className="tnum rounded bg-ink-100 px-1.5 text-xs"
+                title={
+                  entry === "documents"
+                    ? `${counts[entry]} still outstanding — not the total number of documents`
+                    : undefined
+                }
+              >
+                {counts[entry]}
+              </span>
             )}
           </button>
         ))}
@@ -281,6 +292,17 @@ function CaseSectionFooter({
   const previous = previousCaseTab(tab);
   const keys = caseDraftKeys(caseId);
 
+  // Documents is the one section whose purpose line spans two different
+  // people's jobs — "collect" is the telecaller's and "verify" is Login
+  // Desk's. Saying both verbs in one breath, unattributed, reads as if
+  // whoever is looking at it is meant to do both (audit finding 13.1).
+  const nextPurpose =
+    next === "documents" && !session.can("document.verify", "own")
+      ? "You collect what those facts require; Login Desk verifies it."
+      : next
+        ? CASE_TAB_PURPOSE[next]
+        : undefined;
+
   /**
    * Commit whatever this section is holding that is not yet part of the case.
    * Returns what was saved, so the toast can say something true rather than a
@@ -316,7 +338,7 @@ function CaseSectionFooter({
         <div className="min-w-0">
           <p className="text-sm text-ink-700">
             {next
-              ? `Next: ${CASE_TAB_LABELS[next]} — ${CASE_TAB_PURPOSE[next]}`
+              ? `Next: ${CASE_TAB_LABELS[next]} — ${nextPurpose}`
               : "This is the end of the case workflow."}
           </p>
           <p className="mt-0.5 text-xs text-ink-500">
@@ -349,7 +371,8 @@ function CaseSectionFooter({
             <Button
               variant="primary"
               onClick={() => {
-                commitSection();
+                const saved = commitSection();
+                toast.show(describe(saved));
                 onGo(next);
               }}
             >
@@ -380,6 +403,12 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
   const applicant = primaryApplicant(db, caseId);
   const progress = progressFor(caseId);
   const snapshot = snapshotOf(loanCase);
+  const nextActor = waitingOn(
+    db,
+    loanCase,
+    progress,
+    db.submissions.filter((s) => s.caseId === caseId),
+  );
 
   /** Which user-driven moves the domain layer will actually accept right now. */
   const offered: CaseStage[] = (
@@ -437,6 +466,12 @@ function CaseHeader({ caseId }: { caseId: string }): ReactNode {
               {" · "}
               {CASE_STAGE_LABELS[loanCase.stage]} since {when(enteredCurrentStageAt(db, loanCase))}
             </p>
+            {nextActor && (
+              // Distinct from "Currently with" above: that is who holds the
+              // case, this is whose turn it is to act — not always the same
+              // person once a document has moved into someone else's queue.
+              <p className="mt-1 text-xs font-medium text-sky-700">{nextActor.summary}</p>
+            )}
             {loanCase.stage === "lost" && (
               <p className="mt-2 rounded bg-red-50 px-3 py-2 text-sm text-red-900">
                 Lost: {LOST_REASON_LABELS[loanCase.lostReason as LostReason]}
@@ -599,7 +634,7 @@ function ReassignDialog({
               if (result.ok) onClose();
             }}
           >
-            Reassign
+            Confirm reassignment
           </Button>
         </div>
       </div>
@@ -984,10 +1019,10 @@ function Overview({ caseId }: { caseId: string }): ReactNode {
               )}
             </>
           ) : (
-            <p className="text-sm text-ink-500">
-              This user does not hold <code>note.read</code>. Notes are customer content, not system
-              structure.
-            </p>
+            <div>
+              <p className="text-sm text-ink-500">You don't have access to this case's notes.</p>
+              <PermissionCode code="note.read" />
+            </div>
           )}
         </Card>
       </div>
@@ -1697,11 +1732,8 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
   if (!session.can("document.read", "own")) {
     return (
       <Card title="Documents are not visible to this user">
-        <p className="text-sm text-ink-700">
-          This role holds no <code>document.read</code>. The customer's documents are content, not
-          system structure — and a masked PAN column would protect nothing if the PAN card image
-          were readable here.
-        </p>
+        <p className="text-sm text-ink-700">You don't have access to this case's documents.</p>
+        <PermissionCode code="document.read" />
       </Card>
     );
   }
@@ -1947,8 +1979,14 @@ function Documents({ caseId }: { caseId: string }): ReactNode {
           )}
           {["pending", "received", "rejected"].includes(requirement.status) &&
             session.can("requirement.waive", "own") && (
+              // Deliberately not styled like the routine actions beside it —
+              // a waiver sends an incomplete file to a bank, and it should not
+              // read as interchangeable with Upload/View/Replace at a glance
+              // (audit finding 3.4). Same permission, same confirmation dialog,
+              // same audit trail — only the visual weight changes.
               <Button
                 variant="ghost"
+                className="text-amber-800 ring-1 ring-amber-200 hover:bg-amber-50"
                 onClick={() => {
                   setWaiveFor(requirement.id);
                 }}
@@ -3337,7 +3375,7 @@ function VerifyDialog({
     );
 
   return (
-    <Modal open={requirementId !== null} title="Is this the right document?" onClose={onClose}>
+    <Modal open={requirementId !== null} title={`Verify: ${askedFor}`} onClose={onClose}>
       <div className="space-y-3">
         {/* THE QUESTION, ASKED OUT LOUD (Part 6).
             AOS cannot tell whether these bytes are an ITR, a PAN card or a
@@ -3539,7 +3577,12 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
   const submissions = db.submissions.filter((s) => s.caseId === caseId);
 
   if (!session.can("submission.read", "own")) {
-    return <Card title="Not visible to this user" />;
+    return (
+      <Card title="Not visible to this user">
+        <p className="text-sm text-ink-700">You don't have access to this case's bank submissions.</p>
+        <PermissionCode code="submission.read" />
+      </Card>
+    );
   }
 
   return (
@@ -3556,7 +3599,11 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
         }
       >
         {submissions.length === 0 ? (
-          <Empty>No bank added to this file yet.</Empty>
+          <Empty>
+            {session.can("submission.create", "own")
+              ? "No bank added to this file yet."
+              : "No bank added yet. Bank selection and submission are handled by Login Desk, once documents are collected."}
+          </Empty>
         ) : (
           <ul className="divide-y divide-ink-100">
             {submissions.map((submission) => {

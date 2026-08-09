@@ -36,6 +36,7 @@ import {
   Field,
   Input,
   Modal,
+  PermissionCode,
   Select,
   StageBadge,
   useToast,
@@ -108,9 +109,12 @@ export function PersonProfile(): ReactNode {
             </p>
           )}
           {!session.can("identifier.view_full", "all") && (
-            <p className="mt-1 text-xs text-ink-400">
-              PAN is masked. This user does not hold <code>identifier.view_full</code>.
-            </p>
+            <div className="mt-1">
+              <p className="text-xs text-ink-400">
+                PAN is masked. Full PAN is only visible to Login Desk and above.
+              </p>
+              <PermissionCode code="identifier.view_full" />
+            </div>
           )}
         </div>
         {canEdit && (
@@ -473,29 +477,36 @@ function AddIdentifierDialog({
             ? `The current primary ${type}, if there is one, stops being primary — it stays on file.`
             : `Kept alongside the existing ${type} numbers, not instead of them.`}
         </p>
-        <div className="flex justify-end gap-2 pt-1">
-          <Button variant="ghost" onClick={close}>
-            Back
-          </Button>
-          <Button
-            variant="primary"
-            disabled={value.trim().length < 3}
-            onClick={() => {
-              const result = updatePersonIdentifiers(
-                personId,
-                { type, value, isPrimary: makePrimary },
-                session.user.id,
-              );
-              if (!result.ok) {
-                toast.show(result.message ?? "", "bad");
-                return;
-              }
-              toast.show("Added.");
-              close();
-            }}
-          >
-            Add
-          </Button>
+        <div className="flex flex-col items-end gap-1 pt-1">
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={close}>
+              Back
+            </Button>
+            <Button
+              variant="primary"
+              disabled={value.trim().length < 3}
+              onClick={() => {
+                const result = updatePersonIdentifiers(
+                  personId,
+                  { type, value, isPrimary: makePrimary },
+                  session.user.id,
+                );
+                if (!result.ok) {
+                  toast.show(result.message ?? "", "bad");
+                  return;
+                }
+                toast.show("Added.");
+                close();
+              }}
+            >
+              Add
+            </Button>
+          </div>
+          {value.trim().length < 3 ? (
+            <p className="text-xs text-amber-700" role="status">
+              Enter at least 3 characters for the {type === "phone" ? "phone number" : "email address"}.
+            </p>
+          ) : null}
         </div>
       </div>
     </Modal>

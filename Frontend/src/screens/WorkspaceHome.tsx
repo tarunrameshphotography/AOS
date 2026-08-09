@@ -14,7 +14,15 @@ import { CASE_STAGE_LABELS } from "@domain/case/stages.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import { completeTask, progressFor } from "../fake/store.js";
 import type { Database, LoanCase } from "../fake/types.js";
-import { lakhs, ownerName, primaryApplicant, primaryPhone, productLabel, when } from "../lib.js";
+import {
+  lakhs,
+  ownerName,
+  primaryApplicant,
+  primaryPhone,
+  productLabel,
+  waitingOn,
+  when,
+} from "../lib.js";
 import { WORKSPACE_QUESTIONS, useSession } from "../session.js";
 import { Badge, Button, Card, Empty, ProgressBar, StageBadge } from "../ui/index.js";
 
@@ -79,6 +87,12 @@ function CaseRow({ loanCase }: { loanCase: LoanCase }): ReactNode {
   const db = useDatabase();
   const applicant = primaryApplicant(db, loanCase.id);
   const progress = progressFor(loanCase.id);
+  const nextActor = waitingOn(
+    db,
+    loanCase,
+    progress,
+    db.submissions.filter((s) => s.caseId === loanCase.id),
+  );
 
   return (
     <Link
@@ -93,6 +107,11 @@ function CaseRow({ loanCase }: { loanCase: LoanCase }): ReactNode {
         <span className="tnum block truncate text-xs text-ink-500">
           {loanCase.caseNumber} · {productLabel(db, loanCase)} · {lakhs(loanCase.requestedAmount)}
         </span>
+        {nextActor && (
+          <span className="block truncate text-xs font-medium text-sky-700">
+            {nextActor.summary}
+          </span>
+        )}
       </div>
       <div className="hidden w-32 sm:block">
         <ProgressBar percent={progress.percentComplete} applicable={progress.applicableCount} />
@@ -134,6 +153,16 @@ function CallingWorkspace(): ReactNode {
 
   const myTasks = db.tasks.filter((t) => t.assignedTo === session.user.id && !t.completedAt);
 
+  // Login Desk gets a "waiting on your verification" list; a Telecaller's
+  // equivalent is a document THEY collected that came back rejected — the
+  // one case where the ball is back in their court, since only they can
+  // re-contact the customer for it (audit finding 9.2). Deliberately narrow:
+  // just the actionable rejected-document work, not a general notification feed.
+  const mineIds = new Set(mine.map((c) => c.id));
+  const needsFollowUp = db.requirements.filter(
+    (r) => r.status === "rejected" && mineIds.has(r.caseId),
+  );
+
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <div className="space-y-6 lg:col-span-2">
@@ -153,6 +182,45 @@ function CallingWorkspace(): ReactNode {
       </div>
 
       <div className="space-y-6">
+        <Card
+          title="Rejected — needs your follow-up"
+          subtitle="Login Desk sent these back. Contact the customer for a replacement."
+        >
+          {needsFollowUp.length === 0 ? (
+            <Empty>Nothing rejected. That is a good state.</Empty>
+          ) : (
+            <ul className="space-y-2">
+              {needsFollowUp.map((requirement) => {
+                const loanCase = db.cases.find((c) => c.id === requirement.caseId);
+                const type = db.documentTypes.find((t) => t.id === requirement.documentTypeId);
+                const document = db.documents.find(
+                  (d) => d.id === requirement.satisfiedByDocumentId,
+                );
+                return (
+                  <li key={requirement.id}>
+                    <Link
+                      to={`/cases/${requirement.caseId}?tab=documents`}
+                      className="block rounded p-2 hover:bg-ink-50"
+                    >
+                      <span className="block text-sm font-medium">
+                        {requirement.customName ?? type?.name ?? "Document"}
+                      </span>
+                      <span className="tnum block text-xs text-ink-500">
+                        {loanCase?.caseNumber}
+                      </span>
+                      {document?.rejectionReason && (
+                        <span className="block text-xs text-red-700">
+                          {document.rejectionReason}
+                        </span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+
         <Card title="Your tasks">
           {myTasks.length === 0 ? (
             <Empty>Nothing due.</Empty>

@@ -172,7 +172,9 @@ export function ProgressBar({
     return (
       <div className="flex items-center gap-2">
         <div className="h-1.5 w-full rounded-full bg-ink-100" />
-        <span className="shrink-0 text-xs text-ink-400">—</span>
+        {/* A bare "—" reads as an error or "N/A" at a glance; this case is
+            neither — it just has nothing due yet (audit finding 7.2). */}
+        <span className="shrink-0 text-xs text-ink-400">Not started</span>
       </div>
     );
   }
@@ -183,7 +185,10 @@ export function ProgressBar({
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-100">
         <div className={cx("h-full rounded-full transition-all", tone)} style={{ width: `${percent}%` }} />
       </div>
-      <span className="tnum shrink-0 text-xs font-medium text-ink-700">{percent}%</span>
+      {/* "Verified", spelled out — a bare percentage after real uploads still
+          reads as "nothing happened" when what it actually means is "nothing
+          has been checked yet" (ADR-011; Workflow Polish audit finding 4.2). */}
+      <span className="tnum shrink-0 text-xs font-medium text-ink-700">{percent}% verified</span>
     </div>
   );
 }
@@ -194,6 +199,29 @@ export function ProgressBar({
 
 export function Empty({ children }: { children: ReactNode }): ReactNode {
   return <p className="py-6 text-center text-sm text-ink-500">{children}</p>;
+}
+
+// ---------------------------------------------------------------------------
+// Permission refusals
+// ---------------------------------------------------------------------------
+
+/**
+ * The raw permission key behind a refusal, tucked behind a native disclosure
+ * rather than printed inline. It stays available for support/training — "why
+ * can't I see this?" is a real question a supervisor gets asked — without
+ * being the first thing an ordinary telecaller or login-desk user reads
+ * (Workflow Polish audit finding 8.1: `case.read`, `note.read` etc. are
+ * developer vocabulary, not something end users recognise).
+ */
+export function PermissionCode({ code }: { code: string }): ReactNode {
+  return (
+    <details className="mt-1">
+      <summary className="inline cursor-pointer text-xs text-ink-400 hover:text-ink-600">
+        Technical detail
+      </summary>
+      <code className="ml-1 text-xs text-ink-400">{code}</code>
+    </details>
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
  * skips its event is a bug.
  */
 
-import { formatCaseNumber } from "@domain/case/case-number.js";
+import { formatCaseNumber, parseCaseNumber } from "@domain/case/case-number.js";
 import {
   type CaseStage,
   type LostReason,
@@ -625,7 +625,16 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
   // Allocated at creation, including for leads (ADR-024). A telecaller on a
   // first call is exactly when a quotable reference is most useful.
   const year = new Date().getFullYear();
-  const sequence = (db.caseNumberSequence[year] ?? 0) + 1;
+  // The stored counter is the fast path, but it is not trusted blindly: a
+  // seed (or a restored backup, or two tabs racing) can leave it behind the
+  // highest sequence actually present in `db.cases` for this year. Taking the
+  // max of the two is what actually prevents a collision — a bare increment
+  // reproduces the AL-2026-00048 bug the moment the counter under-counts.
+  const highestIssued = db.cases.reduce((max, c) => {
+    const parts = parseCaseNumber(c.caseNumber);
+    return parts && parts.year === year && parts.sequence > max ? parts.sequence : max;
+  }, 0);
+  const sequence = Math.max(db.caseNumberSequence[year] ?? 0, highestIssued) + 1;
   db.caseNumberSequence = { ...db.caseNumberSequence, [year]: sequence };
 
   const referralSource = db.referralSources.find((r) => r.id === input.referralSourceId);
@@ -642,9 +651,20 @@ export function createCase(input: NewCaseInput, actorUserId: Id): Id {
     );
   }
 
+  const newCaseNumber = formatCaseNumber({ year, sequence });
+  // Same defensive posture as the id-collision assert above: if this ever
+  // fires, the derivation two lines up is broken, and failing loudly here is
+  // the difference between that being visible and it being a support ticket
+  // about two customers sharing a case number.
+  if (db.cases.some((existing) => existing.caseNumber === newCaseNumber)) {
+    throw new Error(
+      `Case number collision on ${newCaseNumber}. Sequence allocation is not unique — see createCase() in fake/store.ts.`,
+    );
+  }
+
   const loanCase: LoanCase = {
     id: caseId,
-    caseNumber: formatCaseNumber({ year, sequence }),
+    caseNumber: newCaseNumber,
     loanProductId: input.loanProductId,
     ...(input.requestedAmount ? { requestedAmount: input.requestedAmount } : {}),
     stage: "new",

@@ -93,7 +93,7 @@ test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing
 
     await panRow.getByRole("button", { name: "View" }).click();
     // ViewDocumentDialog (CaseDetail.tsx) titles the modal with the document type's own
-    // name — "PAN Card" here — not the separate verify-flow's "Is this the right document?"
+    // name — "PAN Card" here — not the separate verify-flow's "Verify: PAN Card"
     // dialog, which only appears from a login executive's "Verify" action.
     await expect(page.getByRole("heading", { name: "PAN Card" })).toBeVisible();
     await page.getByRole("button", { name: /Close|Not now/i }).first().click();

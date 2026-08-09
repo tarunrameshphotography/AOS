@@ -1,6 +1,7 @@
 /** Lookups and formatting shared across screens. */
 
-import type { Database, Id, LoanCase, Organisation, Person } from "./fake/types.js";
+import type { Database, Id, LoanCase, Organisation, Person, SubmissionStatus } from "./fake/types.js";
+import type { ProgressSummary } from "@domain/requirements/progress.js";
 
 export function money(amount?: number): string {
   if (amount === undefined) return "—";
@@ -120,6 +121,90 @@ export function enteredCurrentStageAt(db: Database, loanCase: LoanCase): string 
     .filter((e) => e.caseId === loanCase.id && e.eventType === "case.stage_changed")
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))[0];
   return lastStageChange?.occurredAt ?? loanCase.createdAt;
+}
+
+export interface WaitingOn {
+  /** Ready-to-render "Waiting on: ..." line. */
+  readonly summary: string;
+}
+
+/**
+ * Who needs to act next — distinct from `ownerName` (who currently holds the
+ * case) and `originatorName` (who brought it in). "Currently with" answers
+ * whose desk the case sits on; this answers whose *turn* it is, which is not
+ * always the same person once a document has moved into someone else's queue
+ * (Workflow Polish milestone, audit finding 13.2).
+ *
+ * Deliberately derived only from numbers `summariseProgress` already
+ * computes plus the case's stage and its submissions — no parallel ownership
+ * field, no new stored state. Returns null wherever attribution would be a
+ * guess (terminal stages, or a stage with nothing yet to attribute to
+ * anyone); the caller shows nothing rather than a wrong or invented answer.
+ *
+ * A role is named ("Telecaller", "Login Desk") rather than a specific person
+ * unless the case's current owner actually holds that role — naming someone
+ * who does not do that job would be worse than not naming anyone.
+ */
+export function waitingOn(
+  db: Database,
+  loanCase: LoanCase,
+  progress: Pick<ProgressSummary, "rejectedCount" | "receivedCount" | "outstandingCount">,
+  submissions: readonly { status: SubmissionStatus }[],
+): WaitingOn | null {
+  if (loanCase.stage === "closed" || loanCase.stage === "lost") return null;
+
+  const owner = db.users.find((u) => u.id === loanCase.ownerUserId);
+  const telecallerActor = owner?.roles.includes("telecaller") ? owner.name : "Telecaller";
+  const loginDeskActor = owner?.roles.includes("login_executive") ? owner.name : "Login Desk";
+
+  if (
+    loanCase.stage === "new" ||
+    loanCase.stage === "contacted" ||
+    loanCase.stage === "appointment_fixed"
+  ) {
+    return { summary: `Waiting on: ${telecallerActor} — make contact and move this case forward` };
+  }
+
+  if (loanCase.stage === "documents_pending") {
+    if (progress.rejectedCount > 0) {
+      const n = progress.rejectedCount;
+      return {
+        summary: `Waiting on: ${telecallerActor} — ${n} document${n === 1 ? "" : "s"} rejected, needs the customer to send a replacement`,
+      };
+    }
+    if (progress.receivedCount > 0) {
+      const n = progress.receivedCount;
+      return {
+        summary: `Waiting on: ${loginDeskActor} — ${n} document${n === 1 ? "" : "s"} awaiting verification`,
+      };
+    }
+    if (progress.outstandingCount > 0) {
+      return { summary: `Waiting on: ${telecallerActor} — documents still to collect from the customer` };
+    }
+    // Nothing outstanding: the case is between "everything verified" and the
+    // stage catching up to reflect it. Nobody is meaningfully blocking it.
+    return null;
+  }
+
+  if (loanCase.stage === "ready_for_submission") {
+    const active = submissions.filter((s) => s.status !== "withdrawn" && s.status !== "rejected");
+    const notYetSubmitted = active.filter((s) => s.status === "not_submitted");
+    if (active.length === 0 || notYetSubmitted.length > 0) {
+      return { summary: `Waiting on: ${loginDeskActor} — send this file to a bank` };
+    }
+    return null;
+  }
+
+  if (loanCase.stage === "submitted") {
+    if (submissions.some((s) => s.status === "query_raised")) {
+      return { summary: `Waiting on: ${loginDeskActor} — a bank has raised a query on this file` };
+    }
+    // Genuinely the lender's turn from here — AOS has no reliable "who at the
+    // bank" to name, so this names the counterparty rather than a colleague.
+    return { summary: "Waiting on: the bank — a decision is pending" };
+  }
+
+  return null;
 }
 
 export function primaryPhone(person?: Person): string | undefined {

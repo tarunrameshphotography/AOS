@@ -74,6 +74,22 @@ function TopBar(): ReactNode {
         <GlobalSearch />
 
         <nav className="ml-auto flex shrink-0 items-center gap-1">
+          {/* Distinct from "All Cases" below: this is the work queue, scoped to
+              what this role/session should be looking at right now. Before
+              this label existed, the logo was the only way to it, and nothing
+              distinguished "your work" from "every case" (audit finding 11.1). */}
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              cx(
+                "rounded-md px-3 py-1.5 text-sm font-medium",
+                isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
+              )
+            }
+          >
+            My Work
+          </NavLink>
           <NavLink
             to="/cases"
             className={({ isActive }) =>
@@ -83,7 +99,7 @@ function TopBar(): ReactNode {
               )
             }
           >
-            Cases
+            All Cases
           </NavLink>
           {session.can("master_data.read", "all") && (
             <NavLink

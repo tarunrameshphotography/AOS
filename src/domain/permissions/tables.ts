@@ -141,6 +141,25 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
       "the link to the auth session identity — every RLS policy depends on it.",
   },
   {
+    table: "api_session",
+    family: "self",
+    purpose:
+      "A logged-in browser session, so employees on separate PCs can authenticate " +
+      "to a shared backend (Persistence milestone).",
+    select: internal(
+      "Only the API server resolves a bearer token to a user. No client role reads " +
+        "this table: the ability to list live session tokens is the ability to " +
+        "impersonate, whatever the row filter says.",
+    ),
+    insert: internal("Written by login, which is not an action any permission grants."),
+    update: internal("Logout and last-seen touches, both by the API server."),
+    delete: NEVER_DELETED,
+    notes:
+      "Stores only the SHA-256 of the token, never the token. Revocation sets " +
+      "`revoked_at`; a session is never deleted, so 'when did they log out' stays " +
+      "answerable.",
+  },
+  {
     table: "user_role",
     family: "self",
     purpose:

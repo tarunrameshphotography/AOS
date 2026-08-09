@@ -15,11 +15,16 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
+    "allowJs": true,
 
     "baseUrl": ".",
     "paths": {
       "@domain/*": ["src/domain/*"]
     }
   },
-  "include": ["src/**/*.ts"]
+  // Backend/ is here so the API server is typechecked against the same domain
+  // types the frontend uses. Leaving it out would mean the one place that
+  // enforces permissions server-side was the one place TypeScript never
+  // looked. `allowJs` covers the `.mjs` helpers it imports.
+  "include": ["src/**/*.ts", "Backend/**/*.ts"]
 }

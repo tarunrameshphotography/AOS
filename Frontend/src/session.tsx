@@ -1,21 +1,25 @@
 /**
  * Who is using AOS right now, and what they may do.
  *
- * The prototype lets you switch user freely — there is no auth — because the
- * most useful thing to *experience* is how differently the product behaves for a
- * telecaller and a finance user. Switching is the demo, not a shortcut.
+ * Identity comes from a real login (Employee Authentication milestone) —
+ * `AuthGate` resolves an authenticated `userId` and passes it here as a prop.
+ * `SessionProvider` no longer owns switchable identity state itself; it only
+ * renders the session for the user `AuthGate` has already authenticated, and
+ * exposes `logout` to end it.
  *
- * Permission answers come from `hasPermission` in src/domain/permissions/, the
- * same function the server will use. The UI reads permissions to decide what to
- * show, as a courtesy — it is not a control (BR-060).
+ * Permission answers come from `hasPermissionWithOverrides` in
+ * src/domain/permissions/ — role grants plus this user's own explicit
+ * grants/denials, the one place this question is answered anywhere in AOS.
+ * The UI reads permissions to decide what to show, as a courtesy — it is not
+ * a control (BR-060); the store's own `authorize()`/`canActOnCase()` guards
+ * are what actually enforce it on every write, and `CaseDetail`'s read gate
+ * enforces it on reads reached by direct URL.
  */
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
-import { type Role, hasPermission } from "@domain/permissions/index.js";
-import type { Scope } from "@domain/permissions/index.js";
+import { hasPermissionWithOverrides, type Role, type Scope } from "@domain/permissions/index.js";
 
-import { useDatabase } from "./fake/useDatabase.js";
 import type { AppUser } from "./fake/types.js";
 
 /**
@@ -50,14 +54,23 @@ const DEFAULT_WORKSPACE: Record<Role, Workspace> = {
   manager: "management",
   finance: "finance",
   admin: "admin",
+  // Employee Authentication milestone: Managing Partner is set equal to
+  // Manager for now (src/domain/permissions/roles.ts), so it shares the same
+  // workspace.
+  managing_partner: "management",
 };
 
-const WORKSPACE_ROLE: Record<Workspace, Role> = {
-  calling: "telecaller",
-  login_desk: "login_executive",
-  management: "manager",
-  finance: "finance",
-  admin: "admin",
+/**
+ * Which roles make a workspace meaningful. A list rather than one role each,
+ * because Manager and Managing Partner now both land in "management"
+ * (Employee Authentication milestone) — never a restriction, same as before.
+ */
+const WORKSPACE_ROLES: Record<Workspace, readonly Role[]> = {
+  calling: ["telecaller"],
+  login_desk: ["login_executive"],
+  management: ["manager", "managing_partner"],
+  finance: ["finance"],
+  admin: ["admin"],
 };
 
 interface SessionValue {
@@ -66,36 +79,36 @@ interface SessionValue {
   workspace: Workspace;
   /** Workspaces this user's roles make meaningful. Others are still reachable. */
   availableWorkspaces: readonly Workspace[];
-  setUserId: (id: string) => void;
   setWorkspace: (workspace: Workspace) => void;
   can: (permission: string, scope?: Scope) => boolean;
+  /** Ends the session and returns to the login screen. */
+  logout: () => void;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
 
-export function SessionProvider({ children }: { children: ReactNode }): ReactNode {
-  const db = useDatabase();
-  const [userId, setUserIdRaw] = useState<string>(() =>
-    localStorage.getItem("aos.prototype.user") ?? "usr_001",
-  );
+/**
+ * Renders the authenticated session for `user`. `AuthGate` is what decides
+ * who `user` is (via real login) and only mounts this once someone has
+ * actually authenticated — there is no switchable-identity state in here any
+ * more, and no way to reach another employee's session from inside the app.
+ */
+export function SessionProvider({
+  user,
+  onLogout,
+  children,
+}: {
+  user: AppUser;
+  onLogout: () => void;
+  children: ReactNode;
+}): ReactNode {
   const [workspaceOverride, setWorkspaceOverride] = useState<Workspace | null>(null);
 
-  const user = db.users.find((u) => u.id === userId) ?? db.users[0];
-
-  const setUserId = useCallback((id: string) => {
-    localStorage.setItem("aos.prototype.user", id);
-    setUserIdRaw(id);
-    setWorkspaceOverride(null);
-  }, []);
-
-  const value = useMemo<SessionValue | null>(() => {
-    if (!user) {
-      return null;
-    }
-
+  const value = useMemo<SessionValue>(() => {
     const roles = user.roles;
+    const overrides = (user.permissionOverrides ?? []).filter((o) => !o.revokedAt);
     const available = WORKSPACES.filter((workspace) =>
-      roles.includes(WORKSPACE_ROLE[workspace]),
+      WORKSPACE_ROLES[workspace].some((role) => roles.includes(role)),
     );
     const primaryRole = roles[0] ?? "telecaller";
 
@@ -104,16 +117,12 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
       roles,
       workspace: workspaceOverride ?? available[0] ?? DEFAULT_WORKSPACE[primaryRole],
       availableWorkspaces: available.length > 0 ? available : [DEFAULT_WORKSPACE[primaryRole]],
-      setUserId,
       setWorkspace: setWorkspaceOverride,
       can: (permission: string, scope: Scope = "own") =>
-        hasPermission(roles as Role[], permission, scope),
+        hasPermissionWithOverrides(roles as Role[], overrides, permission, scope),
+      logout: onLogout,
     };
-  }, [user, workspaceOverride, setUserId]);
-
-  if (!value) {
-    return <div className="p-8">No users in the store. Reset the prototype.</div>;
-  }
+  }, [user, workspaceOverride, onLogout]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

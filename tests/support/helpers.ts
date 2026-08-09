@@ -5,34 +5,87 @@ import { fileURLToPath } from "node:url";
 export const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 export const fixture = (name: string): string => path.join(FIXTURES, name);
 
-/** Seeded prototype users (Frontend/src/fake/seed.ts). No login — this is a session switch. */
+/**
+ * Seeded prototype users (Frontend/src/fake/seed.ts) — real employee accounts
+ * since the Employee Authentication milestone, all sharing one dev-only
+ * password (DEV_PASSWORD below, hashed in seed.ts — never committed as
+ * plaintext anywhere but this test helper and that file's own comment).
+ */
 export const USERS = {
   telecaller: "Priya Raman",
   loginExecutive: "Karthik V",
   manager: "Lakshmi Narayanan",
 } as const;
 
+/** The six real AOS employees created for the Employee Authentication milestone. */
+export const EMPLOYEES = {
+  telecallerAndLoginExecutive: "Chinna Thambi",
+  telecaller: "Jayalakshmi",
+  manager: "Tarun Ramesh",
+  managingPartner: "C Sasi Rekha",
+  managingPartner2: "Mohammed Ismail",
+  managingPartner3: "V Keerthivhasan",
+} as const;
+
+/** Development-only shared seed password. Never a real credential — see Frontend/src/fake/seed.ts. */
+export const DEV_PASSWORD = "Amaze@123";
+
+const USERNAME_BY_NAME: Record<string, string> = {
+  "Priya Raman": "priya.raman",
+  "Karthik V": "karthik.v",
+  "Lakshmi Narayanan": "lakshmi.n",
+  "Suresh Babu": "suresh.babu",
+  "Karthik V (also calling)": "karthik.v2",
+  "Chinna Thambi": "chinna.thambi",
+  Jayalakshmi: "jayalakshmi",
+  "Tarun Ramesh": "tarun.ramesh",
+  "C Sasi Rekha": "sasi.rekha",
+  "Mohammed Ismail": "mohammed.ismail",
+  "V Keerthivhasan": "keerthivhasan",
+};
+
+function usernameFor(fullName: string): string {
+  const username = USERNAME_BY_NAME[fullName];
+  if (!username) throw new Error(`No seeded username known for "${fullName}" — add it to helpers.ts.`);
+  return username;
+}
+
+/**
+ * Logs in as `fullName` through the real login screen (Employee
+ * Authentication milestone — there is no user-switcher any more). If someone
+ * is already signed in, logs them out first, so the many existing tests that
+ * call this repeatedly to change identity mid-test keep working unchanged.
+ */
 export async function switchUser(page: Page, fullName: string): Promise<void> {
-  await openUserMenu(page);
-  // Each user row's button renders name and role(s) as separate stacked spans, so its
-  // accessible name is "<name> <role>" — never exactly `fullName`. Scope to the dropdown's
-  // <li> holding an exact-text match on the name span instead (avoids both the always-false
-  // exact match and ambiguity with names that are substrings of others, e.g. "Karthik V" vs.
-  // "Karthik V (also calling)").
-  const menuItem = page.locator("header li").filter({ has: page.getByText(fullName, { exact: true }) });
-  await menuItem.getByRole("button").click();
+  const onLoginScreen = await page
+    .getByRole("button", { name: "Sign in" })
+    .isVisible()
+    .catch(() => false);
+  if (!onLoginScreen) {
+    await logout(page);
+  }
+
+  await page.getByLabel("Username / Employee ID").fill(usernameFor(fullName));
+  await page.getByLabel("Password").fill(DEV_PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.locator("header").getByText(fullName, { exact: true }).first()).toBeVisible();
 }
 
-async function openUserMenu(page: Page): Promise<void> {
-  // The switcher button shows the current user's initials + name; click it to reveal the list.
+export async function logout(page: Page): Promise<void> {
+  await openIdentityMenu(page);
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+}
+
+async function openIdentityMenu(page: Page): Promise<void> {
+  // The identity button shows the current user's initials + name; click it to reveal the menu.
   const header = page.locator("header");
-  const switcherButton = header.locator("button").filter({ has: page.locator("span.rounded-full") });
-  await switcherButton.click();
+  const menuButton = header.locator("button").filter({ has: page.locator("span.rounded-full") });
+  await menuButton.click();
 }
 
 export async function resetPrototype(page: Page): Promise<void> {
-  await openUserMenu(page);
+  await openIdentityMenu(page);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Reset prototype data" }).click();
 }

@@ -78,21 +78,21 @@ describe("waitingOn — who acts next, distinct from who currently holds the cas
 
   it("attributes early stages to the Telecaller role when the owner does not hold that role", () => {
     const db = baseDb();
-    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", roles: ["manager"], isActive: true }];
+    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", username: "priya.raman", passwordHash: "x", roles: ["manager"], isActive: true }];
     const result = waitingOn(db, baseCase({ stage: "new" }), zeroProgress, []);
     expect(result?.summary).toBe("Waiting on: Telecaller — make contact and move this case forward");
   });
 
   it("names the owner by name when they actually hold the Telecaller role", () => {
     const db = baseDb();
-    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", roles: ["telecaller"], isActive: true }];
+    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", username: "priya.raman", passwordHash: "x", roles: ["telecaller"], isActive: true }];
     const result = waitingOn(db, baseCase({ stage: "contacted" }), zeroProgress, []);
     expect(result?.summary).toContain("Priya Raman");
   });
 
   it("changes to Login Desk once a document is uploaded and awaiting verification", () => {
     const db = baseDb();
-    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", roles: ["telecaller"], isActive: true }];
+    db.users = [{ id: "usr_1", personId: "per_1", name: "Priya Raman", username: "priya.raman", passwordHash: "x", roles: ["telecaller"], isActive: true }];
     const result = waitingOn(
       db,
       baseCase({ stage: "documents_pending" }),
@@ -119,7 +119,7 @@ describe("waitingOn — who acts next, distinct from who currently holds the cas
   it("names the owner by name when they actually hold the Login Executive role", () => {
     const db = baseDb();
     db.users = [
-      { id: "usr_2", personId: "per_2", name: "Karthik V", roles: ["login_executive"], isActive: true },
+      { id: "usr_2", personId: "per_2", name: "Karthik V", username: "karthik.v", passwordHash: "x", roles: ["login_executive"], isActive: true },
     ];
     const result = waitingOn(
       db,

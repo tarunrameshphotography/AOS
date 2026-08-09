@@ -57,6 +57,16 @@ export {
   type TableBinding,
 } from "./tables.js";
 
+export {
+  hasPermissionWithOverrides,
+  effectivePermissionsWithOverrides,
+  type EffectivePermissionStatus,
+  type OverrideDecision,
+  type PermissionOverride,
+} from "./overrides.js";
+
+export { PERMISSION_DISPLAY_NAME, permissionDisplayName } from "./display.js";
+
 import { PERMISSIONS, findPermission } from "./actions.js";
 import { ROLE_GRANTS, type Role } from "./roles.js";
 import { scopeSatisfies, widestScope, type Scope } from "./scopes.js";

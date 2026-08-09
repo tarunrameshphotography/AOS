@@ -531,6 +531,16 @@ export const PERMISSIONS: readonly PermissionDefinition[] = [
     permittedScopes: ALL_ONLY,
     description: "Read aggregate reporting. Aggregates are computed over rows the user may see.",
   },
+  {
+    key: "permission.override",
+    group: "administration",
+    level: "row",
+    permittedScopes: ALL_ONLY,
+    description:
+      "Grant or deny an individual permission for a user, overriding what their roles alone " +
+      "would give them (Employee Authentication milestone). An explicit deny always wins over an " +
+      "explicit grant, which always wins over the role-derived answer.",
+  },
 ];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];

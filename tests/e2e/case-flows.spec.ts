@@ -7,6 +7,7 @@
  */
 import { test, expect } from "@playwright/test";
 import {
+  USERS,
   advanceToDocumentsPending,
   createCaseThroughUi,
   dialogButton,
@@ -14,12 +15,14 @@ import {
   fixture,
   gotoTab,
   sectionButton,
+  switchUser,
   uploadForRow,
 } from "../support/helpers";
 
 test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing loan)", () => {
   test("create, edit customer, set facts, checklist, upload, navigate, persist", async ({ page }) => {
     await page.goto("/");
+    await switchUser(page, USERS.telecaller);
 
     const caseUrl = await createCaseThroughUi(page, {
       name: "Ravi Kumar Machinery",
@@ -116,6 +119,7 @@ test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing
 test.describe("Case 2 — Home Loan (₹50,00,000, salaried, no GST)", () => {
   test("create, edit customer, set facts, checklist has no GST rows, upload, navigate", async ({ page }) => {
     await page.goto("/");
+    await switchUser(page, USERS.telecaller);
 
     const caseUrl = await createCaseThroughUi(page, {
       name: "Meena Sundaram",
@@ -182,6 +186,7 @@ test.describe("Case 2 — Home Loan (₹50,00,000, salaried, no GST)", () => {
 test.describe("Case 3 — Smaller GST-registered Business Loan (existing loan)", () => {
   test("create, edit customer, set facts, checklist, upload, existing loan statement", async ({ page }) => {
     await page.goto("/");
+    await switchUser(page, USERS.telecaller);
 
     const caseUrl = await createCaseThroughUi(page, {
       name: "Suresh Textiles Owner",
@@ -234,6 +239,7 @@ test.describe("Case 3 — Smaller GST-registered Business Loan (existing loan)",
 test.describe("Case 4 — Property-backed / Land Collateral Loan", () => {
   test("create, add collateral property, checklist has property documents, upload", async ({ page }) => {
     await page.goto("/");
+    await switchUser(page, USERS.telecaller);
 
     const caseUrl = await createCaseThroughUi(page, {
       name: "Ganesh Property Owner",

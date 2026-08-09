@@ -18,6 +18,8 @@ import {
 
 test.describe("New Case — disabled 'Open case' explains itself", () => {
   test("shows why the button will not respond, and the reason clears once fixed", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     await page.goto("/#/cases/new");
     await expect(page.getByRole("heading", { name: "New case" })).toBeVisible();
 
@@ -34,6 +36,8 @@ test.describe("New Case — disabled 'Open case' explains itself", () => {
 
 test.describe("Customer Profile — disabled 'Add' explains itself", () => {
   test("Add Identifier states the minimum length before it will accept a value", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Profile Validation Applicant",
       phone: "9843129001",
@@ -58,13 +62,14 @@ test.describe("Customer Profile — disabled 'Add' explains itself", () => {
 
 test.describe("Banks — empty state is permission-aware", () => {
   test("tells a Telecaller Login Desk handles bank submission, and shows Add Bank to Login Desk", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Banks Empty State Applicant",
       phone: "9843129002",
       loanTypeLabel: "Personal Loan · Personal Loan",
       amount: "300000",
     });
-    await switchUser(page, USERS.telecaller);
     await page.goto(caseUrl);
     await gotoTab(page, "banks");
 
@@ -83,6 +88,8 @@ test.describe("Banks — empty state is permission-aware", () => {
 
 test.describe("Save & continue — confirms without breaking navigation", () => {
   test("shows a toast and still moves to the next tab", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Save Continue Applicant",
       phone: "9843129003",
@@ -102,6 +109,8 @@ test.describe("Save & continue — confirms without breaking navigation", () => 
 
 test.describe("Verify dialog — names the document", () => {
   test("titles itself with the document, not a generic question", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Verify Title Applicant",
       phone: "9843129004",
@@ -123,13 +132,14 @@ test.describe("Verify dialog — names the document", () => {
 
 test.describe("Permission refusals — plain language, technical code tucked away", () => {
   test("masked PAN explains itself in plain language, with the permission code behind a disclosure", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Masked Pan Applicant",
       phone: "9843129005",
       loanTypeLabel: "Personal Loan · Personal Loan",
       amount: "300000",
     });
-    await switchUser(page, USERS.telecaller);
     await page.goto(caseUrl);
     await page.getByRole("heading", { level: 1 }).getByRole("link").click();
     await page.waitForURL(/\/people\//);
@@ -146,6 +156,8 @@ test.describe("Permission refusals — plain language, technical code tucked awa
 
 test.describe("Telecaller attention — rejected documents surface on the home screen", () => {
   test("a rejected document appears in 'Rejected — needs your follow-up' for its telecaller", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Rejected Followup Applicant",
       phone: "9843129006",
@@ -175,6 +187,8 @@ test.describe("Telecaller attention — rejected documents surface on the home s
 
 test.describe("Waiting on — distinct from Currently with", () => {
   test("appears on the case header and changes once a document is rejected", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Waiting On Applicant",
       phone: "9843129007",
@@ -203,6 +217,8 @@ test.describe("Waiting on — distinct from Currently with", () => {
 
 test.describe("Reassign dialog — trigger and confirm are no longer the same label", () => {
   test("confirm button reads 'Confirm reassignment'", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Reassign Label Applicant",
       phone: "9843129008",
@@ -218,6 +234,8 @@ test.describe("Reassign dialog — trigger and confirm are no longer the same la
 
 test.describe("Fresh case completeness — 'Not started' instead of a bare dash", () => {
   test("a brand-new case reads 'Not started' rather than '—'", async ({ page }) => {
+    await page.goto("/");
+    await switchUser(page, USERS.telecaller);
     const caseUrl = await createCaseThroughUi(page, {
       name: "Fresh Completeness Applicant",
       phone: "9843129009",

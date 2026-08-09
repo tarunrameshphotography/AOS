@@ -21,6 +21,7 @@ import { LendingProducts } from "./screens/LendingProducts.js";
 import { MasterData } from "./screens/MasterData.js";
 import { NewCase } from "./screens/NewCase.js";
 import { PersonProfile } from "./screens/PersonProfile.js";
+import { UserManagement } from "./screens/UserManagement.js";
 import { WorkspaceHome } from "./screens/WorkspaceHome.js";
 import {
   WORKSPACE_LABELS,
@@ -46,6 +47,7 @@ export function App(): ReactNode {
           <Route path="/admin/lenders" element={<LenderCatalogue />} />
           <Route path="/admin/document-rules" element={<DocumentRules />} />
           <Route path="/admin/master-data" element={<MasterData />} />
+          <Route path="/admin/users" element={<UserManagement />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
@@ -153,6 +155,19 @@ function TopBar(): ReactNode {
               Master Data
             </NavLink>
           )}
+          {session.can("user.manage", "all") && (
+            <NavLink
+              to="/admin/users"
+              className={({ isActive }) =>
+                cx(
+                  "rounded-md px-3 py-1.5 text-sm font-medium",
+                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
+                )
+              }
+            >
+              Users
+            </NavLink>
+          )}
           {session.can("case.create", "all") && (
             <Link to="/cases/new">
               <Button variant="primary">New case</Button>
@@ -160,7 +175,7 @@ function TopBar(): ReactNode {
           )}
         </nav>
 
-        <UserSwitcher />
+        <IdentityMenu />
       </div>
 
       <WorkspaceTabs />
@@ -286,8 +301,15 @@ function WorkspaceTabs(): ReactNode {
   );
 }
 
-function UserSwitcher(): ReactNode {
-  const db = useDatabase();
+/**
+ * Identity display and sign-out — the authenticated employee's name and
+ * role(s), with a logout action. There is no other-user list here any more
+ * (Employee Authentication milestone): the normal way to become someone else
+ * is for that person to sign in themselves, not to pick their name from a
+ * menu. "Reset prototype data" stays — it wipes the fake store back to its
+ * seed, which is a dev/QA convenience unrelated to identity.
+ */
+function IdentityMenu(): ReactNode {
   const session = useSession();
   const [open, setOpen] = useState(false);
 
@@ -309,33 +331,23 @@ function UserSwitcher(): ReactNode {
       </button>
 
       {open && (
-        <div className="absolute top-full right-0 mt-1 w-72 rounded-lg bg-white p-2 shadow-lg ring-1 ring-ink-200">
-          <p className="px-2 py-1 text-xs text-ink-500">
-            Switch user. There is no login in the prototype — switching is how you see the
-            permission model do something.
-          </p>
-          <ul className="mt-1">
-            {db.users.map((user) => (
-              <li key={user.id}>
-                <button
-                  onClick={() => {
-                    session.setUserId(user.id);
-                    setOpen(false);
-                  }}
-                  className={cx(
-                    "w-full rounded px-2 py-1.5 text-left hover:bg-ink-50",
-                    user.id === session.user.id && "bg-brand-100",
-                  )}
-                >
-                  <span className="block text-sm font-medium">{user.name}</span>
-                  <span className="block text-xs text-ink-500">
-                    {user.roles.map((role) => ROLE_LABELS[role]).join(" + ")}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+        <div className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-lg ring-1 ring-ink-200">
+          <div className="px-2 py-1.5">
+            <p className="text-sm font-medium">{session.user.name}</p>
+            <p className="text-xs text-ink-500">
+              {session.roles.map((role) => ROLE_LABELS[role as Role]).join(" + ")}
+            </p>
+          </div>
           <hr className="my-2 border-ink-100" />
+          <button
+            onClick={() => {
+              setOpen(false);
+              session.logout();
+            }}
+            className="w-full rounded px-2 py-1.5 text-left text-sm text-ink-700 hover:bg-ink-50"
+          >
+            Log out
+          </button>
           <button
             onClick={() => {
               if (confirm("Reset the prototype to its seed data? Anything you created is lost.")) {

@@ -22,6 +22,19 @@ import type { Database } from "./types.js";
 
 const id = (prefix: string, n: number): string => `${prefix}_${String(n).padStart(3, "0")}`;
 
+/**
+ * PBKDF2-SHA256 hash of the one shared dev seed password, `Amaze@123`.
+ *
+ * Development-only, documented (not secret) — every seeded account, old
+ * prototype users and real employees alike, starts on this password so
+ * Playwright and local dev logins are predictable. Only the hash is
+ * committed; nothing here can be reversed into the plaintext without brute
+ * force. Change it per-user through User Management before this is ever
+ * anything but a local prototype (src/domain/auth/password.ts).
+ */
+const DEV_SEED_PASSWORD_HASH =
+  "pbkdf2$100000$74934177c1cdc381c5b13171f0668da4$dc5d9aa7df98fb8042077cd55742ba55df19a38cf7251e1927fec386e1aac0a3";
+
 /** Seeded documents go through the same path builder a live upload would —
  * the seed is fake data, not a fake layout. */
 function seedPath(owner: DocumentOwner, documentTypeCode: string, fileName: string): string {
@@ -121,6 +134,13 @@ export function buildSeed(): Database {
     { id: id("per", 94), fullName: "Vignesh R", aliases: [], identifiers: [
       { id: id("pid", 9), type: "phone", value: "+91 90252 66710", isPrimary: true, verificationSource: "self_declared" },
     ] },
+    // Real AOS employees (Employee Authentication milestone).
+    { id: id("per", 96), fullName: "Chinna Thambi", aliases: [], identifiers: [] },
+    { id: id("per", 97), fullName: "Jayalakshmi", aliases: [], identifiers: [] },
+    { id: id("per", 98), fullName: "Tarun Ramesh", aliases: [], identifiers: [] },
+    { id: id("per", 99), fullName: "C Sasi Rekha", aliases: [], identifiers: [] },
+    { id: id("per", 100), fullName: "Mohammed Ismail", aliases: [], identifiers: [] },
+    { id: id("per", 101), fullName: "V Keerthivhasan", aliases: [], identifiers: [] },
   ];
 
   const organisations: Database["organisations"] = [
@@ -160,12 +180,21 @@ export function buildSeed(): Database {
   ];
 
   const users: Database["users"] = [
-    { id: id("usr", 1), personId: id("per", 90), name: "Priya Raman", roles: ["telecaller"], isActive: true },
-    { id: id("usr", 2), personId: id("per", 91), name: "Karthik V", roles: ["login_executive"], isActive: true },
-    { id: id("usr", 3), personId: id("per", 92), name: "Lakshmi Narayanan", roles: ["manager"], isActive: true },
-    { id: id("usr", 4), personId: id("per", 93), name: "Suresh Babu", roles: ["finance"], isActive: true },
+    { id: id("usr", 1), personId: id("per", 90), name: "Priya Raman", username: "priya.raman", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["telecaller"], isActive: true },
+    { id: id("usr", 2), personId: id("per", 91), name: "Karthik V", username: "karthik.v", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["login_executive"], isActive: true },
+    { id: id("usr", 3), personId: id("per", 92), name: "Lakshmi Narayanan", username: "lakshmi.n", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["manager"], isActive: true },
+    { id: id("usr", 4), personId: id("per", 93), name: "Suresh Babu", username: "suresh.babu", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["finance"], isActive: true },
     // One human, two hats — the case ADR-022 exists for.
-    { id: id("usr", 5), personId: id("per", 91), name: "Karthik V (also calling)", roles: ["telecaller", "login_executive"], isActive: true },
+    { id: id("usr", 5), personId: id("per", 91), name: "Karthik V (also calling)", username: "karthik.v2", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["telecaller", "login_executive"], isActive: true },
+
+    // Real AOS employees (Employee Authentication milestone). All share the
+    // one dev seed password above; see DEV_SEED_PASSWORD_HASH.
+    { id: id("usr", 6), personId: id("per", 96), name: "Chinna Thambi", username: "chinna.thambi", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["telecaller", "login_executive"], isActive: true },
+    { id: id("usr", 7), personId: id("per", 97), name: "Jayalakshmi", username: "jayalakshmi", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["telecaller"], isActive: true },
+    { id: id("usr", 8), personId: id("per", 98), name: "Tarun Ramesh", username: "tarun.ramesh", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["manager"], isActive: true },
+    { id: id("usr", 9), personId: id("per", 99), name: "C Sasi Rekha", username: "sasi.rekha", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["managing_partner"], isActive: true },
+    { id: id("usr", 10), personId: id("per", 100), name: "Mohammed Ismail", username: "mohammed.ismail", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["managing_partner"], isActive: true },
+    { id: id("usr", 11), personId: id("per", 101), name: "V Keerthivhasan", username: "keerthivhasan", passwordHash: DEV_SEED_PASSWORD_HASH, roles: ["managing_partner"], isActive: true },
   ];
 
   // The lending product catalogue itself is built further down, once the

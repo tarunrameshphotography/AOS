@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { HashRouter } from "react-router-dom";
 
 import { App } from "./App.js";
-import { SessionProvider } from "./session.js";
+import { AuthGate } from "./auth/AuthGate.js";
 import { ToastProvider } from "./ui/index.js";
 import "./index.css";
 
@@ -19,9 +19,9 @@ createRoot(container).render(
   <StrictMode>
     <HashRouter>
       <ToastProvider>
-        <SessionProvider>
+        <AuthGate>
           <App />
-        </SessionProvider>
+        </AuthGate>
       </ToastProvider>
     </HashRouter>
   </StrictMode>,

@@ -18,7 +18,7 @@ import type { RequirementStatus } from "@domain/requirements/progress.js";
 import type { ConstructionStage, RequirementRule } from "@domain/requirements/rules.js";
 import type { ApplicabilityCode } from "@domain/products/index.js";
 import type { ProgressionStage } from "@domain/case/stages.js";
-import type { Role } from "@domain/permissions/index.js";
+import type { Role, Scope } from "@domain/permissions/index.js";
 
 export type Id = string;
 
@@ -179,8 +179,32 @@ export interface AppUser {
   id: Id;
   personId: Id;
   name: string;
+  /** The employee ID they log in with. Compared case-insensitively. */
+  username: string;
+  /** PBKDF2-SHA256 (src/domain/auth/password.ts). Never plaintext, never rendered. */
+  passwordHash: string;
   roles: Role[];
   isActive: boolean;
+  /** Explicit grants/denials on top of role-derived access (Employee Authentication milestone). */
+  permissionOverrides?: PermissionOverride[];
+}
+
+/**
+ * A grant or deny of one permission for one user, on top of their roles.
+ *
+ * Revoked, never deleted — `revokedAt` set means the override no longer
+ * applies, but the record of it having existed stays (same convention as
+ * `user_role`'s `revoked_at`, Database/migrations/0002).
+ */
+export interface PermissionOverride {
+  id: Id;
+  permission: string;
+  scope: Scope;
+  decision: "grant" | "deny";
+  grantedByUserId: Id;
+  grantedAt: string;
+  revokedByUserId?: Id;
+  revokedAt?: string;
 }
 
 /**

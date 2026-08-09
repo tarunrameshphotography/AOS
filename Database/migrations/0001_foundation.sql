@@ -50,7 +50,13 @@ create type app.role as enum (
   'login_executive',
   'manager',
   'finance',
-  'admin'
+  'admin',
+  -- Employee Authentication milestone. Added directly to this enum, not a
+  -- later `alter type ... add value`, because no SQL in Database/ has ever
+  -- been run against a real database (Docs/Session Checkpoint.md) — there is
+  -- no live enum to migrate. Full operational access plus user
+  -- administration; see src/domain/permissions/roles.ts.
+  'managing_partner'
 );
 
 -- ---------------------------------------------------------------------------

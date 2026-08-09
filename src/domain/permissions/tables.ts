@@ -153,6 +153,23 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
     notes: "Revocation sets `revoked_at`. A revoked role must remain visible in history.",
   },
   {
+    table: "user_permission_override",
+    family: "self",
+    purpose:
+      "An explicit grant or deny of one permission for one user, on top of what their " +
+      "roles give them (Employee Authentication milestone). Reading it is `user.read` " +
+      "— the same permission that lets a colleague's roles be seen — because an " +
+      "override is part of the answer to 'what may this person do', not a separate " +
+      "secret.",
+    select: permits("user.read"),
+    insert: permits("permission.override"),
+    update: permits("permission.override"),
+    delete: NEVER_DELETED,
+    notes:
+      "Revocation sets `revoked_at`, mirroring `user_role`: a permission someone was " +
+      "granted or denied last month is part of why access looked the way it did.",
+  },
+  {
     table: "permission",
     family: "reference",
     purpose:

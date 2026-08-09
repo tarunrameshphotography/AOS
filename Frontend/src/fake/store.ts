@@ -38,7 +38,13 @@ import {
   resolveDocumentOwner,
 } from "@domain/storage/index.js";
 
-import { hasPermission, type Role, type Scope } from "@domain/permissions/index.js";
+import {
+  hasPermissionWithOverrides,
+  ROLE_LABELS,
+  type PermissionOverride as PermissionCheck,
+  type Role,
+  type Scope,
+} from "@domain/permissions/index.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
 import { getStorageConfig, objectExists, storageAdapter } from "./storage.js";
@@ -62,6 +68,7 @@ import {
 
 import type {
   AosEvent,
+  AppUser,
   AvailabilityStatus,
   BankBranch,
   BankContact,
@@ -78,6 +85,7 @@ import type {
   LoanProduct,
   MasterDataRecord,
   Organisation,
+  PermissionOverride,
   Person,
   PersonIdentifier,
   Submission,
@@ -126,8 +134,13 @@ import type {
  * type that simply was not in that store and failed with "The 'Other
  * Document' type is missing from master data." — reported as a bug in the
  * loan-statement flow, but really this same missed bump.
+ *
+ * v8 for the Employee Authentication milestone. `AppUser` now requires
+ * `username`/`passwordHash` to log in at all — a stale v7 store's users have
+ * neither, which would lock every seeded account out rather than failing
+ * loudly, the worst way for this particular change to go stale.
  */
-const STORAGE_KEY = "aos.prototype.v7";
+const STORAGE_KEY = "aos.prototype.v8";
 
 /**
  * Row identity.
@@ -332,8 +345,30 @@ function record(input: EventInput): void {
 // declared solved.
 // ---------------------------------------------------------------------------
 
+function actorUser(actorUserId: Id): AppUser | undefined {
+  return db.users.find((u) => u.id === actorUserId);
+}
+
+/**
+ * A deactivated user holds no roles as far as authorization is concerned —
+ * this is what makes deactivation actually take effect at the write layer,
+ * not just block login (Employee Authentication milestone). `isActive` was
+ * carried on `AppUser` before this milestone but nothing here read it.
+ */
 function actorRoles(actorUserId: Id): readonly Role[] {
-  return db.users.find((u) => u.id === actorUserId)?.roles ?? [];
+  const user = actorUser(actorUserId);
+  return user && user.isActive ? user.roles : [];
+}
+
+/** Live (non-revoked) permission overrides for `actorUserId`, or none for an inactive/unknown user. */
+function actorOverrides(actorUserId: Id): readonly PermissionCheck[] {
+  const user = actorUser(actorUserId);
+  if (!user || !user.isActive) {
+    return [];
+  }
+  return (user.permissionOverrides ?? [])
+    .filter((o) => !o.revokedAt)
+    .map((o) => ({ permission: o.permission, scope: o.scope, decision: o.decision }));
 }
 
 /**
@@ -341,13 +376,18 @@ function actorRoles(actorUserId: Id): readonly Role[] {
  * `scope`. Returns the refusal to return straight from the caller, or
  * `undefined` when the actor may proceed — so a guard reads as
  * `const refusal = authorize(...); if (refusal) return refusal;`.
+ *
+ * Routes through `hasPermissionWithOverrides` — role grants plus this user's
+ * own explicit grants/denials — which is the one place this question is ever
+ * answered (Employee Authentication milestone). `session.can()` on the UI
+ * side resolves the same way.
  */
 function authorize(
   actorUserId: Id,
   permission: string,
   scope: Scope = "all",
 ): ActionResult | undefined {
-  if (hasPermission(actorRoles(actorUserId), permission, scope)) {
+  if (hasPermissionWithOverrides(actorRoles(actorUserId), actorOverrides(actorUserId), permission, scope)) {
     return undefined;
   }
   return { ok: false, message: `You do not have permission to do that (${permission}).` };
@@ -363,13 +403,16 @@ function authorize(
  * Exported so the store's own guards below and the UI can eventually share
  * one implementation instead of two that could drift apart — the UI's
  * existing inline checks are not refactored to call this in this milestone,
- * but any new call site should.
+ * but any new call site should, and `CaseDetail`'s read gate (Employee
+ * Authentication milestone) does.
  */
 export function canActOnCase(actorUserId: Id, loanCase: LoanCase, permission: string): boolean {
   const roles = actorRoles(actorUserId);
+  const overrides = actorOverrides(actorUserId);
   return (
-    hasPermission(roles, permission, "all") ||
-    (hasPermission(roles, permission, "own") && loanCase.ownerUserId === actorUserId)
+    hasPermissionWithOverrides(roles, overrides, permission, "all") ||
+    (hasPermissionWithOverrides(roles, overrides, permission, "own") &&
+      loanCase.ownerUserId === actorUserId)
   );
 }
 
@@ -590,6 +633,20 @@ export interface NewCaseInput {
 }
 
 export function createCase(input: NewCaseInput, actorUserId: Id): Id {
+  // Pre-existing gap this milestone closes: `actorUserId` was threaded
+  // through for attribution but nothing checked the actor actually held
+  // `case.create` — meaning a deactivated employee (Employee Authentication
+  // milestone: `actorRoles` now returns no roles for one) could still create
+  // cases as long as something client-side still called this function.
+  // Thrown, not returned as a refusal, because every real call site (NewCase.tsx)
+  // is reached only by an authenticated, active session — reaching this line
+  // unauthorized is a bug in the caller, the same posture `nextId()`'s
+  // collision checks below take for their own invariants.
+  const refusal = authorize(actorUserId, "case.create", "all");
+  if (refusal) {
+    throw new Error(refusal.message ?? "You do not have permission to create a case.");
+  }
+
   let personId = input.applicantPersonId;
 
   if (!personId) {
@@ -4245,5 +4302,271 @@ export function lendersAsDomain(source: Database = db): LenderCatalogueView {
   }));
 
   return { institutions, branches, supportedProducts, insights, submissionRules };
+}
+
+// ---------------------------------------------------------------------------
+// Users — authentication and administration (Employee Authentication milestone)
+//
+// Password hashing itself lives in src/domain/auth/password.ts and is async
+// (Web Crypto); everything here stays synchronous like the rest of this file
+// by taking an already-hashed `passwordHash` as input. The screen calling
+// these functions awaits `hashPassword()` first.
+// ---------------------------------------------------------------------------
+
+/** Case-insensitive username lookup — the pre-authentication step, so it takes no actor. */
+export function findUserByUsername(username: string): AppUser | undefined {
+  const needle = username.trim().toLowerCase();
+  return db.users.find((u) => u.username.toLowerCase() === needle);
+}
+
+/** Records that a user logged in. Called after password verification succeeds. */
+export function recordLogin(userId: Id): void {
+  record({
+    actorUserId: userId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.logged_in",
+    summary: "Logged in.",
+  });
+  commit();
+}
+
+function userHasHistoricalReferences(userId: Id): boolean {
+  return (
+    db.events.some((e) => e.actorUserId === userId) ||
+    db.cases.some((c) => c.ownerUserId === userId || c.createdByUserId === userId) ||
+    db.documents.some((d) => d.uploadedBy === userId || d.verifiedBy === userId)
+  );
+}
+
+export interface NewUserInput {
+  name: string;
+  username: string;
+  passwordHash: string;
+  roles: Role[];
+}
+
+/** Creates a new employee account and its linked person record. Requires `user.manage` at `all`. */
+export function createUser(input: NewUserInput, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "user.manage", "all");
+  if (refusal) return refusal;
+
+  const name = input.name.trim();
+  if (!name) return { ok: false, message: "Name cannot be blank." };
+  const username = input.username.trim();
+  if (!username) return { ok: false, message: "Username cannot be blank." };
+  if (findUserByUsername(username)) {
+    return { ok: false, message: `Username "${username}" is already in use.` };
+  }
+  if (input.roles.length === 0) {
+    return { ok: false, message: "At least one role is required." };
+  }
+
+  const personId = nextId();
+  db.people = [...db.people, { id: personId, fullName: name, aliases: [], identifiers: [] }];
+
+  const userId = nextId();
+  db.users = [
+    ...db.users,
+    {
+      id: userId,
+      personId,
+      name,
+      username,
+      passwordHash: input.passwordHash,
+      roles: input.roles,
+      isActive: true,
+    },
+  ];
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.created",
+    summary: `User created: ${name} (${username}) — ${input.roles.map((r) => ROLE_LABELS[r]).join(" + ")}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/** Replaces a user's role assignment outright. Requires `role.assign` at `all`. */
+export function setUserRoles(userId: Id, roles: Role[], actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "role.assign", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+  if (roles.length === 0) return { ok: false, message: "At least one role is required." };
+
+  db.users = db.users.map((u) => (u.id === userId ? { ...u, roles } : u));
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.roles_changed",
+    summary: `${existing.name}'s roles changed to ${roles.map((r) => ROLE_LABELS[r]).join(" + ")}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Activates or deactivates a user. Requires `user.manage` at `all`. A
+ * deactivated user cannot log in (checked at login) and holds no permissions
+ * for any new action (`actorRoles` above) — their name still appears
+ * correctly on everything they already touched, because nothing here removes
+ * or rewrites those rows (BR-062).
+ */
+export function setUserActive(userId: Id, isActive: boolean, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "user.manage", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+  if (userId === actorUserId && !isActive) {
+    return { ok: false, message: "You cannot deactivate your own account." };
+  }
+
+  db.users = db.users.map((u) => (u.id === userId ? { ...u, isActive } : u));
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: isActive ? "user.activated" : "user.deactivated",
+    summary: `${existing.name} ${isActive ? "reactivated" : "deactivated"}`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/** Sets a user's password to an already-hashed value. Requires `user.manage` at `all`. */
+export function resetUserPassword(userId: Id, passwordHash: string, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "user.manage", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+
+  db.users = db.users.map((u) => (u.id === userId ? { ...u, passwordHash } : u));
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.password_reset",
+    summary: `${existing.name}'s password was reset`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Deletes a user account outright. Requires `user.manage` at `all`, and only
+ * succeeds when the user has no case, document or audit history — BR-062
+ * says a departed employee's name must survive on everything they touched,
+ * and a hard delete of a user with history would silently break that.
+ * Deactivate instead for anyone who has ever done anything in AOS.
+ */
+export function deleteUser(userId: Id, actorUserId: Id): ActionResult {
+  const refusal = authorize(actorUserId, "user.manage", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+  if (userId === actorUserId) {
+    return { ok: false, message: "You cannot delete your own account." };
+  }
+  if (userHasHistoricalReferences(userId)) {
+    return {
+      ok: false,
+      message:
+        "This user has case, document or audit history and cannot be deleted. Deactivate instead.",
+    };
+  }
+
+  db.users = db.users.filter((u) => u.id !== userId);
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.deleted",
+    summary: `User deleted: ${existing.name} (${existing.username})`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/**
+ * Grants or denies one permission for one user, on top of their roles.
+ * Requires `permission.override` at `all`. Precedence between overrides and
+ * roles is resolved by `hasPermissionWithOverrides` (src/domain/permissions/overrides.ts),
+ * not here — this only records the override.
+ */
+export function setPermissionOverride(
+  userId: Id,
+  permission: string,
+  scope: Scope,
+  decision: "grant" | "deny",
+  actorUserId: Id,
+): ActionResult {
+  const refusal = authorize(actorUserId, "permission.override", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+
+  const override: PermissionOverride = {
+    id: nextId(),
+    permission,
+    scope,
+    decision,
+    grantedByUserId: actorUserId,
+    grantedAt: new Date().toISOString(),
+  };
+  db.users = db.users.map((u) =>
+    u.id === userId
+      ? { ...u, permissionOverrides: [...(u.permissionOverrides ?? []), override] }
+      : u,
+  );
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: decision === "grant" ? "user.permission_granted" : "user.permission_denied",
+    summary: `${existing.name}: ${decision === "grant" ? "granted" : "denied"} ${permission} (${scope})`,
+  });
+  commit();
+  return { ok: true };
+}
+
+/** Revokes a previously-set permission override. Requires `permission.override` at `all`. */
+export function revokePermissionOverride(
+  userId: Id,
+  overrideId: Id,
+  actorUserId: Id,
+): ActionResult {
+  const refusal = authorize(actorUserId, "permission.override", "all");
+  if (refusal) return refusal;
+  const existing = db.users.find((u) => u.id === userId);
+  if (!existing) return { ok: false, message: "User not found." };
+  const override = existing.permissionOverrides?.find((o) => o.id === overrideId);
+  if (!override) return { ok: false, message: "Override not found." };
+  if (override.revokedAt) return { ok: false, message: "Override already revoked." };
+
+  db.users = db.users.map((u) =>
+    u.id === userId
+      ? {
+          ...u,
+          permissionOverrides: (u.permissionOverrides ?? []).map((o) =>
+            o.id === overrideId
+              ? { ...o, revokedByUserId: actorUserId, revokedAt: new Date().toISOString() }
+              : o,
+          ),
+        }
+      : u,
+  );
+  record({
+    actorUserId,
+    entityType: "app_user",
+    entityId: userId,
+    eventType: "user.permission_override_revoked",
+    summary: `${existing.name}: override on ${override.permission} revoked`,
+  });
+  commit();
+  return { ok: true };
 }
 

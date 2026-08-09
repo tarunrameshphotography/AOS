@@ -17,7 +17,14 @@
 
 import type { Scope } from "./scopes.js";
 
-export const ROLES = ["telecaller", "login_executive", "manager", "finance", "admin"] as const;
+export const ROLES = [
+  "telecaller",
+  "login_executive",
+  "manager",
+  "finance",
+  "admin",
+  "managing_partner",
+] as const;
 
 export type Role = (typeof ROLES)[number];
 
@@ -27,6 +34,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   manager: "Manager",
   finance: "Finance",
   admin: "Admin",
+  managing_partner: "Managing Partner",
 };
 
 export interface Grant {
@@ -40,6 +48,76 @@ export interface Grant {
  * These rows are seeded into `role_permission` by migration. RLS policies read
  * that table; they never restate this list (ADR-022).
  */
+/**
+ * Manager and Managing Partner grants, shared.
+ *
+ * Employee Authentication milestone: Manager is deliberately set to the same
+ * effective access as Managing Partner for now — full operational access (the
+ * same set the `manager` role always held) plus the user-administration grants
+ * `admin` already carried (`user.manage`, `role.assign`, `master_data.manage`)
+ * and the one permission this milestone adds, `permission.override`. Both role
+ * keys point at this one array so there is a single definition to narrow later
+ * if Manager and Managing Partner are ever meant to diverge — that is a future
+ * change to this array's use, not a restructuring of the auth system.
+ */
+const MANAGING_PARTNER_GRANTS: readonly Grant[] = [
+  { permission: "case.read", scope: "all" },
+  { permission: "case.create", scope: "all" },
+  { permission: "case.update", scope: "all" },
+  { permission: "case.assign", scope: "all" },
+  { permission: "case.hold", scope: "all" },
+  { permission: "case.mark_lost", scope: "all" },
+  { permission: "case.reopen", scope: "all" },
+
+  { permission: "person.read", scope: "all" },
+  { permission: "person.create", scope: "all" },
+  { permission: "person.update", scope: "all" },
+  { permission: "person.merge", scope: "all" },
+  { permission: "person.override_duplicate", scope: "all" },
+  { permission: "organisation.read", scope: "all" },
+  { permission: "organisation.create", scope: "all" },
+  { permission: "organisation.update", scope: "all" },
+  { permission: "organisation.merge", scope: "all" },
+  { permission: "property.read", scope: "all" },
+  { permission: "property.create", scope: "all" },
+  { permission: "property.update", scope: "all" },
+  { permission: "property.merge", scope: "all" },
+  { permission: "employment.read", scope: "all" },
+  { permission: "employment.record", scope: "all" },
+
+  { permission: "document.read", scope: "all" },
+  { permission: "document.upload", scope: "all" },
+  { permission: "document.verify", scope: "all" },
+  { permission: "requirement.waive", scope: "all" },
+
+  { permission: "submission.read", scope: "all" },
+  { permission: "submission.create", scope: "all" },
+  { permission: "submission.update_status", scope: "all" },
+  { permission: "offer.read", scope: "all" },
+  { permission: "offer.record", scope: "all" },
+  { permission: "offer.accept", scope: "all" },
+
+  { permission: "task.read", scope: "all" },
+  { permission: "task.create", scope: "all" },
+  { permission: "task.update", scope: "all" },
+  { permission: "task.assign", scope: "all" },
+  { permission: "communication.read", scope: "all" },
+  { permission: "communication.log", scope: "all" },
+  { permission: "note.read", scope: "all" },
+  { permission: "note.create", scope: "all" },
+
+  { permission: "identifier.view_full", scope: "all" },
+  { permission: "event.view", scope: "all" },
+
+  { permission: "user.read", scope: "all" },
+  { permission: "user.manage", scope: "all" },
+  { permission: "role.assign", scope: "all" },
+  { permission: "permission.override", scope: "all" },
+  { permission: "master_data.read", scope: "all" },
+  { permission: "master_data.manage", scope: "all" },
+  { permission: "report.view", scope: "all" },
+];
+
 export const ROLE_GRANTS: Record<Role, readonly Grant[]> = {
   /**
    * Works a call list. Creates leads, talks to people, books appointments.
@@ -150,66 +228,11 @@ export const ROLE_GRANTS: Record<Role, readonly Grant[]> = {
   ],
 
   /**
-   * Sees everything operational, assigns work, resolves identity problems.
-   *
-   * Not `case.close` — that is Finance, because closing asserts the invoice is
-   * raised. Not `commercial.view` by default; see the open question in
-   * `Permissions.md`, which the derivation has now sharpened (a Manager sets
-   * referrer commission terms through `person.update` but cannot read them back).
+   * Sees everything operational, assigns work, resolves identity problems, and
+   * administers users — set equal to Managing Partner for now (Employee
+   * Authentication milestone). See `MANAGING_PARTNER_GRANTS` above.
    */
-  manager: [
-    { permission: "case.read", scope: "all" },
-    { permission: "case.create", scope: "all" },
-    { permission: "case.update", scope: "all" },
-    { permission: "case.assign", scope: "all" },
-    { permission: "case.hold", scope: "all" },
-    { permission: "case.mark_lost", scope: "all" },
-    { permission: "case.reopen", scope: "all" },
-
-    { permission: "person.read", scope: "all" },
-    { permission: "person.create", scope: "all" },
-    { permission: "person.update", scope: "all" },
-    { permission: "person.merge", scope: "all" },
-    { permission: "person.override_duplicate", scope: "all" },
-    { permission: "organisation.read", scope: "all" },
-    { permission: "organisation.create", scope: "all" },
-    { permission: "organisation.update", scope: "all" },
-    { permission: "organisation.merge", scope: "all" },
-    { permission: "property.read", scope: "all" },
-    { permission: "property.create", scope: "all" },
-    { permission: "property.update", scope: "all" },
-    { permission: "property.merge", scope: "all" },
-    { permission: "employment.read", scope: "all" },
-    { permission: "employment.record", scope: "all" },
-
-    { permission: "document.read", scope: "all" },
-    { permission: "document.upload", scope: "all" },
-    { permission: "document.verify", scope: "all" },
-    { permission: "requirement.waive", scope: "all" },
-
-    { permission: "submission.read", scope: "all" },
-    { permission: "submission.create", scope: "all" },
-    { permission: "submission.update_status", scope: "all" },
-    { permission: "offer.read", scope: "all" },
-    { permission: "offer.record", scope: "all" },
-    { permission: "offer.accept", scope: "all" },
-
-    { permission: "task.read", scope: "all" },
-    { permission: "task.create", scope: "all" },
-    { permission: "task.update", scope: "all" },
-    { permission: "task.assign", scope: "all" },
-    { permission: "communication.read", scope: "all" },
-    { permission: "communication.log", scope: "all" },
-    { permission: "note.read", scope: "all" },
-    { permission: "note.create", scope: "all" },
-
-    { permission: "identifier.view_full", scope: "all" },
-    { permission: "event.view", scope: "all" },
-
-    { permission: "user.read", scope: "all" },
-    { permission: "master_data.read", scope: "all" },
-    { permission: "report.view", scope: "all" },
-  ],
+  manager: MANAGING_PARTNER_GRANTS,
 
   /**
    * Money. Deliberately narrow elsewhere.
@@ -277,6 +300,13 @@ export const ROLE_GRANTS: Record<Role, readonly Grant[]> = {
     { permission: "master_data.manage", scope: "all" },
     { permission: "report.view", scope: "all" },
   ],
+
+  /**
+   * Runs the business. Full operational access plus user administration — set
+   * equal to Manager for now (Employee Authentication milestone). See
+   * `MANAGING_PARTNER_GRANTS` above.
+   */
+  managing_partner: MANAGING_PARTNER_GRANTS,
 };
 
 /**

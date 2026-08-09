@@ -26,9 +26,10 @@ import {
   evaluateTransition,
 } from "@domain/case/transitions.js";
 import { type Requirement, summariseProgress } from "@domain/requirements/progress.js";
-import { recentFinancialYears } from "@domain/requirements/financial-year.js";
+import { financialYearOf, recentFinancialYears } from "@domain/requirements/financial-year.js";
 import {
   CUSTOM_DOCUMENT_TYPE_CODE,
+  documentRowLabel,
   type DocumentCategory,
 } from "@domain/requirements/document-catalogue.js";
 import type { ConstructionStage } from "@domain/requirements/rules.js";
@@ -47,6 +48,7 @@ import {
 } from "@domain/permissions/index.js";
 
 import { applyExistingDocuments, regenerateRequirements } from "./requirements.js";
+import { emailProvider } from "./mail.js";
 import { getStorageConfig, objectExists, storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
 import type { ApplicabilityCode, LendingProduct } from "@domain/products/index.js";
@@ -58,13 +60,29 @@ import type {
   SupportedProduct as DomainSupportedProduct,
 } from "@domain/lenders/index.js";
 import {
+  compareForBatching,
+  composeBody,
   describeCounterparty,
+  describeIneligibility,
+  describePackageProblem,
   describeProblem,
   describeRecipientCount,
+  describeSubmissionForTimeline,
+  groupsIn,
+  ineligibility,
   isEmailShaped,
+  planSubmissionPackage,
   validateRecipients,
+  type CandidateDocument,
   type RecipientDraft,
+  type SubmissionContext,
+  type SubmissionPackagePlan,
 } from "@domain/submissions/index.js";
+import {
+  describeEmailFailure,
+  type EmailAttachment,
+  type EmailProvider,
+} from "@domain/communications/index.js";
 
 import type {
   AosEvent,
@@ -89,6 +107,10 @@ import type {
   Person,
   PersonIdentifier,
   Submission,
+  SubmissionPackage,
+  SubmissionPackageDocument,
+  SubmissionPackageEmail,
+  SubmissionPackageRecipient,
   SubmissionRecipient,
   SubmissionStatus,
 } from "./types.js";
@@ -139,8 +161,14 @@ import type {
  * `username`/`passwordHash` to log in at all — a stale v7 store's users have
  * neither, which would lock every seeded account out rather than failing
  * loudly, the worst way for this particular change to go stale.
+ *
+ * v9 for the Email & WhatsApp Integration milestone (ADR-039). A stale v8
+ * store has none of the four `submissionPackage*` collections, so the first
+ * attempt to send documents to a banker would fail on a missing array —
+ * mid-way through a send, after the user had already confirmed it, which is
+ * the worst possible moment for stale data to announce itself.
  */
-const STORAGE_KEY = "aos.prototype.v8";
+const STORAGE_KEY = "aos.prototype.v9";
 
 /**
  * Row identity.
@@ -2641,6 +2669,794 @@ export function acceptOffer(offerId: Id, actorUserId: Id): ActionResult {
 
   commit();
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Sending a submission's documents to the banker (ADR-039)
+//
+// The one place in the prototype where customer documents leave the building,
+// and the shape of it is deliberate:
+//
+//   PREPARE is pure and repeatable. It reads the database, asks
+//   @domain/submissions for a plan, and returns it. It writes nothing and
+//   sends nothing, so the review screen can be rebuilt on every keystroke.
+//
+//   SEND writes the record FIRST, then sends. If the machine loses power
+//   between email two and email three, the package rows say exactly that —
+//   two sent, one still pending — rather than nothing at all.
+//
+//   RETRY reads the recorded rows. It never re-plans, never re-reads the
+//   checklist, and never touches an email that already succeeded.
+//
+// WHAT IS NOT HERE. No Gmail, no MIME, no OAuth, no base64. All of it is
+// behind `emailProvider` (Frontend/src/fake/mail.ts →
+// Backend/mail-server.mjs), and this file would not change if the office
+// moved to Outlook.
+// ---------------------------------------------------------------------------
+
+/**
+ * The mailbox AOS sends as, when the mail backend has not said otherwise.
+ *
+ * A display default only. The backend sends as whichever account it is
+ * authenticated to, and never fakes a From header — see mail-server.mjs.
+ */
+export const DEFAULT_EMAIL_SENDER = { name: "Amaze Loans", address: "amazeloans@gmail.com" };
+
+/** One row in the "which documents are we sending?" list. */
+export interface SendableDocumentRow {
+  requirementId: Id;
+  documentId: Id;
+  /** As the checklist names it, period included — "GST 3B – FY 2025-26". */
+  label: string;
+  documentTypeCode: string;
+  category: string;
+  fileName: string;
+  fileSizeBytes: number;
+  financialYearLabel?: string;
+  version: number;
+  verifiedAt?: string;
+  rejectedAt?: string;
+  /** Absent when the row may be sent. Present, with the reason, when it may
+   * not — shown beside a disabled checkbox rather than hidden, because "why
+   * is the ITR not going?" is the question the user actually has. */
+  blockedBecause?: string;
+}
+
+/**
+ * Every document on this case that has bytes behind it, with its eligibility.
+ *
+ * A requirement with nothing uploaded against it does not appear at all — a
+ * missing document is not a file that could be sent, and listing it would
+ * invite somebody to tick it (this milestone: "Do not allow missing
+ * requirements to appear as sendable files"). A received-but-unverified or a
+ * rejected upload DOES appear, disabled, with its reason.
+ *
+ * `satisfiedByDocumentId` is what is followed, which is what makes "the
+ * currently verified version" automatic rather than a rule to remember: a
+ * replaced document leaves the old row in `db.documents` untouched (BR-031)
+ * and the requirement points at the new one.
+ */
+export function sendableDocumentsFor(caseId: Id, source: Database = db): SendableDocumentRow[] {
+  const rows: SendableDocumentRow[] = [];
+
+  for (const requirement of source.requirements.filter((r) => r.caseId === caseId)) {
+    const document = source.documents.find((d) => d.id === requirement.satisfiedByDocumentId);
+    if (!document) continue;
+
+    const type = source.documentTypes.find((t) => t.id === requirement.documentTypeId);
+    const yearLabel = requirement.periodStart
+      ? financialYearOf(new Date(requirement.periodStart)).label
+      : undefined;
+    const label = requirement.isCustom
+      ? (requirement.customName ?? type?.name ?? "Document")
+      : documentRowLabel(type?.name ?? "Document", yearLabel, type?.periodKind);
+
+    const candidate = toCandidate({
+      documentId: document.id,
+      requirementId: requirement.id,
+      documentTypeCode: type?.code ?? "other_document",
+      label,
+      fileName: document.fileName,
+      fileSizeBytes: document.fileSizeBytes,
+      category: (requirement.isCustom ? requirement.customCategory : type?.category) ?? "additional",
+      ...(yearLabel ? { financialYearLabel: yearLabel } : {}),
+      version: document.version,
+      ...(document.verifiedAt ? { verifiedAt: document.verifiedAt } : {}),
+      ...(document.rejectedAt ? { rejectedAt: document.rejectedAt } : {}),
+    });
+
+    // The document's own stamps are read FIRST, because they distinguish
+    // "rejected on review" from "nobody has looked at it yet" and those are
+    // two different next actions for the user. The requirement's status is
+    // then checked as a backstop: the two agree today, and if they ever stop
+    // agreeing the safe reading is the stricter one — a file going to a bank
+    // is where "safe" means "do not send it".
+    const blocked =
+      describeBlock(candidate) ??
+      (requirement.status !== "verified"
+        ? "Not verified yet. Only a document a person has checked goes to a bank (BR-032)."
+        : undefined);
+
+    rows.push({
+      requirementId: requirement.id,
+      documentId: document.id,
+      label,
+      documentTypeCode: candidate.documentTypeCode,
+      category: candidate.category,
+      fileName: document.fileName,
+      fileSizeBytes: document.fileSizeBytes,
+      ...(yearLabel ? { financialYearLabel: yearLabel } : {}),
+      version: document.version,
+      ...(document.verifiedAt ? { verifiedAt: document.verifiedAt } : {}),
+      ...(document.rejectedAt ? { rejectedAt: document.rejectedAt } : {}),
+      ...(blocked ? { blockedBecause: blocked } : {}),
+    });
+  }
+
+  return rows.sort((a, b) => compareForBatching(toCandidate(a), toCandidate(b)));
+}
+
+function describeBlock(candidate: CandidateDocument): string | undefined {
+  const reason = ineligibility(candidate);
+  return reason ? describeIneligibility(reason) : undefined;
+}
+
+/** A `SendableDocumentRow` as the domain layer wants to see it. */
+function toCandidate(row: {
+  documentId: Id;
+  requirementId?: Id | undefined;
+  documentTypeCode: string;
+  label: string;
+  fileName: string;
+  fileSizeBytes: number;
+  category: string;
+  financialYearLabel?: string | undefined;
+  version: number;
+  verifiedAt?: string | undefined;
+  rejectedAt?: string | undefined;
+}): CandidateDocument {
+  return {
+    documentId: row.documentId,
+    ...(row.requirementId ? { requirementId: row.requirementId } : {}),
+    documentTypeCode: row.documentTypeCode,
+    label: row.label,
+    fileName: row.fileName,
+    fileSizeBytes: row.fileSizeBytes,
+    category: row.category,
+    ...(row.financialYearLabel ? { financialYearLabel: row.financialYearLabel } : {}),
+    version: row.version,
+    ...(row.verifiedAt ? { verifiedAt: row.verifiedAt } : {}),
+    ...(row.rejectedAt ? { rejectedAt: row.rejectedAt } : {}),
+  };
+}
+
+/**
+ * What the email says about the case: who, what product, which bank.
+ *
+ * The counterparty comes from the SUBMISSION SNAPSHOT, never from live master
+ * data, for the reason `counterpartyOf` exists (ADR-036).
+ */
+function contextForSubmission(submission: Submission, source: Database = db): SubmissionContext {
+  const loanCase = source.cases.find((c) => c.id === submission.caseId);
+  const party = source.caseParties.find(
+    (p) => p.caseId === submission.caseId && p.isPrimary && !p.removedAt,
+  );
+  const person = source.people.find((p) => p.id === party?.personId);
+  const organisation = source.organisations.find((o) => o.id === party?.organisationId);
+  const product = source.loanProducts.find((p) => p.id === loanCase?.loanProductId);
+
+  return {
+    customerName: person?.fullName ?? organisation?.canonicalName ?? "The applicant",
+    // AOS's own customer-facing product name (ADR-033). No second loan
+    // vocabulary is invented for email.
+    loanTypeName: product?.name ?? product?.variant ?? "Loan",
+    counterparty: counterpartyOf(submission, source),
+    ...(loanCase?.caseNumber ? { caseNumber: loanCase.caseNumber } : {}),
+  };
+}
+
+export interface PreparePackageInput {
+  submissionId: Id;
+  /** The documents the user ticked. */
+  documentIds: readonly Id[];
+  recipients: readonly RecipientDraft[];
+  sender?: { name: string; address: string } | undefined;
+}
+
+export interface PreparedPackage {
+  plan: SubmissionPackagePlan;
+  /**
+   * What the plan was computed from — the document ids with the versions they
+   * were at.
+   *
+   * Passed back to `sendDocumentPackage`, which refuses if it no longer
+   * matches. The window between reviewing a submission and confirming it is
+   * small, but it is exactly long enough for a colleague to replace a
+   * document, and the one thing that must never happen is sending a version
+   * nobody reviewed.
+   */
+  fingerprint: string;
+}
+
+export type PreparePackageResult =
+  | { ok: true; prepared: PreparedPackage }
+  | { ok: false; message: string };
+
+function fingerprintOf(documents: readonly CandidateDocument[]): string {
+  return [...documents]
+    .map((document) => `${document.documentId}@${document.version}`)
+    .sort()
+    .join(",");
+}
+
+/**
+ * Build the package the user is about to review. Writes nothing.
+ *
+ * Guarded even though it sends nothing: it assembles a list of a customer's
+ * documents addressed to an outside party, which is not something a user
+ * without `submission.create` and `document.read` should be able to produce
+ * (the store-boundary argument from the real-world-issues milestone, Part 7).
+ */
+export function prepareDocumentPackage(
+  input: PreparePackageInput,
+  actorUserId: Id,
+): PreparePackageResult {
+  const submission = db.submissions.find((s) => s.id === input.submissionId);
+  if (!submission) return { ok: false, message: "Submission not found." };
+
+  const loanCase = db.cases.find((c) => c.id === submission.caseId);
+  if (!loanCase) return { ok: false, message: "Case not found." };
+
+  for (const permission of ["submission.create", "document.read"]) {
+    const refusal = authorizeOnCase(actorUserId, loanCase, permission);
+    if (refusal) return { ok: false, message: refusal.message ?? "Not permitted." };
+  }
+
+  const chosen = new Set(input.documentIds);
+  const candidates = sendableDocumentsFor(submission.caseId)
+    .filter((row) => chosen.has(row.documentId))
+    .map(toCandidate);
+
+  if (candidates.length !== chosen.size) {
+    return {
+      ok: false,
+      message:
+        "One of the chosen documents is no longer on this case's checklist. Reopen the dialog so you are looking at what is actually there.",
+    };
+  }
+
+  const planned = planSubmissionPackage({
+    context: contextForSubmission(submission),
+    recipients: input.recipients,
+    documents: candidates,
+    sender: input.sender ?? DEFAULT_EMAIL_SENDER,
+  });
+
+  if (!planned.ok) {
+    return { ok: false, message: describePackageProblem(planned.problem) };
+  }
+
+  return { ok: true, prepared: { plan: planned.plan, fingerprint: fingerprintOf(candidates) } };
+}
+
+/** Content type from the file's own extension. The prototype's document rows
+ * do not carry one, and a banker's mail client cares. */
+function contentTypeFor(fileName: string): string {
+  const extension = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+  const known: Record<string, string> = {
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    heic: "image/heic",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    txt: "text/plain",
+    zip: "application/zip",
+  };
+  return known[extension] ?? "application/octet-stream";
+}
+
+export interface SendPackageResult {
+  ok: boolean;
+  submissionPackageId?: Id;
+  sentCount: number;
+  failedCount: number;
+  message: string;
+}
+
+/**
+ * Send a prepared package.
+ *
+ * THE ORDER OF OPERATIONS IS THE DESIGN.
+ *
+ *   1. Re-plan from the database and compare fingerprints. A document
+ *      replaced since the review stops the send rather than quietly going out
+ *      at a version nobody looked at.
+ *   2. Write the whole record — package, recipients, emails, documents —
+ *      before a single message leaves. Every email starts `pending`.
+ *   3. Send them one at a time, updating that email's row and committing
+ *      after each. A crash mid-way leaves an accurate record of how far it
+ *      got, not an empty one.
+ *   4. Roll the package's status up from its emails, and never round
+ *      `partially_sent` up to `sent`.
+ *
+ * Bytes are read through the existing `storageAdapter` and nowhere else. The
+ * email provider is handed bytes; it is never told where to find them.
+ */
+export async function sendDocumentPackage(
+  input: PreparePackageInput & { fingerprint: string },
+  actorUserId: Id,
+  provider: EmailProvider = emailProvider,
+): Promise<SendPackageResult> {
+  const prepared = prepareDocumentPackage(input, actorUserId);
+  if (!prepared.ok) {
+    return { ok: false, sentCount: 0, failedCount: 0, message: prepared.message };
+  }
+
+  if (prepared.prepared.fingerprint !== input.fingerprint) {
+    return {
+      ok: false,
+      sentCount: 0,
+      failedCount: 0,
+      message:
+        "These documents changed while you were reviewing them — one has been replaced or removed. " +
+        "Nothing was sent. Close this and review the new list before sending.",
+    };
+  }
+
+  const submission = db.submissions.find((s) => s.id === input.submissionId);
+  if (!submission) {
+    return { ok: false, sentCount: 0, failedCount: 0, message: "Submission not found." };
+  }
+
+  const plan = prepared.prepared.plan;
+  const packageId = nextId();
+  const now = new Date().toISOString();
+
+  const packageRow: SubmissionPackage = {
+    id: packageId,
+    submissionId: submission.id,
+    initiatedBy: actorUserId,
+    initiatedAt: now,
+    senderAddress: plan.sender.address,
+    senderName: plan.sender.name,
+    provider: provider.name,
+    status: "pending",
+    documentCount: plan.documentCount,
+    emailCount: plan.emails.length,
+    totalBytes: plan.totalBytes,
+  };
+
+  const recipientRows: SubmissionPackageRecipient[] = [
+    ...plan.to.map((recipient, index) => packageRecipient(packageId, recipient, "to", index)),
+    ...plan.cc.map((recipient, index) =>
+      packageRecipient(packageId, recipient, "cc", plan.to.length + index),
+    ),
+  ];
+
+  const emailRows: SubmissionPackageEmail[] = plan.emails.map((email) => ({
+    id: nextId(),
+    submissionPackageId: packageId,
+    sequence: email.sequence,
+    subject: email.subject,
+    status: "pending",
+    attachmentCount: email.documents.length,
+    attachmentBytes: email.totalBytes,
+    attemptCount: 0,
+  }));
+
+  const documentRows: SubmissionPackageDocument[] = plan.emails.flatMap((email, emailIndex) =>
+    email.documents.map((document, index) => ({
+      id: nextId(),
+      submissionPackageId: packageId,
+      submissionPackageEmailId: (emailRows[emailIndex] as SubmissionPackageEmail).id,
+      documentId: document.documentId,
+      documentVersion: document.version,
+      fileName: document.fileName,
+      fileSizeBytes: document.fileSizeBytes,
+      ...(document.financialYearLabel ? { financialYearLabel: document.financialYearLabel } : {}),
+      displayOrder: (index + 1) * 10,
+    })),
+  );
+
+  db.submissionPackages = [...db.submissionPackages, packageRow];
+  db.submissionPackageRecipients = [...db.submissionPackageRecipients, ...recipientRows];
+  db.submissionPackageEmails = [...db.submissionPackageEmails, ...emailRows];
+  db.submissionPackageDocuments = [...db.submissionPackageDocuments, ...documentRows];
+  commit();
+
+  const outcome = await dispatchEmails(
+    packageId,
+    emailRows.map((row) => row.id),
+    actorUserId,
+    provider,
+  );
+
+  return { ...outcome, submissionPackageId: packageId };
+}
+
+function packageRecipient(
+  packageId: Id,
+  recipient: { email: string; name?: string | undefined },
+  kind: "to" | "cc",
+  index: number,
+): SubmissionPackageRecipient {
+  return {
+    id: nextId(),
+    submissionPackageId: packageId,
+    email: recipient.email,
+    ...(recipient.name ? { contactName: recipient.name } : {}),
+    recipientKind: kind,
+    displayOrder: (index + 1) * 10,
+  };
+}
+
+/**
+ * Send (or re-send) specific emails of a package, one at a time.
+ *
+ * Shared by the first send and by a retry, which is what makes a retry
+ * genuinely the same operation over a smaller set rather than a second code
+ * path that could drift.
+ */
+async function dispatchEmails(
+  packageId: Id,
+  emailIds: readonly Id[],
+  actorUserId: Id,
+  provider: EmailProvider,
+): Promise<{ ok: boolean; sentCount: number; failedCount: number; message: string }> {
+  const packageRow = db.submissionPackages.find((p) => p.id === packageId);
+  const submission = db.submissions.find((s) => s.id === packageRow?.submissionId);
+  if (!packageRow || !submission) {
+    return { ok: false, sentCount: 0, failedCount: 0, message: "Submission package not found." };
+  }
+
+  const context = contextForSubmission(submission);
+  const recipients = db.submissionPackageRecipients
+    .filter((r) => r.submissionPackageId === packageId)
+    .slice()
+    .sort((a, b) => a.displayOrder - b.displayOrder);
+  const to = recipients.filter((r) => r.recipientKind === "to");
+  const cc = recipients.filter((r) => r.recipientKind === "cc");
+  const greeted = to[0];
+
+  let sentCount = 0;
+  let failedCount = 0;
+
+  for (const emailId of emailIds) {
+    const emailRow = db.submissionPackageEmails.find((e) => e.id === emailId);
+    if (!emailRow) continue;
+
+    // The RECORDED documents, at the recorded versions — not a fresh look at
+    // the checklist. A retry must send what this email was always going to
+    // send, whatever has happened to the case since.
+    const rows = db.submissionPackageDocuments
+      .filter((d) => d.submissionPackageEmailId === emailId)
+      .slice()
+      .sort((a, b) => a.displayOrder - b.displayOrder);
+
+    const documents = rows.map((row): CandidateDocument => {
+      const document = db.documents.find((d) => d.id === row.documentId);
+      const type = db.documentTypes.find((t) => t.id === document?.documentTypeId);
+      return {
+        documentId: row.documentId,
+        documentTypeCode: type?.code ?? "other_document",
+        label: documentRowLabel(type?.name ?? row.fileName, row.financialYearLabel, type?.periodKind),
+        fileName: row.fileName,
+        fileSizeBytes: row.fileSizeBytes,
+        category: type?.category ?? "additional",
+        ...(row.financialYearLabel ? { financialYearLabel: row.financialYearLabel } : {}),
+        version: row.documentVersion,
+        ...(document?.verifiedAt ? { verifiedAt: document.verifiedAt } : {}),
+      };
+    });
+
+    let attachments: EmailAttachment[];
+    try {
+      attachments = await Promise.all(
+        rows.map(async (row): Promise<EmailAttachment> => {
+          const document = db.documents.find((d) => d.id === row.documentId);
+          if (!document) throw new Error(`${row.fileName} is no longer on file.`);
+          const bytes = await storageAdapter.get(document.filePath);
+          return { fileName: row.fileName, contentType: contentTypeFor(row.fileName), bytes };
+        }),
+      );
+    } catch (error) {
+      // Storage is unreachable or an object has gone missing. That is not a
+      // provider failure and must not be recorded as one — the email never
+      // reached the provider at all.
+      failedCount += 1;
+      markEmailFailed(
+        emailId,
+        "unknown",
+        error instanceof Error
+          ? `Could not read the documents from storage: ${error.message}`
+          : "Could not read the documents from storage.",
+      );
+      recordEmailEvent(actorUserId, submission.caseId, emailRow, false);
+      commit();
+      continue;
+    }
+
+    const result = await provider.send({
+      submissionPackageEmailId: emailId,
+      from: { email: packageRow.senderAddress, name: packageRow.senderName },
+      to: to.map((r) => ({ email: r.email, ...(r.contactName ? { name: r.contactName } : {}) })),
+      cc: cc.map((r) => ({ email: r.email, ...(r.contactName ? { name: r.contactName } : {}) })),
+      subject: emailRow.subject,
+      body: composeBody({
+        context,
+        recipient: {
+          email: greeted?.email ?? "",
+          ...(greeted?.contactName ? { name: greeted.contactName } : {}),
+        },
+        batch: {
+          sequence: emailRow.sequence,
+          documents,
+          totalBytes: emailRow.attachmentBytes,
+          groups: groupsIn(documents),
+        },
+        batchCount: packageRow.emailCount,
+        sender: { name: packageRow.senderName, address: packageRow.senderAddress },
+      }),
+      attachments,
+    });
+
+    if (result.ok) {
+      sentCount += 1;
+      db.submissionPackageEmails = db.submissionPackageEmails.map((e) => {
+        if (e.id !== emailId) return e;
+        // A retry that succeeds drops the previous failure from the row's own
+        // fields — `attemptCount` is what preserves the fact that there was
+        // one, and the event log keeps its words. Rebuilt rather than spread
+        // with `undefined`, which `exactOptionalPropertyTypes` correctly
+        // refuses: an absent field and a field set to undefined are not the
+        // same row.
+        const { failureKind: _kind, failureMessage: _message, ...rest } = e;
+        return {
+          ...rest,
+          status: "sent" as const,
+          sentAt: result.sentAt,
+          attemptCount: e.attemptCount + 1,
+          ...(result.providerMessageId ? { providerMessageId: result.providerMessageId } : {}),
+        };
+      });
+    } else {
+      failedCount += 1;
+      markEmailFailed(emailId, result.failure.kind, describeEmailFailure(result.failure));
+    }
+
+    const updated = db.submissionPackageEmails.find((e) => e.id === emailId);
+    if (updated) recordEmailEvent(actorUserId, submission.caseId, updated, result.ok);
+    commit();
+  }
+
+  rollUpPackageStatus(packageId);
+
+  const all = db.submissionPackageEmails.filter((e) => e.submissionPackageId === packageId);
+  const totalSent = all.filter((e) => e.status === "sent").length;
+  const totalFailed = all.filter((e) => e.status === "failed").length;
+
+  recordPackageEvent(actorUserId, submission, packageId, totalSent, totalFailed);
+  commit();
+
+  return {
+    ok: failedCount === 0,
+    sentCount,
+    failedCount,
+    message:
+      failedCount === 0
+        ? `${sentCount} email${sentCount === 1 ? "" : "s"} sent.`
+        : `${totalSent} of ${all.length} email${all.length === 1 ? "" : "s"} sent. ${totalFailed} failed.`,
+  };
+}
+
+function markEmailFailed(emailId: Id, kind: string, message: string): void {
+  db.submissionPackageEmails = db.submissionPackageEmails.map((e) =>
+    e.id === emailId
+      ? {
+          ...e,
+          status: "failed" as const,
+          attemptCount: e.attemptCount + 1,
+          failureKind: kind,
+          failureMessage: message,
+        }
+      : e,
+  );
+}
+
+/**
+ * The package's status, derived from its emails and never rounded up.
+ *
+ * `partially_sent` exists precisely so that two-of-three cannot be reported as
+ * success — the milestone's own instruction, and the difference between
+ * somebody chasing the bank and somebody not.
+ */
+function rollUpPackageStatus(packageId: Id): void {
+  const emails = db.submissionPackageEmails.filter((e) => e.submissionPackageId === packageId);
+  const sent = emails.filter((e) => e.status === "sent").length;
+  const failed = emails.filter((e) => e.status === "failed").length;
+
+  const status =
+    sent === emails.length
+      ? ("sent" as const)
+      : sent === 0 && failed === emails.length
+        ? ("failed" as const)
+        : sent > 0
+          ? ("partially_sent" as const)
+          : ("pending" as const);
+
+  db.submissionPackages = db.submissionPackages.map((p) =>
+    p.id === packageId
+      ? {
+          ...p,
+          status,
+          ...(status === "sent" || status === "partially_sent" || status === "failed"
+            ? { completedAt: new Date().toISOString() }
+            : {}),
+        }
+      : p,
+  );
+}
+
+/** One event per outgoing email — the milestone asks for each of them by name. */
+function recordEmailEvent(
+  actorUserId: Id,
+  caseId: Id,
+  email: SubmissionPackageEmail,
+  ok: boolean,
+): void {
+  record({
+    actorUserId,
+    caseId,
+    entityType: "submission_package_email",
+    entityId: email.id,
+    eventType: ok ? "submission.email_sent" : "submission.email_failed",
+    summary: ok
+      ? `Email sent: "${email.subject}" — ${email.attachmentCount} attachment${email.attachmentCount === 1 ? "" : "s"}`
+      : `Email failed: "${email.subject}" — ${email.failureMessage ?? "no reason given"}`,
+  });
+}
+
+/**
+ * The timeline entry a person reads.
+ *
+ * "Documents sent to banker", never "Email sent" — a case history that
+ * describes the mechanism instead of the act is one nobody learns anything
+ * from (this milestone's own words).
+ */
+function recordPackageEvent(
+  actorUserId: Id,
+  submission: Submission,
+  packageId: Id,
+  sentCount: number,
+  failedCount: number,
+): void {
+  const packageRow = db.submissionPackages.find((p) => p.id === packageId);
+  if (!packageRow) return;
+
+  const recipients = db.submissionPackageRecipients
+    .filter((r) => r.submissionPackageId === packageId && r.recipientKind === "to")
+    .map((r) => r.email);
+
+  const summary = describeSubmissionForTimeline({
+    documentCount: packageRow.documentCount,
+    batchCount: sentCount,
+    recipients,
+    counterparty: counterpartyOf(submission),
+  });
+
+  record({
+    actorUserId,
+    caseId: submission.caseId,
+    entityType: "submission_package",
+    entityId: packageId,
+    eventType: failedCount === 0 ? "submission.documents_sent" : "submission.documents_partially_sent",
+    summary:
+      failedCount === 0
+        ? summary
+        : `${summary} — ${failedCount} email${failedCount === 1 ? "" : "s"} FAILED and must be retried`,
+  });
+}
+
+/**
+ * Retry the emails of a package that failed. Only those.
+ *
+ * The two properties that matter, both enforced by construction rather than by
+ * care: it reads `status === "failed"` from the recorded rows, so an email
+ * that succeeded is not in the list at all; and it re-attaches the recorded
+ * documents at the recorded versions, so a retry sends the same thing the
+ * first attempt was sending.
+ */
+export async function retryDocumentPackage(
+  submissionPackageId: Id,
+  actorUserId: Id,
+  provider: EmailProvider = emailProvider,
+): Promise<SendPackageResult> {
+  const packageRow = db.submissionPackages.find((p) => p.id === submissionPackageId);
+  if (!packageRow) {
+    return { ok: false, sentCount: 0, failedCount: 0, message: "Submission package not found." };
+  }
+
+  const submission = db.submissions.find((s) => s.id === packageRow.submissionId);
+  const loanCase = db.cases.find((c) => c.id === submission?.caseId);
+  if (!submission || !loanCase) {
+    return { ok: false, sentCount: 0, failedCount: 0, message: "Case not found." };
+  }
+
+  for (const permission of ["submission.create", "document.read"]) {
+    const refusal = authorizeOnCase(actorUserId, loanCase, permission);
+    if (refusal) {
+      return { ok: false, sentCount: 0, failedCount: 0, message: refusal.message ?? "Not permitted." };
+    }
+  }
+
+  const failed = db.submissionPackageEmails
+    .filter((e) => e.submissionPackageId === submissionPackageId && e.status === "failed")
+    .slice()
+    .sort((a, b) => a.sequence - b.sequence);
+
+  if (failed.length === 0) {
+    return {
+      ok: true,
+      submissionPackageId,
+      sentCount: 0,
+      failedCount: 0,
+      message: "Nothing to retry — every email in this submission was sent.",
+    };
+  }
+
+  const outcome = await dispatchEmails(
+    submissionPackageId,
+    failed.map((e) => e.id),
+    actorUserId,
+    provider,
+  );
+  return { ...outcome, submissionPackageId };
+}
+
+/** Every package sent for one submission, newest first. */
+export function packagesFor(submissionId: Id, source: Database = db): SubmissionPackage[] {
+  return source.submissionPackages
+    .filter((p) => p.submissionId === submissionId)
+    .slice()
+    .sort((a, b) => b.initiatedAt.localeCompare(a.initiatedAt));
+}
+
+/** The emails of one package, in the order they were numbered. */
+export function packageEmailsOf(
+  submissionPackageId: Id,
+  source: Database = db,
+): SubmissionPackageEmail[] {
+  return source.submissionPackageEmails
+    .filter((e) => e.submissionPackageId === submissionPackageId)
+    .slice()
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+/** The documents carried by one email of a package, in attachment order. */
+export function packageDocumentsOf(
+  submissionPackageEmailId: Id,
+  source: Database = db,
+): SubmissionPackageDocument[] {
+  return source.submissionPackageDocuments
+    .filter((d) => d.submissionPackageEmailId === submissionPackageEmailId)
+    .slice()
+    .sort((a, b) => a.displayOrder - b.displayOrder);
+}
+
+/** Who a package went to, addressed first. */
+export function packageRecipientsOf(
+  submissionPackageId: Id,
+  source: Database = db,
+): SubmissionPackageRecipient[] {
+  return source.submissionPackageRecipients
+    .filter((r) => r.submissionPackageId === submissionPackageId)
+    .slice()
+    .sort((a, b) => a.displayOrder - b.displayOrder);
 }
 
 // ---------------------------------------------------------------------------

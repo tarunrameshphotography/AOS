@@ -46,7 +46,15 @@ import {
   counterpartyOf,
   createSubmission,
   logCommunication,
+  packageDocumentsOf,
+  packageEmailsOf,
+  packageRecipientsOf,
+  packagesFor,
+  prepareDocumentPackage,
   recipientsOf,
+  retryDocumentPackage,
+  sendDocumentPackage,
+  sendableDocumentsFor,
   moveStage,
   progressFor,
   reevaluateRequirements,
@@ -68,6 +76,7 @@ import {
   waiveRequirement,
 } from "../fake/store.js";
 import { clearDraft, clearDrafts, getDraft, useDraft } from "../fake/drafts.js";
+import { mailBackendHealth, type MailBackendHealth } from "../fake/mail.js";
 import { storageAdapter } from "../fake/storage.js";
 import { useDatabase } from "../fake/useDatabase.js";
 import type { CasePartyRole, DocumentFile, Id, SubmissionStatus } from "../fake/types.js";
@@ -3573,8 +3582,23 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
   const [addOpen, setAddOpen] = useState(false);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [sanctioning, setSanctioning] = useState<string | null>(null);
+  const [sendingFor, setSendingFor] = useState<string | null>(null);
 
   const submissions = db.submissions.filter((s) => s.caseId === caseId);
+
+  /**
+   * Sending documents needs BOTH grants, and neither on its own is enough.
+   *
+   * `submission.create` is the authority to send a file to a bank — the
+   * permission a Telecaller deliberately does not hold at any scope, which is
+   * what stops uploading a document from becoming authority to submit one.
+   * `document.read` is there because this action puts the bytes of a
+   * customer's documents into an outgoing email, and a role that may see that
+   * a submission exists without being able to open its documents (Admin, for
+   * one) must not be able to mail them.
+   */
+  const maySendDocuments =
+    session.can("submission.create", "own") && session.can("document.read", "own");
 
   if (!session.can("submission.read", "own")) {
     return (
@@ -3708,6 +3732,16 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
                     </div>
                   ))}
 
+                  <SentPackages submissionId={submission.id} />
+
+                  {maySendDocuments && (
+                    <div className="mt-2">
+                      <Button variant="primary" onClick={() => setSendingFor(submission.id)}>
+                        Send documents via mail
+                      </Button>
+                    </div>
+                  )}
+
                   {session.can("submission.update_status", "own") &&
                     NEXT_STATUS[submission.status].length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -3748,11 +3782,104 @@ function Banks({ caseId }: { caseId: string }): ReactNode {
 
       {addOpen && <AddBankDialog caseId={caseId} onClose={() => setAddOpen(false)} />}
 
+      {sendingFor && (
+        <SendDocumentsDialog submissionId={sendingFor} onClose={() => setSendingFor(null)} />
+      )}
+
       <RejectDialog
         submissionId={rejecting}
         onClose={() => setRejecting(null)}
       />
       <SanctionDialog submissionId={sanctioning} onClose={() => setSanctioning(null)} />
+    </div>
+  );
+}
+
+/**
+ * What has already been emailed to this banker.
+ *
+ * Shown on the submission itself rather than only in the timeline, because
+ * "have we sent them the ITRs?" is asked while looking at the bank, and an
+ * answer that requires scrolling a chronological log is one people replace
+ * with a phone call.
+ *
+ * A partially-sent package is loud on purpose. It is the state somebody has to
+ * act on, and it is the state a naive implementation would have reported as
+ * success.
+ */
+function SentPackages({ submissionId }: { submissionId: string }): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+  const [retrying, setRetrying] = useState<string | null>(null);
+
+  const packages = packagesFor(submissionId, db);
+  if (packages.length === 0) return null;
+
+  const mayRetry =
+    session.can("submission.create", "own") && session.can("document.read", "own");
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      {packages.map((sent) => {
+        const emails = packageEmailsOf(sent.id, db);
+        const failed = emails.filter((email) => email.status === "failed");
+        const sentEmails = emails.filter((email) => email.status === "sent");
+        const to = packageRecipientsOf(sent.id, db)
+          .filter((recipient) => recipient.recipientKind === "to")
+          .map((recipient) => recipient.email);
+
+        return (
+          <div
+            key={sent.id}
+            className={cx(
+              "rounded px-3 py-2 text-xs",
+              failed.length > 0 ? "bg-red-50 text-red-900" : "bg-emerald-50 text-emerald-900",
+            )}
+          >
+            <p className="font-medium">
+              {failed.length === 0
+                ? `Documents sent — ${sent.documentCount} document${sent.documentCount === 1 ? "" : "s"} in ${sentEmails.length} email${sentEmails.length === 1 ? "" : "s"}`
+                : `${sentEmails.length} of ${emails.length} emails sent — ${failed.length} failed`}
+            </p>
+            <p className="mt-0.5">
+              To {to.join(", ")} · {exactly(sent.initiatedAt)} ·{" "}
+              {db.users.find((user) => user.id === sent.initiatedBy)?.name ?? "Someone"}
+            </p>
+
+            {failed.map((email) => (
+              <p key={email.id} className="mt-0.5">
+                Email {email.sequence} of {sent.emailCount} failed: {email.failureMessage}
+              </p>
+            ))}
+
+            {failed.length > 0 && mayRetry && (
+              <Button
+                className="mt-1.5"
+                disabled={retrying === sent.id}
+                onClick={() => {
+                  setRetrying(sent.id);
+                  void retryDocumentPackage(sent.id, session.user.id)
+                    .then((result) => {
+                      toast.show(result.message, result.ok ? "good" : "bad");
+                    })
+                    .catch((error: unknown) => {
+                      toast.show(
+                        error instanceof Error ? error.message : "The retry failed.",
+                        "bad",
+                      );
+                    })
+                    .finally(() => setRetrying(null));
+                }}
+              >
+                {retrying === sent.id
+                  ? "Retrying…"
+                  : `Retry ${failed.length} failed email${failed.length === 1 ? "" : "s"}`}
+              </Button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -4066,6 +4193,490 @@ function AddBankDialog({ caseId, onClose }: { caseId: string; onClose: () => voi
           </Button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+/**
+ * Sending this submission's verified documents to the banker (ADR-039).
+ *
+ * THREE STEPS, AND THE MIDDLE ONE IS THE POINT.
+ *
+ *   Choose    Every document on the case that has a file behind it, with the
+ *             ones that cannot go shown and disabled beside the reason. A
+ *             disabled row answers "why is the ITR not in this?"; a hidden row
+ *             leaves somebody to discover the omission at the bank.
+ *
+ *   Review    What will actually be sent: the addresses, the customer, the
+ *             product, and every email with its size, its subject and its
+ *             attachments. Nothing has been sent at this point and nothing
+ *             will be until the button below it is pressed — opening this
+ *             dialog is not consent.
+ *
+ *   Result    What happened, per email. A partial failure says so and offers
+ *             to retry only what failed.
+ *
+ * The plan on the review screen is computed by the same pure function the
+ * sender uses (@domain/submissions' planSubmissionPackage), and the send
+ * refuses if the documents changed underneath it in between. A review screen
+ * that shows one thing while the sender does another is worse than no review
+ * screen at all.
+ */
+interface SendRecipientRow {
+  key: string;
+  email: string;
+  name: string;
+  kind: "to" | "cc";
+  include: boolean;
+  submissionRecipientId?: string;
+}
+
+let sendRecipientSeq = 0;
+
+function SendDocumentsDialog({
+  submissionId,
+  onClose,
+}: {
+  submissionId: string;
+  onClose: () => void;
+}): ReactNode {
+  const db = useDatabase();
+  const session = useSession();
+  const toast = useToast();
+
+  const submission = db.submissions.find((s) => s.id === submissionId);
+  const rows = submission ? sendableDocumentsFor(submission.caseId, db) : [];
+  const eligible = rows.filter((row) => row.blockedBecause === undefined);
+
+  const [step, setStep] = useState<"select" | "review" | "result">("select");
+  const [sending, setSending] = useState(false);
+  const [sentPackageId, setSentPackageId] = useState<string | null>(null);
+  const [health, setHealth] = useState<MailBackendHealth | null>(null);
+
+  // Everything eligible, ticked. The default is the whole verified file
+  // because that is what goes to a bank; deselecting is the exception and it
+  // stays available (this milestone: the user must be able to deselect).
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set(eligible.map((row) => row.documentId)),
+  );
+
+  const [recipients, setRecipients] = useState<SendRecipientRow[]>(() => {
+    const existing = recipientsOf(submissionId, db);
+    if (existing.length === 0) {
+      return [
+        { key: `s${++sendRecipientSeq}`, email: "", name: "", kind: "to", include: true },
+      ];
+    }
+    return existing.map((recipient) => ({
+      key: `s${++sendRecipientSeq}`,
+      email: recipient.email,
+      name: recipient.contactName ?? "",
+      kind: recipient.recipientKind,
+      include: true,
+      submissionRecipientId: recipient.id,
+    }));
+  });
+
+  // Which mailbox this is going out from, and whether anything is connected at
+  // all. Read for display and for an honest warning — never as a substitute
+  // for the send's own result.
+  useEffect(() => {
+    let cancelled = false;
+    void mailBackendHealth()
+      .then((value) => {
+        if (!cancelled) setHealth(value);
+      })
+      .catch(() => {
+        if (!cancelled) setHealth(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const included = recipients.filter((row) => row.include && row.email.trim() !== "");
+  const firstTo = included.findIndex((row) => row.kind === "to");
+
+  const prepared = prepareDocumentPackage(
+    {
+      submissionId,
+      documentIds: [...selected],
+      recipients: included.map((row, index) => ({
+        email: row.email,
+        ...(row.name.trim() ? { name: row.name.trim() } : {}),
+        kind: row.kind,
+        isPrimary: index === firstTo,
+      })),
+      ...(health ? { sender: health.sender } : {}),
+    },
+    session.user.id,
+  );
+
+  const plan = prepared.ok ? prepared.prepared.plan : null;
+
+  const updateRecipient = (index: number, patch: Partial<SendRecipientRow>): void =>
+    setRecipients((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  const toggle = (documentId: string): void =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(documentId)) next.delete(documentId);
+      else next.add(documentId);
+      return next;
+    });
+
+  const resultEmails = sentPackageId ? packageEmailsOf(sentPackageId, db) : [];
+  const resultFailed = resultEmails.filter((email) => email.status === "failed");
+
+  return (
+    <Modal open title="Send documents to the banker" size="wide" onClose={onClose}>
+      {step === "select" && (
+        <div className="space-y-4">
+          <p className="text-sm text-ink-700">
+            Only verified documents can be sent — a file going to a bank is Amaze saying somebody
+            checked these papers. Anything not verified is listed below with the reason, so nothing
+            goes missing quietly.
+          </p>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Who it goes to</p>
+            {recipients.map((row, index) => (
+              <div key={row.key} className="flex flex-wrap items-center gap-2 rounded-md bg-ink-50 p-2 ring-1 ring-ink-200">
+                <label className="flex items-center gap-1.5 text-xs text-ink-700">
+                  <input
+                    type="checkbox"
+                    checked={row.include}
+                    onChange={(event) => updateRecipient(index, { include: event.target.checked })}
+                  />
+                  Include
+                </label>
+                <Input
+                  className="w-56 flex-1"
+                  aria-label={`Banker email ${index + 1}`}
+                  placeholder="manager.rspuram@bank.com"
+                  value={row.email}
+                  onChange={(event) => updateRecipient(index, { email: event.target.value })}
+                />
+                <Input
+                  className="w-40"
+                  aria-label={`Banker name ${index + 1}`}
+                  placeholder="Name (optional)"
+                  value={row.name}
+                  onChange={(event) => updateRecipient(index, { name: event.target.value })}
+                />
+                <Select
+                  className="w-28"
+                  aria-label={`Addressed how ${index + 1}`}
+                  value={row.kind}
+                  onChange={(event) =>
+                    updateRecipient(index, { kind: event.target.value as "to" | "cc" })
+                  }
+                >
+                  <option value="to">To</option>
+                  <option value="cc">Copied</option>
+                </Select>
+              </div>
+            ))}
+            <Button
+              onClick={() =>
+                setRecipients((current) => [
+                  ...current,
+                  { key: `s${++sendRecipientSeq}`, email: "", name: "", kind: "to", include: true },
+                ])
+              }
+            >
+              + Add another address
+            </Button>
+          </div>
+
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium">Documents</p>
+              <span className="text-xs text-ink-500">
+                {selected.size} of {eligible.length} verified selected
+              </span>
+              <Button
+                className="ml-auto"
+                onClick={() => setSelected(new Set(eligible.map((row) => row.documentId)))}
+              >
+                Select all verified
+              </Button>
+              <Button onClick={() => setSelected(new Set())}>Clear</Button>
+            </div>
+
+            {rows.length === 0 ? (
+              <Empty>Nothing has been uploaded on this case yet.</Empty>
+            ) : (
+              <ul className="mt-2 divide-y divide-ink-100">
+                {rows.map((row) => {
+                  const blocked = row.blockedBecause !== undefined;
+                  return (
+                    <li key={row.documentId} className="flex flex-wrap items-start gap-x-3 gap-y-1 py-2">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        aria-label={`Send ${row.label}`}
+                        disabled={blocked}
+                        checked={selected.has(row.documentId)}
+                        onChange={() => toggle(row.documentId)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className={cx("text-sm", blocked ? "text-ink-400" : "font-medium")}>
+                          {row.label}
+                        </p>
+                        <p className="text-xs text-ink-500">
+                          {row.fileName} · v{row.version}
+                          {row.financialYearLabel && ` · FY ${row.financialYearLabel}`}
+                        </p>
+                        {blocked && (
+                          <p className="mt-0.5 text-xs text-amber-800">{row.blockedBecause}</p>
+                        )}
+                      </div>
+                      <Badge tone={blocked ? "warn" : "good"}>
+                        {blocked ? "Cannot send" : "Verified"}
+                      </Badge>
+                      <span className="tnum w-16 text-right text-xs text-ink-500">
+                        {bytes(row.fileSizeBytes)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          {!prepared.ok && selected.size > 0 && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {prepared.message}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" disabled={!prepared.ok} onClick={() => setStep("review")}>
+              Review {plan ? `${plan.emails.length} email${plan.emails.length === 1 ? "" : "s"}` : ""}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "review" && prepared.ok && plan && (
+        <div className="space-y-4">
+          <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+            <div>
+              <dt className="text-xs text-ink-500">To</dt>
+              <dd>
+                {plan.to.map((recipient) =>
+                  recipient.name ? `${recipient.name} <${recipient.email}>` : recipient.email,
+                ).join(", ")}
+                {plan.cc.length > 0 && (
+                  <span className="block text-xs text-ink-500">
+                    Copied: {plan.cc.map((recipient) => recipient.email).join(", ")}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-500">From</dt>
+              <dd>
+                {plan.sender.name} &lt;{plan.sender.address}&gt;
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-500">Customer</dt>
+              <dd>{plan.context.customerName}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-500">Loan</dt>
+              <dd>{plan.context.loanTypeName}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-500">Attachments</dt>
+              <dd>
+                {plan.documentCount} verified document{plan.documentCount === 1 ? "" : "s"} ·{" "}
+                {bytes(plan.totalBytes)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-500">Emails</dt>
+              <dd>{plan.emails.length}</dd>
+            </div>
+          </dl>
+
+          {plan.emails.length > 1 && (
+            <p className="rounded bg-ink-50 px-3 py-2 text-xs text-ink-700">
+              These documents are over the 10 MB an individual email may carry, so they are split
+              across {plan.emails.length} emails. Every document appears in exactly one of them.
+            </p>
+          )}
+
+          {health && !health.configured && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              No mailbox is connected to AOS on this machine, so pressing Send will record the
+              attempt and report a failure rather than deliver anything. Ask an administrator to
+              connect the Amaze Loans mailbox first.
+            </p>
+          )}
+
+          <div className="space-y-2">
+            {plan.emails.map((email) => (
+              <div key={email.sequence} className="rounded-md ring-1 ring-ink-200">
+                <div className="flex flex-wrap items-center gap-2 border-b border-ink-100 px-3 py-2">
+                  <span className="text-sm font-medium">
+                    Email {email.sequence} of {plan.emails.length}
+                  </span>
+                  <span className="tnum ml-auto text-xs text-ink-500">
+                    {bytes(email.totalBytes)} · {email.documents.length} attachment
+                    {email.documents.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="px-3 py-2">
+                  <p className="text-xs text-ink-500">Subject</p>
+                  <p className="text-sm">{email.subject}</p>
+                  <ul className="mt-1.5 space-y-0.5">
+                    {email.documents.map((document) => (
+                      <li key={document.documentId} className="flex gap-2 text-xs text-ink-600">
+                        <span className="min-w-0 flex-1">{document.label}</span>
+                        <span className="tnum">{bytes(document.fileSizeBytes)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-xs text-ink-500">
+                      Read the message
+                    </summary>
+                    <pre className="mt-1 whitespace-pre-wrap rounded bg-ink-50 p-2 text-xs text-ink-700">
+                      {email.body}
+                    </pre>
+                  </details>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setStep("select")}>Back</Button>
+            <Button
+              variant="primary"
+              disabled={sending}
+              onClick={() => {
+                setSending(true);
+                void sendDocumentPackage(
+                  {
+                    submissionId,
+                    documentIds: [...selected],
+                    recipients: included.map((row, index) => ({
+                      email: row.email,
+                      ...(row.name.trim() ? { name: row.name.trim() } : {}),
+                      kind: row.kind,
+                      isPrimary: index === firstTo,
+                    })),
+                    ...(health ? { sender: health.sender } : {}),
+                    fingerprint: prepared.prepared.fingerprint,
+                  },
+                  session.user.id,
+                )
+                  .then((outcome) => {
+                    setSentPackageId(outcome.submissionPackageId ?? null);
+                    setStep("result");
+                    toast.show(outcome.message, outcome.ok ? "good" : "bad");
+                  })
+                  .catch((error: unknown) => {
+                    toast.show(
+                      error instanceof Error ? error.message : "The submission failed.",
+                      "bad",
+                    );
+                  })
+                  .finally(() => setSending(false));
+              }}
+            >
+              {sending ? "Sending…" : "Send documents"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "result" && (
+        <div className="space-y-3">
+          {resultEmails.length === 0 ? (
+            <p className="text-sm text-ink-700">Nothing was recorded for this submission.</p>
+          ) : (
+            <>
+              <p
+                className={cx(
+                  "rounded px-3 py-2 text-sm",
+                  resultFailed.length === 0
+                    ? "bg-emerald-50 text-emerald-900"
+                    : "bg-red-50 text-red-900",
+                )}
+              >
+                {resultFailed.length === 0
+                  ? `Documents sent successfully. ${resultEmails.length} email${resultEmails.length === 1 ? "" : "s"} to ${packageRecipientsOf(sentPackageId ?? "", db)
+                      .filter((recipient) => recipient.recipientKind === "to")
+                      .map((recipient) => recipient.email)
+                      .join(", ")}.`
+                  : `${resultEmails.length - resultFailed.length} of ${resultEmails.length} emails sent. ${resultFailed.length} failed — the successful ones will not be sent again.`}
+              </p>
+
+              <ul className="divide-y divide-ink-100">
+                {resultEmails.map((email) => (
+                  <li key={email.id} className="py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm">
+                        Email {email.sequence} of {resultEmails.length}
+                      </span>
+                      <Badge tone={email.status === "sent" ? "good" : "bad"}>
+                        {email.status === "sent" ? "Sent" : "Failed"}
+                      </Badge>
+                      <span className="tnum ml-auto text-xs text-ink-500">
+                        {email.attachmentCount} attachment{email.attachmentCount === 1 ? "" : "s"} ·{" "}
+                        {bytes(email.attachmentBytes)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-ink-500">{email.subject}</p>
+                    {email.status === "failed" && (
+                      <p className="mt-0.5 text-xs text-red-800">{email.failureMessage}</p>
+                    )}
+                    <ul className="mt-0.5">
+                      {packageDocumentsOf(email.id, db).map((document) => (
+                        <li key={document.id} className="text-xs text-ink-400">
+                          {document.fileName}
+                          {document.financialYearLabel && ` · FY ${document.financialYearLabel}`} · v
+                          {document.documentVersion}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <div className="flex justify-end gap-2">
+            {resultFailed.length > 0 && sentPackageId && (
+              <Button
+                variant="primary"
+                disabled={sending}
+                onClick={() => {
+                  setSending(true);
+                  void retryDocumentPackage(sentPackageId, session.user.id)
+                    .then((outcome) => toast.show(outcome.message, outcome.ok ? "good" : "bad"))
+                    .catch((error: unknown) => {
+                      toast.show(
+                        error instanceof Error ? error.message : "The retry failed.",
+                        "bad",
+                      );
+                    })
+                    .finally(() => setSending(false));
+                }}
+              >
+                {sending ? "Retrying…" : `Retry ${resultFailed.length} failed`}
+              </Button>
+            )}
+            <Button onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }

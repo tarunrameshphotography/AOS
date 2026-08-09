@@ -1134,7 +1134,14 @@ export function buildSeed(): Database {
     lenderSubmissionRules, lenderInsights,
     cases, caseParties, caseProperties, documents,
     requirements: [], documentRequirementRules,
-    submissions, submissionRecipients, offers, communications, notes, tasks, events,
+    submissions, submissionRecipients,
+    // Nothing has ever been emailed to a banker in the seed, on the same
+    // principle that keeps `bankContacts` empty: a fabricated record of
+    // customer documents having been sent somewhere is worse than an empty
+    // list (ADR-039).
+    submissionPackages: [], submissionPackageRecipients: [],
+    submissionPackageEmails: [], submissionPackageDocuments: [],
+    offers, communications, notes, tasks, events,
     // Highest sequence actually issued to a seeded case this year is 48
     // (cas_9, `num(48)`) — the counter must start at or above that, not at
     // the count of cases, or the very next createCase() collides with it.

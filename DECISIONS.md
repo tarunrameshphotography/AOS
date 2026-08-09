@@ -1679,3 +1679,121 @@ columns that reference it are parked as text across the swap.
 family Amaze sells and asserts no two rows say the same thing for the same
 subject. That is the assertion that would have caught this, and every
 code-level test in the repo missed it.
+
+---
+
+## ADR-039 — Documents go to the banker as email, composed deterministically, split at 10 MB, behind a provider seam
+
+**Status.** Accepted, Email & WhatsApp Integration milestone.
+**Schema.** `Database/migrations/0030`.
+**Code.** `src/domain/submissions/{attachments,batching,compose,package}.ts`,
+`src/domain/communications/`, `Backend/mail-server.mjs`,
+`Frontend/src/fake/mail.ts`.
+**Guide.** `Docs/Email and WhatsApp Integration.md`.
+
+**The problem.** ADR-036 built the address book — bank, branch, bankers — and
+said outright that nothing in AOS sends anything. So what actually happens is
+that somebody opens the Windows folder, attaches scans to a Gmail message until
+Gmail complains, starts a second message, and sends. Nothing records which
+documents went, in which email, to whom, or whether the third one bounced. "Did
+you get the FY 2023-24 return?" is a weekly phone call, and the only evidence
+anything was sent lives in one person's Sent items.
+
+**The decision.**
+
+*Only a verified document is sendable.* Not a pending row, not one sitting
+unread, not a rejected upload, not a waiver. A file going to a bank is Amaze
+asserting that somebody looked at these papers, and BR-032 says that somebody is
+always a named human. A blocked row is shown DISABLED with its reason rather
+than hidden — "why is the ITR not in this?" is the question the user has, and a
+hidden row leaves them to discover the omission at the bank.
+
+*Ten megabytes of attachments per email, and that is proved rather than
+assumed.* Gmail caps a message at 25 MB and base64 inflates attachments by four
+thirds plus line wrapping. `base64EncodedSize` computes it and a test asserts a
+full 10 MB email clears Gmail's ceiling with better than 10 MB to spare. The
+constraint is also a check constraint on `submission_package_email`: a rule the
+business calls hard should not depend on the application remembering it.
+
+*Grouping, then packing — in that order, and size wins where they conflict.* A
+bin-packer would produce fuller emails and put the GST certificate in email 3
+with the GST returns in email 1, so a credit manager queries a certificate that
+was already sent. Documents are grouped as a banker reads them, whole groups are
+kept together where they fit, and only a group too large for one email is split.
+The algorithm is written out in `batching.ts` because "deterministic and
+explainable" is a requirement and an algorithm nobody can restate is neither.
+
+*The email is written by code, not by a model.* Every word comes from facts AOS
+holds. It is auditable (the subject can be re-derived, not merely quoted),
+private (no customer name leaves for a third party to write "please find
+attached"), consistent (a banker receiving forty files a month can recognise
+one), free, and incapable of an outage. It still has to sound like an employee
+wrote it, because an obviously automated note gets skimmed and the query comes
+back anyway.
+
+*A package is the decision, an email is what carried it.* `submission_package`
+records that a person chose documents and pressed Send once;
+`submission_package_email` is one message with its own status. That split is
+what makes partial failure representable and a retry able to resend only what
+failed. `submission_package_document` records which document at which VERSION
+went in which email, and a unique index makes "exactly once" checkable rather
+than asserted.
+
+*No new permission.* Sending a file to a bank is what `submission.create`
+already means (Workflow.md). Login Executive, Manager and Managing Partner hold
+it; a Telecaller holds it at no scope, so collecting a document never becomes
+authority to submit one. `document.read` is required alongside it, because this
+action puts document bytes into an outgoing email and a role that may see a
+submission exists without opening its documents must not be able to mail them.
+
+*Nothing above the seam knows what Gmail is.* `EmailProvider` takes a recipient,
+a subject, a body, attachments and an id, and returns a typed result per
+message. Gmail lives in `Backend/mail-server.mjs` — the browser cannot hold a
+refresh token, and shipping one in a bundle is not a configuration mistake to be
+careful about, it is not a thing that can be done safely.
+
+*The default provider refuses.* An unconfigured install reports
+`not_configured` on every send. It does not queue and never reports success: a
+timeline recording a submission that never happened would stop somebody chasing
+a bank.
+
+**What was rejected.**
+
+*Compressing an oversized attachment.* A compressed bank statement is not the
+document the customer signed. AOS names the file, states the limit, and says
+what to do instead.
+
+*Dropping an ineligible document from the plan and sending the rest.* The file
+would reach the bank one document short and nobody would know. The plan is
+refused whole.
+
+*Storing the message body.* It is regenerated deterministically from the case,
+so a copy would duplicate customer data into a second place for no information
+gained — and give ADR-018's redaction a second place to reach. The subject IS
+stored, because it depends on how the documents happened to split and is not
+derivable afterwards.
+
+*Trusting the review screen.* `prepareDocumentPackage` returns a fingerprint of
+the document ids and versions it planned from, and the send refuses if it no
+longer matches. The window between reviewing and confirming is small and exactly
+long enough for a colleague to replace a document.
+
+*Sending the banker submission over WhatsApp.* A document message carries one
+file, has no subject, no cc and no thread a colleague can be added to, and lives
+on one handset. WhatsApp is for the CUSTOMER side — document requests,
+reminders, status updates — and the seam
+(`src/domain/communications/whatsapp-provider.ts`) is shaped for pre-approved
+templates because a business-initiated message cannot be free text. Nothing
+implements it, and `WHATSAPP_REQUIRED_CONFIGURATION` records exactly what an
+administrator would have to obtain first.
+
+**Consequences.** The prototype now has a third local process
+(`Backend/mail-server.mjs`), and `npm run dev` starts it. Real Gmail delivery is
+NOT exercised by any automated test — it needs a live credential and is not
+deterministic — so the Playwright suite runs the backend in an explicitly named
+`capture` mode that builds each message the same way and writes it to disk. The
+manual check that covers real delivery is written down in the guide.
+
+`document` rows still carry no content type, so one is derived from the file
+extension when attaching. That is the right place for the fallback, but a
+content type recorded at upload would be better and is a small future change.

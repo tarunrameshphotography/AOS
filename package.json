@@ -12,8 +12,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "seed:permissions": "vitest run src/domain/permissions/seed.test.ts -u",
-    "dev": "concurrently -k -n vite,storage -c blue,green \"vite\" \"node Backend/storage-server.mjs\"",
+    "dev": "concurrently -k -n vite,storage,mail -c blue,green,magenta \"vite\" \"node Backend/storage-server.mjs\" \"node Backend/mail-server.mjs\"",
     "storage-server": "node Backend/storage-server.mjs",
+    "mail-server": "node Backend/mail-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"

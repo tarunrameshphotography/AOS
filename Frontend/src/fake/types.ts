@@ -786,6 +786,88 @@ export interface SubmissionRecipient {
   createdAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Sending a case's documents to a banker (ADR-039) —
+// Database/migrations/0030.
+//
+// Four shapes, and the reason each is separate is written on the migration.
+// In short: the PACKAGE is the decision a person made, the EMAILS are what it
+// took to carry it (and can fail independently), the RECIPIENTS are who
+// actually received it, and the DOCUMENTS record which version went in which
+// email, exactly once.
+// ---------------------------------------------------------------------------
+
+/** pending until the first send; `partially_sent` when some emails failed. */
+export type SubmissionPackageStatus = "pending" | "sent" | "partially_sent" | "failed";
+
+export interface SubmissionPackage {
+  id: Id;
+  submissionId: Id;
+  /** Who pressed Send. Never the system (BR-032's principle). */
+  initiatedBy: Id;
+  initiatedAt: string;
+  /** The mailbox it went from, snapshotted rather than read from config at
+   * display time — configuration changes, history must not. */
+  senderAddress: string;
+  senderName: string;
+  /** "gmail", "capture", "unconfigured" — whose sent mailbox to look in. */
+  provider: string;
+  status: SubmissionPackageStatus;
+  documentCount: number;
+  emailCount: number;
+  totalBytes: number;
+  completedAt?: string;
+}
+
+export interface SubmissionPackageRecipient {
+  id: Id;
+  submissionPackageId: Id;
+  /** The submission recipient this was taken from, when it came from one.
+   * Absent for an address typed on the spot. */
+  submissionRecipientId?: Id;
+  email: string;
+  contactName?: string;
+  recipientKind: "to" | "cc";
+  displayOrder: number;
+}
+
+export type SubmissionPackageEmailStatus = "pending" | "sent" | "failed";
+
+export interface SubmissionPackageEmail {
+  id: Id;
+  submissionPackageId: Id;
+  /** 1-based, and the number the subject says: "(2/3)". */
+  sequence: number;
+  /** The subject only. The body is regenerated deterministically by
+   * @domain/submissions' compose.ts, so storing it would copy customer data
+   * into a second place for nothing (see the migration's column comment). */
+  subject: string;
+  status: SubmissionPackageEmailStatus;
+  attachmentCount: number;
+  attachmentBytes: number;
+  attemptCount: number;
+  sentAt?: string;
+  providerMessageId?: string;
+  /** The provider's category and its words, kept apart: the category is what
+   * a retry decides on, the words are what a person reads. */
+  failureKind?: string;
+  failureMessage?: string;
+}
+
+export interface SubmissionPackageDocument {
+  id: Id;
+  submissionPackageId: Id;
+  submissionPackageEmailId: Id;
+  documentId: Id;
+  /** Copied, not joined. A document replaced next month gets a new row
+   * (BR-031); this is the version the banker actually holds. */
+  documentVersion: number;
+  fileName: string;
+  fileSizeBytes: number;
+  financialYearLabel?: string;
+  displayOrder: number;
+}
+
 export interface Offer {
   id: Id;
   submissionId: Id;
@@ -883,6 +965,11 @@ export interface Database {
   submissions: Submission[];
   // Bank Submission Workflow (Milestone 10) — Database/migrations/0024.
   submissionRecipients: SubmissionRecipient[];
+  // Document submission by email (ADR-039) — Database/migrations/0030.
+  submissionPackages: SubmissionPackage[];
+  submissionPackageRecipients: SubmissionPackageRecipient[];
+  submissionPackageEmails: SubmissionPackageEmail[];
+  submissionPackageDocuments: SubmissionPackageDocument[];
   offers: Offer[];
   communications: Communication[];
   notes: Note[];

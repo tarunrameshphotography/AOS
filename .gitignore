@@ -13,3 +13,11 @@ Frontend/dist/
 
 # Per-machine local document storage root override
 Backend/storage.config.json
+
+# Messages written by the capture mail provider (tests only). Real customer
+# documents end up in here when the suite runs, so it never leaves the machine.
+Backend/captured-mail/
+
+# Playwright run artifacts
+test-results/
+playwright-report/

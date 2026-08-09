@@ -270,11 +270,16 @@ export function Modal({
   open,
   title,
   onClose,
+  size = "default",
   children,
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
+  /** `wide` for a dialog carrying a table — the document selection and the
+   * batch review are lists of documents with a size and a status each, and
+   * they are unreadable at the default width. Everything else stays narrow. */
+  size?: "default" | "wide";
   children: ReactNode;
 }): ReactNode {
   useEffect(() => {
@@ -290,7 +295,12 @@ export function Modal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/30 p-4 pt-16">
-      <div className="w-full max-w-lg rounded-lg bg-white shadow-xl ring-1 ring-ink-200">
+      <div
+        className={cx(
+          "w-full rounded-lg bg-white shadow-xl ring-1 ring-ink-200",
+          size === "wide" ? "max-w-3xl" : "max-w-lg",
+        )}
+      >
         <header className="flex items-center justify-between border-b border-ink-100 px-4 py-3">
           <h2 className="text-sm font-semibold">{title}</h2>
           <Button variant="ghost" onClick={onClose} aria-label="Close">

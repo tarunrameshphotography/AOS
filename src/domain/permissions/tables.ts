@@ -873,6 +873,81 @@ export const TABLE_BINDINGS: readonly TableBinding[] = [
       "them rather than re-asking.",
   },
   {
+    table: "submission_package",
+    family: "case-derived",
+    purpose:
+      "One act of sending a case's verified documents to a banker by email " +
+      "(ADR-039, Database/migrations/0030). The unit is the decision — a user " +
+      "chose documents and pressed Send once — not the emails it took to " +
+      "carry them.",
+    select: permits("submission.read"),
+    insert: permits("submission.create"),
+    update: permits("submission.create"),
+    delete: NEVER_DELETED,
+    notes:
+      "Bound to `submission.create` rather than a new permission, and that is " +
+      "the deliberate answer to this milestone's permission question: sending " +
+      "a file to a bank is what `submission.create` already means (Workflow.md), " +
+      "Login Executive, Manager and Managing Partner hold it, and a Telecaller " +
+      "holds it at no scope — so uploading a document never becomes authority " +
+      "to submit one. Update rather than `internal` because the send is where " +
+      "the row's status is rolled up and where a retry writes.",
+  },
+  {
+    table: "submission_package_recipient",
+    family: "case-derived",
+    purpose:
+      "The addresses one package actually went to, snapshotted at the moment " +
+      "of sending. Defaults come from `submission_recipient` but this is not a " +
+      "view of it — a package may go to a subset, or to an address typed on " +
+      "the spot.",
+    select: permits("submission.read"),
+    insert: permits("submission.create"),
+    update: forbidden(
+      "A snapshot of who received a file. Editing it would rewrite history, " +
+      "which is the entire reason it is a snapshot (ADR-036, ADR-039).",
+    ),
+    delete: NEVER_DELETED,
+  },
+  {
+    table: "submission_package_email",
+    family: "case-derived",
+    purpose:
+      "One outgoing email within a package, with its own status — which is " +
+      "what makes partial failure representable and a retry able to resend " +
+      "only the email that failed.",
+    select: permits("submission.read"),
+    insert: permits("submission.create"),
+    update: permits("submission.create"),
+    delete: NEVER_DELETED,
+    notes:
+      "Updated by the send and by a retry: status, sent_at, provider_message_id, " +
+      "attempt_count and the failure pair. Nothing else may change — the " +
+      "subject and the attachment counts are what was sent.",
+  },
+  {
+    table: "submission_package_document",
+    family: "case-derived",
+    purpose:
+      "Which document, at which version, went in which email. The junction " +
+      "table Database/migrations/0024 predicted, and the record that makes " +
+      "\"every selected document was sent exactly once\" checkable rather than " +
+      "asserted.",
+    select: permits("submission.read"),
+    insert: permits("submission.create"),
+    update: forbidden(
+      "A record of what was transmitted. A document replaced later gets a new " +
+      "row in `document` (BR-031); this row keeps saying what the banker " +
+      "actually holds.",
+    ),
+    delete: NEVER_DELETED,
+    notes:
+      "Reading a row here implies reading the document it names, so a client " +
+      "holding `submission.read` but not `document.read` sees that a document " +
+      "was sent without being able to open it — the same split `document.read` " +
+      "already makes elsewhere.",
+  },
+  {
     table: "offer",
     family: "case-derived",
     purpose:

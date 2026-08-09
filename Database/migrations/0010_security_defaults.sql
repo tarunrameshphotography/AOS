@@ -19,6 +19,53 @@
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
+-- auth.uid() — the session's authenticated identity
+--
+-- WHY THIS IS HERE: this schema was drafted against Supabase, where `auth` is
+-- supplied by the platform and `auth.uid()` reads the identity out of the
+-- request JWT. AOS runs on vanilla PostgreSQL in the Amaze office (Persistence
+-- milestone). 0010 is the first migration to reference `auth.uid()` and was
+-- the first to fail against a real database — "schema auth does not exist".
+--
+-- The vanilla equivalent is a session setting the application sets once it has
+-- authenticated the employee, immediately after checking out a pooled
+-- connection:
+--
+--     select set_config('app.auth_identity_id', $1, true)
+--
+-- The `true` makes it TRANSACTION-local. That is the load-bearing part: with a
+-- connection pool, a session-local setting would outlive the request and leak
+-- one employee's identity into the next employee's transaction on the same
+-- physical connection — a cross-user data leak that would look like a
+-- permissions bug and reproduce only under concurrency.
+--
+-- Nothing downstream changes. app.current_user_id() below, and every RLS
+-- policy written later, read auth.uid() exactly as they would on Supabase, so
+-- moving to a hosted Postgres replaces this one function and nothing else.
+-- ---------------------------------------------------------------------------
+
+create schema if not exists auth;
+
+comment on schema auth is
+  'Authentication primitives. On Supabase this schema is supplied by the '
+  'platform; on a self-hosted Postgres AOS supplies the one function the '
+  'schema contract depends on (ADR-026).';
+
+create or replace function auth.uid()
+returns uuid
+language sql
+stable
+as $$
+  select nullif(current_setting('app.auth_identity_id', true), '')::uuid;
+$$;
+
+comment on function auth.uid is
+  'The authenticated identity for the current transaction, or null when the '
+  'application has not set one — which is the safe default, since every policy '
+  'that hangs off app.current_user_id() then matches no rows. Set by the API '
+  'layer via set_config(''app.auth_identity_id'', <id>, true).';
+
+-- ---------------------------------------------------------------------------
 -- app.current_user_id — the anchor every policy hangs from
 -- ---------------------------------------------------------------------------
 

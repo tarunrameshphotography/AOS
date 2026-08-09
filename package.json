@@ -13,6 +13,8 @@
     "typecheck": "tsc --noEmit",
     "seed:permissions": "vitest run src/domain/permissions/seed.test.ts -u",
     "dev": "concurrently -k -n vite,storage,mail -c blue,green,magenta \"vite\" \"node Backend/storage-server.mjs\" \"node Backend/mail-server.mjs\"",
+    "migrate": "node Backend/migrate.mjs",
+    "migrate:status": "node Backend/migrate.mjs --status",
     "storage-server": "node Backend/storage-server.mjs",
     "mail-server": "node Backend/mail-server.mjs",
     "build": "vite build",
@@ -32,6 +34,7 @@
     "vitest": "^3.0.5"
   },
   "dependencies": {
+    "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2"

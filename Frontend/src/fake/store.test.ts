@@ -47,6 +47,7 @@ const {
   rejectDocument,
   removeCustomRequirement,
   resetDatabase,
+  subscribe,
   updateBranch,
   updateCaseFacts,
   updateOrganisation,
@@ -705,6 +706,95 @@ describe("existing loans and EMIs — 'Add another loan' (regression for the STO
 
     // No new master document type was created for this lender.
     expect(reloaded.getDb().documentTypes.length).toBe(catalogueSizeBefore);
+  });
+});
+
+/**
+ * `commit()` reference identity — the root cause behind two reported UI staleness
+ * bugs: the "Existing loans and EMIs" card not reflecting a freshly-saved
+ * `hasExistingObligations`, and a document row's "Verified" badge not reflecting a
+ * freshly-recorded verification.
+ *
+ * `useDatabase()` (Frontend/src/fake/useDatabase.ts) hands `getDb` to React's
+ * `useSyncExternalStore` as `getSnapshot`. React is only *required* to re-render a
+ * subscriber when `getSnapshot()` returns something that fails an `Object.is`
+ * comparison against what it returned last time — an unchanged reference is a
+ * license to skip the re-render, not merely a hint. Every mutator in this file
+ * wrote through `db.cases = db.cases.map(...)` and friends: real, immutable
+ * updates to the array a property points at, but never a reassignment of `db`
+ * itself. So every `commit()` handed React back the exact same top-level
+ * reference it had already seen, and a subscriber only actually updated when
+ * something unrelated forced it to re-render anyway (a sibling's local `useState`
+ * change cascading down) — which is why some parts of a screen updated
+ * immediately and a sibling with no such coincidental trigger went stale for an
+ * unpredictable stretch, sometimes indefinitely. `resetDatabase` never showed
+ * this symptom, because `db = bootstrap()` there was already a genuine new
+ * reference — the tell that led to the fix: `commit()` now does the same
+ * (`db = { ...db }`) on every write, not just a full reset.
+ */
+describe("commit() — snapshot reference identity (regression for the stale-badge bug)", () => {
+  it("hands back a new top-level reference on every committing write, not just on reset", () => {
+    const before = getDb();
+
+    const productId = before.loanProducts[0]?.id;
+    const userId = before.users[0]?.id;
+    if (!productId || !userId) throw new Error("test setup: expected a seeded product and user");
+    const caseId = createCase({ newApplicantName: "Ref Identity Test", loanProductId: productId }, userId);
+
+    const afterCreate = getDb();
+    expect(afterCreate).not.toBe(before);
+
+    const result = updateCaseFacts(caseId, { hasExistingObligations: true }, userId);
+    expect(result.ok).toBe(true);
+
+    const afterFactsUpdate = getDb();
+    // The regression this guards: a mutator that only reassigns a nested
+    // property (`db.cases = db.cases.map(...)`) must still leave `db` itself a
+    // new object, or a useSyncExternalStore subscriber is free to ignore the
+    // notification entirely.
+    expect(afterFactsUpdate).not.toBe(afterCreate);
+    expect(getDb().cases.find((c) => c.id === caseId)?.hasExistingObligations).toBe(true);
+  });
+
+  it("notifies every subscriber with a changed snapshot when a document is verified", async () => {
+    // Upload is a telecaller's job; verify is the Login Team's (Part 7) — two
+    // different actors, matching who actually holds each grant.
+    const uploaderId = getDb().users.find((u) => u.roles.includes("telecaller"))?.id;
+    const verifierId = getDb().users.find((u) => u.roles.includes("login_executive"))?.id;
+    if (!uploaderId || !verifierId) {
+      throw new Error("test setup: expected a seeded telecaller and login executive");
+    }
+
+    const requirement = getDb().requirements.find((r) => r.status === "pending");
+    if (!requirement) throw new Error("test setup: expected a pending requirement in the seed");
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const uploaded = await uploadDocument(
+      requirement.id,
+      { name: "identity-test.pdf", size: bytes.byteLength, bytes },
+      uploaderId,
+    );
+    expect(uploaded.ok).toBe(true);
+
+    const snapshotsSeenBySubscriber: unknown[] = [];
+    const unsubscribe = subscribe(() => {
+      snapshotsSeenBySubscriber.push(getDb());
+    });
+
+    const beforeVerify = getDb();
+    const verified = verifyDocument(requirement.id, verifierId);
+    expect(verified.ok).toBe(true);
+    unsubscribe();
+
+    expect(snapshotsSeenBySubscriber.length).toBeGreaterThan(0);
+    for (const snapshot of snapshotsSeenBySubscriber) {
+      // Every notification must carry a reference distinct from what came before
+      // it, or a useSyncExternalStore consumer is entitled to treat it as a no-op.
+      expect(snapshot).not.toBe(beforeVerify);
+    }
+    expect(
+      getDb().requirements.find((r) => r.id === requirement.id)?.status,
+    ).toBe("verified");
   });
 });
 

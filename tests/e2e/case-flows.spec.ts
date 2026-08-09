@@ -7,10 +7,13 @@
  */
 import { test, expect } from "@playwright/test";
 import {
+  advanceToDocumentsPending,
   createCaseThroughUi,
+  dialogButton,
   documentRow,
   fixture,
   gotoTab,
+  sectionButton,
   uploadForRow,
 } from "../support/helpers";
 
@@ -25,8 +28,14 @@ test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing
       amount: "6500000",
     });
     await expect(page).toHaveURL(caseUrl);
-    await expect(page.getByText("Ravi Kumar Machinery")).toBeVisible();
+    // "Ravi Kumar Machinery" also appears in the "People on this case" list — scope to the
+    // case-title heading, the intended assertion target.
+    await expect(page.getByRole("heading", { level: 1 }).getByText("Ravi Kumar Machinery")).toBeVisible();
     await expect(page.getByText(/AL-\d{4}-\d{5}/)).toBeVisible();
+
+    // Requirements only become due — with an Upload control — once the case reaches
+    // "Documents Pending"; a fresh "New" case shows everything as "not due yet".
+    await advanceToDocumentsPending(page);
 
     // --- Edit the customer profile through the UI ---
     await page.getByRole("heading", { level: 1 }).getByRole("link").click();
@@ -45,8 +54,16 @@ test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing
     await page.getByRole("button", { name: "Edit facts" }).click();
     await page.getByLabel("Is the business registered under GST?").selectOption({ label: "Yes" });
     await page.getByLabel("Is anyone on this file already servicing a loan?").selectOption({ label: "Yes" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
-    await expect(page.getByText("Saved. The documents list has already changed.")).toBeVisible();
+    // The page's own stage-footer "Save & continue" coexists with this one; scope to the
+    // open Edit-facts dialog.
+    await dialogButton(page, "Save & continue").click();
+    // This button (CaseDetail.tsx EditFactsDialog) commits and closes the dialog without a
+    // toast — only "Save draft" shows one. Assert the saved facts themselves (the case-facts
+    // <dt>/<dd> pairs) instead of a toast this action never fires.
+    const gstTerm = page.getByText("GST registered", { exact: true });
+    await expect(gstTerm.locator("xpath=following-sibling::*[1]")).toHaveText("Yes");
+    const obligationsTerm = page.getByText("Existing obligations", { exact: true });
+    await expect(obligationsTerm.locator("xpath=following-sibling::*[1]")).toHaveText("Yes");
 
     // --- Existing loans and EMIs: add another lender + statement ---
     await expect(page.getByText("Yes — already servicing a loan")).toBeVisible();
@@ -66,14 +83,19 @@ test.describe("Case 1 — Business / Machinery Loan (₹65,00,000, GST, existing
     await expect(page.getByText(/Not Applicable/).and(page.getByText(/GST/))).toHaveCount(0);
 
     // --- Upload the PAN document, confirm UI + storage + view ---
-    await uploadForRow(page, "PAN", fixture("pan-card.pdf"));
+    // "PAN" substring-matches both "PAN Card" and "Business PAN Card" on a business-loan
+    // checklist; exact matching pins this to the applicant's own PAN card.
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
     await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
-    const panRow = documentRow(page, "PAN");
+    const panRow = documentRow(page, "PAN Card", { exact: true });
     await expect(panRow.getByText(/pan-card\.pdf/)).toBeVisible();
     await expect(panRow.getByText(/Awaiting verification|Uploaded/i)).toBeVisible();
 
     await panRow.getByRole("button", { name: "View" }).click();
-    await expect(page.getByRole("heading", { name: /Is this the right document\?|pan-card/i })).toBeVisible();
+    // ViewDocumentDialog (CaseDetail.tsx) titles the modal with the document type's own
+    // name — "PAN Card" here — not the separate verify-flow's "Is this the right document?"
+    // dialog, which only appears from a login executive's "Verify" action.
+    await expect(page.getByRole("heading", { name: "PAN Card" })).toBeVisible();
     await page.getByRole("button", { name: /Close|Not now/i }).first().click();
 
     // --- Save an incomplete case and continue: partial upload state must survive navigation ---
@@ -103,6 +125,10 @@ test.describe("Case 2 — Home Loan (₹50,00,000, salaried, no GST)", () => {
     });
     await expect(page).toHaveURL(caseUrl);
 
+    // Requirements only become due — with an Upload control — once the case reaches
+    // "Documents Pending"; a fresh "New" case shows everything as "not due yet".
+    await advanceToDocumentsPending(page);
+
     await page.getByRole("heading", { level: 1 }).getByRole("link").click();
     await page.waitForURL(/\/people\//);
     await page.getByRole("button", { name: "Edit" }).click();
@@ -114,16 +140,27 @@ test.describe("Case 2 — Home Loan (₹50,00,000, salaried, no GST)", () => {
     await page.getByRole("button", { name: "Save" }).click();
     await page.goto(caseUrl);
 
+    // Income-proof documents are asked for by employment type (CaseDetail.tsx
+    // PartyProfileDialog: "Salaried is asked for payslips and Form 16; self-employed for an
+    // ITR"). This scenario is a salaried applicant, so record that on the case party — an
+    // unset employment type generates no income-proof requirement at all, salaried or not.
+    await page.getByRole("listitem").filter({ hasText: "Meena Sundaram" }).getByRole("button", { name: "Profile" }).click();
+    await page.getByLabel("Employment type").selectOption({ label: "Salaried" });
+    await dialogButton(page, "Save & continue").click();
+
     await page.getByRole("button", { name: "Edit facts" }).click();
     await page.getByLabel("Is the business registered under GST?").selectOption({ label: "No" });
     await page.getByLabel("Is anyone on this file already servicing a loan?").selectOption({ label: "No" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    // Scoped to the open Edit-facts dialog — the page's stage-footer button shares this name.
+    await dialogButton(page, "Save & continue").click();
 
-    // Property required for a purchase home loan.
-    await page.getByRole("button", { name: "Add property" }).click();
+    // Property required for a purchase home loan. The "Property" section's own "Add
+    // property" is scoped separately from the identically-labelled quick action in the
+    // case summary toolbar above it.
+    await sectionButton(page, "Property", "Add property").click();
     await page.getByLabel("Locality").fill("Race Course");
     await page.getByLabel("City").fill("Coimbatore");
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    await dialogButton(page, "Save & continue").click();
     await expect(page.getByText(/Property added/)).toBeVisible();
 
     await gotoTab(page, "documents");
@@ -133,12 +170,12 @@ test.describe("Case 2 — Home Loan (₹50,00,000, salaried, no GST)", () => {
     // Property-backed checklist: title/encumbrance style property docs must appear.
     await expect(page.locator("li").filter({ hasText: /Property|Title|Encumbrance/i }).first()).toBeVisible();
 
-    await uploadForRow(page, "PAN", fixture("pan-card.pdf"));
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
     await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
 
     await gotoTab(page, "overview");
     await gotoTab(page, "documents");
-    await expect(documentRow(page, "PAN").getByText(/pan-card\.pdf/)).toBeVisible();
+    await expect(documentRow(page, "PAN Card", { exact: true }).getByText(/pan-card\.pdf/)).toBeVisible();
   });
 });
 
@@ -154,6 +191,10 @@ test.describe("Case 3 — Smaller GST-registered Business Loan (existing loan)",
     });
     await expect(page).toHaveURL(caseUrl);
 
+    // Requirements only become due — with an Upload control — once the case reaches
+    // "Documents Pending"; a fresh "New" case shows everything as "not due yet".
+    await advanceToDocumentsPending(page);
+
     await page.getByRole("heading", { level: 1 }).getByRole("link").click();
     await page.waitForURL(/\/people\//);
     await page.getByRole("button", { name: "Edit" }).click();
@@ -168,7 +209,8 @@ test.describe("Case 3 — Smaller GST-registered Business Loan (existing loan)",
     await page.getByRole("button", { name: "Edit facts" }).click();
     await page.getByLabel("Is the business registered under GST?").selectOption({ label: "Yes" });
     await page.getByLabel("Is anyone on this file already servicing a loan?").selectOption({ label: "Yes" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    // Scoped to the open Edit-facts dialog — the page's stage-footer button shares this name.
+    await dialogButton(page, "Save & continue").click();
 
     await page.getByRole("button", { name: "+ Another loan" }).click();
     await page.getByLabel("Who is the loan with?").fill("Bajaj Finserv");
@@ -201,6 +243,10 @@ test.describe("Case 4 — Property-backed / Land Collateral Loan", () => {
     });
     await expect(page).toHaveURL(caseUrl);
 
+    // Requirements only become due — with an Upload control — once the case reaches
+    // "Documents Pending"; a fresh "New" case shows everything as "not due yet".
+    await advanceToDocumentsPending(page);
+
     await page.getByRole("heading", { level: 1 }).getByRole("link").click();
     await page.waitForURL(/\/people\//);
     await page.getByRole("button", { name: "Edit" }).click();
@@ -212,12 +258,15 @@ test.describe("Case 4 — Property-backed / Land Collateral Loan", () => {
     await page.getByRole("button", { name: "Save" }).click();
     await page.goto(caseUrl);
 
-    await page.getByRole("button", { name: "Add property" }).click();
+    // The "Property" section's own "Add property" is scoped separately from the
+    // identically-labelled quick action in the case summary toolbar above it.
+    await sectionButton(page, "Property", "Add property").click();
     await page.getByLabel("Locality").fill("RS Puram");
     await page.getByLabel("City").fill("Coimbatore");
     const roleSelect = page.getByLabel("Role on this case");
     await roleSelect.selectOption({ value: "collateral" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    // Scoped to the open Add-property dialog — the page's stage-footer button shares this name.
+    await dialogButton(page, "Save & continue").click();
     await expect(page.getByText(/Property added/)).toBeVisible();
 
     await gotoTab(page, "documents");
@@ -226,13 +275,13 @@ test.describe("Case 4 — Property-backed / Land Collateral Loan", () => {
     await expect(propertyRows.first()).toBeVisible();
     expect(await propertyRows.count()).toBeGreaterThan(0);
 
-    await uploadForRow(page, "PAN", fixture("pan-card.pdf"));
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
     await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
 
     // Save incomplete, navigate away and back — confirm the property and upload persist.
     await gotoTab(page, "overview");
     await expect(page.getByText(/Property on file/)).toBeVisible();
     await gotoTab(page, "documents");
-    await expect(documentRow(page, "PAN").getByText(/pan-card\.pdf/)).toBeVisible();
+    await expect(documentRow(page, "PAN Card", { exact: true }).getByText(/pan-card\.pdf/)).toBeVisible();
   });
 });

@@ -6,7 +6,17 @@
  * distinct from the current owner/handler after reassignment.
  */
 import { test, expect } from "@playwright/test";
-import { createCaseThroughUi, documentRow, fixture, gotoTab, uploadForRow, USERS, switchUser } from "../support/helpers";
+import {
+  advanceToDocumentsPending,
+  createCaseThroughUi,
+  dialogButton,
+  documentRow,
+  fixture,
+  gotoTab,
+  uploadForRow,
+  USERS,
+  switchUser,
+} from "../support/helpers";
 
 test.describe("Telecaller → Login Team document workflow", () => {
   test("telecaller uploads, cannot verify; login team verifies, rejects, re-upload versions, progress reflects verified only", async ({ page }) => {
@@ -20,9 +30,14 @@ test.describe("Telecaller → Login Team document workflow", () => {
       amount: "1200000",
     });
 
+    // Requirements only become due — with an Upload control — once the case reaches
+    // "Documents Pending"; a fresh "New" case shows everything as "not due yet".
+    await advanceToDocumentsPending(page);
+
     await page.getByRole("button", { name: "Edit facts" }).click();
     await page.getByLabel("Is the business registered under GST?").selectOption({ label: "Yes" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    // Scoped to the open Edit-facts dialog — the page's stage-footer button shares this name.
+    await dialogButton(page, "Save & continue").click();
 
     await gotoTab(page, "documents");
 
@@ -31,11 +46,13 @@ test.describe("Telecaller → Login Team document workflow", () => {
     await expect(progressText).toBeVisible();
 
     // Telecaller uploads PAN — allowed by document.upload own.
-    await uploadForRow(page, "PAN", fixture("pan-card.pdf"));
+    // "PAN" substring-matches both "PAN Card" and "Business PAN Card" on this business-loan
+    // checklist; exact matching pins this to the applicant's own PAN card.
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
     await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
 
     // Telecaller must NOT see a Verify button on the uploaded row, and must not see "Send to bank".
-    const panRow = documentRow(page, "PAN");
+    const panRow = documentRow(page, "PAN Card", { exact: true });
     await expect(panRow.getByRole("button", { name: "Verify" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /Send to bank/i })).toHaveCount(0);
 
@@ -47,14 +64,13 @@ test.describe("Telecaller → Login Team document workflow", () => {
     await page.goto(caseUrl);
     await gotoTab(page, "documents");
 
-    const panRowAsLogin = documentRow(page, "PAN");
+    const panRowAsLogin = documentRow(page, "PAN Card", { exact: true });
     await expect(panRowAsLogin.getByRole("button", { name: "Verify" })).toBeVisible();
     await panRowAsLogin.getByRole("button", { name: "Verify" }).click();
     await expect(page.getByRole("heading", { name: "Is this the right document?" })).toBeVisible();
     await page.getByRole("button", { name: "Yes — confirm & verify" }).click();
-    await expect(page.getByText("Verified")).toBeVisible();
-
-    // Progress must now count this document as verified.
+    // Plain "Verified" text is ambiguous — it also matches the progress summary, a <dt>/<dd>
+    // pair, and hint paragraphs elsewhere on the page. Scope to the row's own status badge.
     await expect(panRowAsLogin.getByText(/Verified/i)).toBeVisible();
 
     // --- Reject a second document, then re-upload it (versioning) ---
@@ -65,10 +81,14 @@ test.describe("Telecaller → Login Team document workflow", () => {
     await page.getByRole("button", { name: "No — wrong or unreadable" }).click();
     await page.getByLabel("Reason for rejection").fill("Wrong statement — asked customer to resend the last 6 months.");
     await page.getByRole("button", { name: "Confirm rejection" }).click();
-    await expect(page.getByText("Rejected")).toBeVisible();
 
+    // Plain "Rejected" text is ambiguous — it also matches a <dt>/<dd> pair, a description
+    // line, and a toast. Scope to the row's own status badge (below) instead of asserting
+    // the page-wide text twice.
+    // /Rejected/i alone also matches the row's own description line ("...rejected: Wrong
+    // statement..."), not just the status badge — match the badge's full text instead.
     const rejectedRow = documentRow(page, "Bank Statement");
-    await expect(rejectedRow.getByText(/Rejected/i)).toBeVisible();
+    await expect(rejectedRow.getByText("Rejected — upload again")).toBeVisible();
     await expect(rejectedRow.getByRole("button", { name: "Upload again" })).toBeVisible();
 
     // Re-upload: creates a new version of the same requirement.
@@ -129,13 +149,18 @@ test.describe("Custom, case-specific document does not touch the global catalogu
       loanTypeLabel: "Business Loan · Term Loan",
       amount: "1500000",
     });
+
+    // A custom document is still bucketed as "not due yet" (no "Added by hand" detail row)
+    // until the case reaches "Documents Pending" — advance it first.
+    await advanceToDocumentsPending(page);
     await gotoTab(page, "documents");
 
     const uniqueDocName = `Bank's NOC for second charge QA-${Date.now()}`;
     await page.getByRole("button", { name: "+ Add document" }).click();
     await page.getByLabel("Document name").fill(uniqueDocName);
     await page.getByLabel("Mandatory or optional").selectOption({ label: "Optional" });
-    await page.getByRole("button", { name: "Save & continue" }).click();
+    // Scoped to the open Add-document dialog — the page's stage-footer button shares this name.
+    await dialogButton(page, "Save & continue").click();
     await expect(page.getByText(new RegExp(`"${uniqueDocName}" added to this case's list`))).toBeVisible();
 
     await expect(documentRow(page, uniqueDocName)).toBeVisible();
@@ -167,14 +192,19 @@ test.describe("Case originator and current owner/handler", () => {
     await expect(page.getByText(new RegExp(`Originated by ${USERS.telecaller}`))).toBeVisible();
     await expect(page.getByText(new RegExp(`Currently with ${USERS.telecaller}`))).toBeVisible();
 
-    await switchUser(page, USERS.loginExecutive);
+    // Reassign is a manager-only move (session.can("case.assign", "all") in CaseDetail.tsx) —
+    // Login Executive never sees this control, so the acting user must be the manager.
+    await switchUser(page, USERS.manager);
     await page.goto(caseUrl);
     const reassign = page.getByRole("button", { name: /Reassign|Change owner|Owner/i }).first();
     await expect(reassign).toBeVisible();
     await reassign.click();
     const ownerSelect = page.getByLabel("New owner");
     await ownerSelect.selectOption({ label: USERS.manager });
-    await page.getByRole("button", { name: /Save|Assign|Confirm/i }).last().click();
+    // The dialog's own submit button is also just labelled "Reassign" — same text as the
+    // trigger button that opened it, and ".last()" on a regex match isn't a reliable way to
+    // land on the right one. Scope to the open dialog instead.
+    await dialogButton(page, "Reassign").click();
 
     // Originator must remain the original telecaller; current owner must now differ.
     await expect(page.getByText(new RegExp(`Originated by ${USERS.telecaller}`))).toBeVisible();
@@ -192,8 +222,13 @@ test.describe("Timeline contains meaningful events", () => {
       loanTypeLabel: "Personal Loan · Personal Loan",
       amount: "250000",
     });
+
+    // Requirements only become due once the case reaches "Documents Pending" — a fresh
+    // "New" case shows every requirement as "not due yet" with no Upload control.
+    await advanceToDocumentsPending(page);
+
     await gotoTab(page, "documents");
-    await uploadForRow(page, "PAN", fixture("pan-card.pdf"));
+    await uploadForRow(page, "PAN Card", fixture("pan-card.pdf"), undefined, { exact: true });
     await expect(page.getByText(/pan-card\.pdf uploaded/)).toBeVisible();
 
     await gotoTab(page, "timeline");

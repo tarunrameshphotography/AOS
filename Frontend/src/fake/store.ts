@@ -234,6 +234,21 @@ function bootstrap(): Database {
 }
 
 function commit(): void {
+  // Every mutator in this file writes through `db.cases = db.cases.map(...)` and
+  // friends — reassigning a property, never `db` itself. `useDatabase()` hands
+  // `getDb` to React's `useSyncExternalStore` as `getSnapshot`, and React decides
+  // whether to re-render a given subscriber by `Object.is`-comparing the snapshot
+  // it got last time against what `getSnapshot` returns now. Since `db` was never
+  // reassigned, that comparison always saw the same reference and always said
+  // "unchanged" — so a component only actually re-rendered when something else
+  // (a local `useState` change, a parent remounting) happened to force it anyway,
+  // which is why some parts of a page updated immediately and others (a sibling
+  // card with no such coincidental trigger) went stale for an unpredictable
+  // stretch, or indefinitely. `resetDatabase` never had this problem because it
+  // assigns `db = bootstrap()`, a genuinely new reference — that's the tell.
+  // Cloning here on every commit gives every commit that same property, so every
+  // subscriber sees a changed snapshot and React is required to re-render it.
+  db = { ...db };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
   } catch {

@@ -21,3 +21,12 @@ Backend/captured-mail/
 # Playwright run artifacts
 test-results/
 playwright-report/
+
+# Working notes holding live Google credentials — the Gmail OAuth client
+# secret and the refresh token for the Amaze sending mailbox. These sat
+# untracked but unignored at the repository root, which meant a single
+# `git add -A` would have published them to a public GitHub repo. Listed by
+# bare filename rather than anchored to the root, so a copy made in any
+# subdirectory is ignored too.
+Google OAuth Web.txt
+Google Mail Server Details.txt

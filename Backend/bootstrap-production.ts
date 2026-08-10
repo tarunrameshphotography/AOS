@@ -3,28 +3,40 @@
  * Stand up the real Amaze Loans accounts, and clear the throwaway ones.
  *
  * WHY THIS IS NOT `seed-users.ts`: that script exists to make a development
- * database usable and says so — every account it creates shares one password
- * that is written down in the file. It is exactly right for a machine with no
- * customer data on it and exactly wrong for the office. This script is the
- * other half: six named employees, one independently generated password each,
- * printed once and never stored anywhere but the hash.
+ * database usable, and every account it creates shares one password. It is
+ * exactly right for a machine with no customer data on it and exactly wrong
+ * for the office. This script is the other half: six named employees, one
+ * independently generated password each, printed once and never stored
+ * anywhere but the hash.
  *
  * IT IS DELIBERATELY AWKWARD TO RUN. Creating accounts that will hold real
- * customer files, and deleting the seed accounts that will not, are both
- * one-way enough that a mistyped command should not be able to do either.
- * Hence:
+ * customer files is one-way enough that a mistyped command should not be able
+ * to do it. Hence:
  *
  *   - It refuses to run against a database whose name looks like a test one.
- *   - `--reset` is required to remove anything, and additionally requires
- *     AOS_BOOTSTRAP_CONFIRM to equal the database name, so the destructive
- *     path cannot be reached by pressing up-arrow and enter.
  *   - It is idempotent: an employee who already has an account is left
  *     entirely alone, password included. Re-running never resets a password
  *     somebody is already using.
  *
+ * THE DEVELOPMENT ACCOUNTS ARE NOW DISABLED UNCONDITIONALLY (Stage 4 Item 3).
+ * They used to be left active unless `--reset` was passed AND
+ * AOS_BOOTSTRAP_CONFIRM matched the database name, which put the SAFE state
+ * behind two opt-ins and made the dangerous one the default: a plain
+ * `npm run bootstrap-production` produced a database with real employee
+ * accounts on it and `partner.p` — a Managing Partner whose password is
+ * written down in a file in this repository — still able to sign in. The
+ * warning it printed instead was doing the work a guard should have been
+ * doing.
+ *
+ * The double-confirmation was the right instinct pointed at the wrong
+ * operation. Deactivation deletes nothing: `is_active` goes false, live
+ * sessions are revoked, the row and every reference to it survive (BR-062),
+ * and one UPDATE reverses it. `--reset` is kept — accepted, and reserved for
+ * a genuinely destructive operation, of which there is currently none.
+ *
  * Usage:
- *   npm run bootstrap-production                 # create the six accounts
- *   npm run bootstrap-production -- --reset      # …and clear the dev seed data
+ *   npm run bootstrap-production                 # create the six accounts,
+ *                                                # disable the five dev ones
  *   npm run bootstrap-production -- --dry-run    # say what it would do
  */
 
@@ -33,7 +45,12 @@ import { randomUUID, randomInt } from "node:crypto";
 import { hashPassword } from "@domain/auth/password.js";
 import type { Role } from "@domain/permissions/index.js";
 
-import { pool, withActor } from "./db.js";
+// The ADMIN pool, not the application's: `aos_app` cannot create accounts or
+// append to `event` outside an authenticated transaction, both of which this
+// script does (see db.ts). Falls back to the ordinary pool when
+// AOS_DB_ADMIN_USER is unset.
+import { closeAdminPool, withAdmin } from "./db.js";
+import { disableDevelopmentAccounts } from "./dev-accounts.js";
 
 /**
  * The six people who work at Amaze Loans, and what they do.
@@ -52,21 +69,6 @@ const EMPLOYEES: readonly { username: string; fullName: string; roles: Role[] }[
   { username: "keerthivhasan", fullName: "V Keerthivhasan", roles: ["managing_partner"] },
 ];
 
-/**
- * Development accounts from `seed-users.ts`, by username.
- *
- * These share one published password. Every one of them is a way into the
- * office database for anyone who has read the repository, so `--reset`
- * deactivates them. Deactivated rather than deleted: `app_user` is referenced
- * from a dozen tables and BR-062 wants the name to survive anyway.
- */
-const DEV_SEED_USERNAMES = [
-  "telecaller.a",
-  "telecaller.b",
-  "login.exec",
-  "manager.m",
-  "partner.p",
-];
 
 /**
  * A password a person has to type, generated rather than chosen.
@@ -93,6 +95,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+
 async function main(): Promise<void> {
   const args = new Set(process.argv.slice(2));
   const reset = args.has("--reset");
@@ -105,10 +108,15 @@ async function main(): Promise<void> {
     fail(`Refusing to run against "${database}": that looks like a test database.`);
   }
 
-  if (reset && !dryRun && process.env.AOS_BOOTSTRAP_CONFIRM !== database) {
-    fail(
-      `--reset deactivates the development seed accounts in "${database}".\n` +
-        `  Re-run with AOS_BOOTSTRAP_CONFIRM=${database} if that is what you want.`,
+  // `--reset` is accepted and does nothing. It used to gate the dev-account
+  // deactivation that now always happens; the documented office command in
+  // Docs/Installation.md passes it, and failing on an unknown flag would break
+  // a procedure someone may be reading off a printout mid-install.
+  if (reset) {
+    console.log(
+      `\n  Note: --reset is no longer required. The development seed accounts are\n` +
+        `  disabled on every run (they are deactivated, never deleted). The flag is\n` +
+        `  reserved for a destructive operation and currently does nothing.`,
     );
   }
 
@@ -116,7 +124,7 @@ async function main(): Promise<void> {
 
   const issued: { fullName: string; username: string; password: string }[] = [];
 
-  await withActor(null, async (client) => {
+  await withAdmin(async (client) => {
     for (const employee of EMPLOYEES) {
       const existing = await client.query(
         `select id, is_active from app_user where lower(username) = lower($1)`,
@@ -168,32 +176,8 @@ async function main(): Promise<void> {
       console.log(`  created   ${employee.username.padEnd(14)} ${employee.roles.join(" + ")}`);
     }
 
-    if (reset) {
-      console.log("");
-      for (const username of DEV_SEED_USERNAMES) {
-        const { rows } = await client.query(
-          `select id from app_user where username = $1 and is_active`,
-          [username],
-        );
-        if (!rows[0]) continue;
-        if (dryRun) {
-          console.log(`  would deactivate ${username}`);
-          continue;
-        }
-
-        await client.query(`update app_user set is_active = false where id = $1`, [rows[0].id]);
-        await client.query(
-          `update api_session set revoked_at = now() where user_id = $1 and revoked_at is null`,
-          [rows[0].id],
-        );
-        await client.query(
-          `insert into event (actor_kind, entity_type, entity_id, event_type, payload_after, source)
-           values ('system', 'app_user', $1, 'user.deactivated', $2, 'automation')`,
-          [rows[0].id, JSON.stringify({ isActive: false, reason: "development_seed_account" })],
-        );
-        console.log(`  disabled  ${username}`);
-      }
-    }
+    console.log("");
+    await disableDevelopmentAccounts(client, { dryRun, log: console.log });
   });
 
   if (issued.length > 0) {
@@ -210,15 +194,7 @@ async function main(): Promise<void> {
     console.log("");
   }
 
-  if (!reset) {
-    console.log(
-      `\n  The development seed accounts from seed-users.ts share one published\n` +
-        `  password and are still active. Re-run with --reset to disable them\n` +
-        `  before this database holds real customer files.\n`,
-    );
-  }
-
-  await pool.end();
+  await closeAdminPool();
 }
 
 await main();

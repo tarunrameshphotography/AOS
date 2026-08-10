@@ -190,15 +190,83 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
-/** The office runs the frontend on 5173 and this on 4321 — different origins,
- * so the browser requires these. Not a wildcard on credentials: the token
- * travels in an Authorization header, which `*` would still allow, but being
- * explicit here keeps a later cookie switch from silently becoming permissive. */
+/**
+ * Which browser origins may read this API's responses.
+ *
+ * WHAT THIS USED TO DO, AND WHY IT WAS WRONG (Stage 4 Item 3). It reflected
+ * whatever arrived: `res.setHeader("Access-Control-Allow-Origin",
+ * req.headers.origin ?? "*")`. Every origin on the internet was therefore
+ * allowed to read every response this server produced.
+ *
+ * It was not session-riding — `Access-Control-Allow-Credentials` is not set and
+ * the token lives in localStorage, which no other origin can read, so a
+ * malicious page could not act AS a signed-in employee. What it could do is
+ * use an employee's browser as a bridge onto the office LAN: an unauthenticated
+ * `POST /api/auth/login` per page view, with the response readable, is
+ * credential-stuffing originating from inside the network from a machine that
+ * is supposed to be there. `/api/health/detail` was readable the same way. The
+ * office server binds 0.0.0.0, so "you have to be on the LAN" was the only
+ * control, and this handed that out to any web page an employee opened.
+ *
+ * Now: an allowlist. AOS is served to employees from ONE address —
+ * `http://<server LAN IP>:<AOS_WEB_PORT>` — and developed against Vite on
+ * 5173. An origin not on the list gets no `Access-Control-Allow-Origin` header
+ * at all, which is the correct refusal: the browser blocks the read, and no
+ * header is a clearer statement than an echoed one.
+ *
+ * AOS_ALLOWED_ORIGINS (comma-separated) exists for the installation that
+ * fronts AOS with a reverse proxy or a hostname, since this process cannot
+ * guess either. Set it and it replaces the derived list entirely.
+ *
+ * NONE OF THIS IS THE AUTHORIZATION BOUNDARY. CORS is enforced by the browser
+ * and by nothing else — curl ignores it completely. Every route below still
+ * checks the token and the permission, and would still refuse if this function
+ * were deleted. This narrows what a *page in an employee's browser* can do,
+ * which is a real and separate exposure.
+ */
+function allowedOrigins(): readonly string[] {
+  const configured = process.env.AOS_ALLOWED_ORIGINS?.trim();
+  if (configured) {
+    return configured
+      .split(",")
+      .map((origin) => origin.trim().replace(/\/$/, ""))
+      .filter((origin) => origin.length > 0);
+  }
+
+  const webPort = Number(process.env.AOS_WEB_PORT ?? 4300);
+  const origins = [
+    // The bundled web server, however an employee reaches it. The LAN-IP form
+    // cannot be derived here — the office sets AOS_ALLOWED_ORIGINS for that,
+    // and does not need to while the web server proxies /api on its own origin,
+    // which makes the request same-origin and sends no Origin header at all.
+    `http://localhost:${webPort}`,
+    `http://127.0.0.1:${webPort}`,
+    // Vite in development, and Playwright driving it.
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ];
+  return origins;
+}
+
+const ALLOWED_ORIGINS = allowedOrigins();
+
+/** Exported for the security test, which asserts a foreign origin is refused
+ * without needing to guess the derivation above. */
+export function isOriginAllowed(origin: string | undefined): boolean {
+  if (origin === undefined) return false;
+  return ALLOWED_ORIGINS.includes(origin.replace(/\/$/, ""));
+}
+
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
-  res.setHeader("Access-Control-Allow-Origin", req.headers.origin ?? "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  const origin = req.headers.origin;
+  // Always varies, even when the header is withheld: a cache must not serve
+  // one origin the allow-header computed for another.
   res.setHeader("Vary", "Origin");
+  if (!isOriginAllowed(origin)) return;
+
+  res.setHeader("Access-Control-Allow-Origin", origin!);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-File-Name");
 }
 
 // ---------------------------------------------------------------------------
@@ -277,9 +345,99 @@ function requirePermission(
 // Handlers — authentication
 // ---------------------------------------------------------------------------
 
-async function login(client: pg.PoolClient, body: Record<string, unknown>) {
+/**
+ * Login throttling.
+ *
+ * THE HOLE THIS CLOSES (Stage 4 Item 3). `POST /api/auth/login` accepted
+ * unlimited attempts. The only brake was PBKDF2 at 100,000 iterations, which
+ * costs an attacker ~50-100ms per guess — slow for a human, an afternoon for a
+ * script. AOS enforces an eight-character minimum (MIN_PASSWORD_LENGTH in
+ * users.ts), the office server binds 0.0.0.0, and the accounts on the other
+ * side of that form hold every customer's documents.
+ *
+ * It is also, in the other direction, the one unauthenticated route that does
+ * real work: 100,000 hash iterations per request, on the single-process API
+ * that every employee shares. A few hundred concurrent attempts is a denial of
+ * service with no credentials at all.
+ *
+ * IN PROCESS, NOT IN THE DATABASE, and that is a deliberate limit rather than
+ * an oversight. A table would survive a restart and would be shared if AOS ever
+ * ran more than one API process; it would also mean an unauthenticated request
+ * can make the office database write, which is the thing being defended
+ * against. AOS runs exactly one API process on one PC (Docs/Deployment
+ * Topology.md), so a Map is honest about the deployment. What it costs: a
+ * restart clears the counters. Twelve failed attempts then a restart is not a
+ * plausible attack, and if AOS ever grows a second process this comment is the
+ * thing to come back to.
+ *
+ * Keyed on username AND client address together, so one employee mistyping
+ * their password on their own PC cannot lock a colleague out of the same
+ * account from theirs — lockout by username alone is itself a denial of
+ * service, and a trivially cheap one.
+ */
+const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+/** How long a quiet period wipes the count. Longer than the lockout, so an
+ * attacker cannot reset the counter by pausing for less than they lose. */
+const LOGIN_WINDOW_MS = 30 * 60 * 1000;
+
+const loginAttempts = new Map<string, { failures: number; first: number; lockedUntil: number }>();
+
+function throttleKey(username: string, req: IncomingMessage): string {
+  // The socket address, not X-Forwarded-For: nothing in the AOS topology sets
+  // that header, so trusting it would let a caller choose their own bucket.
+  return `${username.toLowerCase()} ${req.socket.remoteAddress ?? "unknown"}`;
+}
+
+/** Throws 429 when this username/address pair is locked out. Called before the
+ * password is hashed, so a locked-out caller costs nothing to refuse. */
+function assertNotThrottled(key: string): void {
+  const entry = loginAttempts.get(key);
+  if (!entry) return;
+
+  const now = Date.now();
+  if (entry.lockedUntil > now) {
+    const minutes = Math.max(1, Math.ceil((entry.lockedUntil - now) / 60_000));
+    throw new HttpError(
+      429,
+      `Too many failed sign-in attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}, ` +
+        `or ask a manager to reset your password.`,
+    );
+  }
+  if (now - entry.first > LOGIN_WINDOW_MS) loginAttempts.delete(key);
+}
+
+function recordLoginFailure(key: string): void {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now - entry.first > LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { failures: 1, first: now, lockedUntil: 0 });
+    return;
+  }
+  entry.failures += 1;
+  if (entry.failures >= LOGIN_MAX_ATTEMPTS) {
+    entry.lockedUntil = now + LOGIN_LOCKOUT_MS;
+  }
+}
+
+/** A successful sign-in clears the count for that username and address — the
+ * person has proven they are who the counter was suspicious of. */
+function clearLoginFailures(key: string): void {
+  loginAttempts.delete(key);
+}
+
+/** Test seam. The suite drives real HTTP against a real server and would
+ * otherwise leak a lockout from one test into the next. */
+export function resetLoginThrottle(): void {
+  loginAttempts.clear();
+}
+
+async function login(client: pg.PoolClient, req: IncomingMessage, body: Record<string, unknown>) {
   const username = typeof body.username === "string" ? body.username.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
+
+  const key = throttleKey(username, req);
+  assertNotThrottled(key);
 
   const { rows } = await client.query(
     `select id, password_hash, is_active from app_user where lower(username) = lower($1)`,
@@ -291,10 +449,19 @@ async function login(client: pg.PoolClient, body: Record<string, unknown>) {
   // login form must not become a way to enumerate who works here, or to learn
   // that a departed employee's account still exists.
   const rejection = new HttpError(401, "Incorrect username or password.");
-  if (!user || !user.password_hash) throw rejection;
-  if (!(await verifyPassword(password, user.password_hash))) throw rejection;
-  if (!user.is_active) throw rejection;
+  const refuse = (): never => {
+    recordLoginFailure(key);
+    throw rejection;
+  };
+  if (!user || !user.password_hash) refuse();
+  if (!(await verifyPassword(password, user.password_hash))) refuse();
+  // A deactivated employee counts as a failure too. Otherwise the throttle
+  // would be a way to tell "this account is disabled" from "this password is
+  // wrong" — the one distinction the identical rejection text above exists to
+  // hide.
+  if (!user.is_active) refuse();
 
+  clearLoginFailures(key);
   const token = randomBytes(32).toString("base64url");
   await client.query(
     `insert into api_session (user_id, token_hash, expires_at) values ($1, $2, $3)`,
@@ -430,7 +597,7 @@ async function route(
     };
   }
 
-  if (method === "POST" && path === "/api/auth/login") return await login(client, body);
+  if (method === "POST" && path === "/api/auth/login") return await login(client, req, body);
 
   if (method === "POST" && path === "/api/auth/logout") {
     const token = bearerToken(req);

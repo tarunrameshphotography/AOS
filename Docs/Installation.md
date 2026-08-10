@@ -121,6 +121,54 @@ since. Stop and ask — do not force it.
 
 ---
 
+## 5a. Stop AOS connecting as a superuser
+
+**Do this before AOS holds any real customer file.** Steps 1 and 4 have the
+application connecting as `postgres`, which is a PostgreSQL superuser: it can
+run programs on this PC, read any file the PostgreSQL service can read, read
+every role's password hash, and erase the audit log. Nothing AOS does needs any
+of that. Migration `0033` created a role — `aos_app` — that can do none of it,
+and left it with **no password**, so it cannot be used until you set one here.
+
+Pick a long random password. It is typed twice, here and into `.env`, and never
+again; nobody has to remember it.
+
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -d aos -c `
+  "alter role aos_app password 'PASTE-A-LONG-RANDOM-PASSWORD-HERE'"
+```
+
+Then edit `.env`:
+
+```ini
+AOS_DB_USER=aos_app
+AOS_DB_PASSWORD=<the aos_app password you just set>
+
+# The administrative scripts — seed-users, bootstrap-production — deliberately
+# CANNOT run as aos_app: it is not allowed to create accounts or write to the
+# event log outside an authenticated request. These two lines let those scripts
+# keep using the owner account while the running application does not.
+AOS_DB_ADMIN_USER=postgres
+AOS_DB_ADMIN_PASSWORD=<the postgres password from step 1>
+```
+
+Restart AOS and confirm it still works — sign in, open a case, upload a
+document. If anything returns "Something went wrong", revert the two
+`AOS_DB_USER`/`AOS_DB_PASSWORD` lines to `postgres`, restart, and report what
+failed: it means a table or privilege was missed, and running as superuser is
+better than running not at all while that is fixed.
+
+> **What this buys.** A bug or an injection in AOS can no longer reach the rest
+> of the machine, and can no longer delete anything — `aos_app` holds no
+> `DELETE` privilege on any table, so BR-003 ("nothing is hard-deleted") is now
+> enforced by PostgreSQL rather than by the application happening not to try.
+> The `event` log becomes append-only for the same reason.
+>
+> **What it does not buy.** It does not change who may see which case. That is
+> decided by the API (`Backend/authorize.ts`) and is unchanged.
+
+---
+
 ## 6. Build the frontend
 
 ```powershell
@@ -210,13 +258,14 @@ This prints one generated password per employee, **once**. They are stored only
 as hashes and cannot be recovered. Write them on separate slips, hand each
 person theirs directly, and have them change it.
 
-Then remove the development accounts, which share a password published in this
-repository:
-
-```powershell
-$env:AOS_BOOTSTRAP_CONFIRM="aos"
-npm run bootstrap-production -- --reset
-```
+The same run **disables the five development accounts** — `telecaller.a`,
+`telecaller.b`, `login.exec`, `manager.m`, `partner.p` — and revokes any live
+session they hold. That used to require `--reset` plus an
+`AOS_BOOTSTRAP_CONFIRM` environment variable, which put the safe outcome behind
+two opt-ins and left `partner.p`, a Managing Partner, signable-in by default.
+Nothing is deleted: the accounts stay as records so departed names survive on
+what they touched (BR-062), and one `update app_user set is_active = true`
+reverses it.
 
 Confirm none are left active:
 

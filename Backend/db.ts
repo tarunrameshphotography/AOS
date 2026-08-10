@@ -60,6 +60,59 @@ export const pool = new pg.Pool({
 export type Queryable = Pick<pg.PoolClient, "query">;
 
 /**
+ * A pool for the ADMINISTRATIVE scripts, which are not the application.
+ *
+ * WHY THIS IS SEPARATE (Stage 4 Item 3). `aos_app` — the role the API server
+ * connects as from migration 0033 — is deliberately not allowed to do what
+ * `seed-users.ts` and `bootstrap-production.ts` do. It has no INSERT on
+ * `permission` or `role_permission`, and the tier-B RLS policy on `event`
+ * refuses a transaction with no authenticated identity, which is exactly what
+ * a bootstrap is: there is nobody signed in, because creating the first
+ * account is what makes signing in possible.
+ *
+ * That is the correct answer, not an obstacle to work around. Standing up
+ * accounts is an owner's job, done at a console, once. Widening the running
+ * API's privileges so a script it never calls can share its connection would
+ * trade a real boundary for a small convenience.
+ *
+ * So: if AOS_DB_ADMIN_USER is set, these scripts use it. If it is not, they
+ * fall back to the ordinary pool — which is what happens on a development
+ * machine that still connects as `postgres`, and means nothing about this
+ * changes until an office actually switches AOS_DB_USER to `aos_app`.
+ */
+let admin: pg.Pool | null = null;
+
+export function adminPool(): pg.Pool {
+  const user = process.env.AOS_DB_ADMIN_USER?.trim();
+  if (!user) return pool;
+  admin ??= new pg.Pool({
+    host: process.env.AOS_DB_HOST ?? "127.0.0.1",
+    port: Number(process.env.AOS_DB_PORT ?? 5432),
+    database: DATABASE,
+    user,
+    password: process.env.AOS_DB_ADMIN_PASSWORD ?? process.env.AOS_DB_PASSWORD ?? "",
+    // One script, one connection at a time. Nothing here is concurrent.
+    max: 2,
+  });
+  return admin;
+}
+
+/** `withActor`, on whichever pool the administrative scripts should use. */
+export async function withAdmin<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  return await runInTransaction(adminPool(), null, fn);
+}
+
+/** Close whatever the admin scripts opened, including the shared pool when
+ * AOS_DB_ADMIN_USER was never set and `adminPool()` handed back `pool`. */
+export async function closeAdminPool(): Promise<void> {
+  if (admin) {
+    await admin.end();
+    admin = null;
+  }
+  await pool.end();
+}
+
+/**
  * Run `fn` inside a transaction, with the actor's identity published to
  * Postgres for the duration of it.
  *
@@ -81,7 +134,18 @@ export async function withActor<T>(
   authIdentityId: string | null,
   fn: (client: pg.PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
+  return await runInTransaction(pool, authIdentityId, fn);
+}
+
+/** The body of `withActor`, parameterised by pool so `withAdmin` can reuse it
+ * without duplicating the rollback handling below — which is the part it would
+ * be easiest to get subtly wrong in a second copy. */
+async function runInTransaction<T>(
+  target: pg.Pool,
+  authIdentityId: string | null,
+  fn: (client: pg.PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await target.connect();
   try {
     await client.query("begin");
     await client.query("select set_config('app.auth_identity_id', $1, true)", [

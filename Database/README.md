@@ -4,23 +4,49 @@ Schema, migrations and — not yet — policies.
 
 ## Status
 
-**The schema exists. The security surface does not.**
+The schema exists and has been executed. `0033_application_role.sql` closed the
+gap this section used to describe.
 
-`0010_security_defaults.sql` enables row level security on every table and
-creates **no policies**, which in Postgres means no client row is visible. Base
-tables are revoked from client roles. The schema is deployable and inert:
-migrations and SECURITY DEFINER functions work, client sessions see nothing.
+**What was true until Stage 4 Item 3, and is worth recording.** `0010` enabled
+row level security on 62 tables and created **no policies**, and this file
+described that as a deliberate, inert deny-everything default. It was neither
+deny-everything nor inert, because of a fact recorded nowhere: the application
+connected as `postgres` — `rolsuper`, `rolbypassrls`, and the owner of every
+table. A superuser bypasses RLS unconditionally, `FORCE` included. So the
+security surface was not merely unbuilt; the part that appeared to exist was
+doing nothing, and the obvious remedy (point `AOS_DB_USER` at an ordinary role)
+would have made every query return zero rows with no error.
 
-That is deliberate. ADR-026 makes views part of the schema contract, and the
-policies and masked views are the next unit of work — held back so the schema can
-be audited before a security surface is built on top of it.
+**What is true now.** `0033` creates `aos_app`: `NOSUPERUSER`, `NOBYPASSRLS`,
+owning nothing, granted `DELETE` on no table, and granted `INSERT`/`SELECT` but
+not `UPDATE` on `event`. Every RLS-enabled table has a policy — verified by
+`Backend/security.test.ts`, which fails the build if a future migration adds a
+table and forgets one. The exception is `case_number_sequence`, which has no
+policy *and* no grant, because only `app.allocate_case_number()` (SECURITY
+DEFINER) may touch it.
 
-**Nothing here has been executed.** No Postgres was available in the session that
-wrote it, so the SQL is unrun: it has been checked by reading and by the
-structural tests in `src/domain/permissions/`, and it has not been checked by a
-parser. Standing up a database and running `0001` through `0009` in order is the
-first task of the schema audit, before any judgement about the design is worth
-making.
+**What the policies do and do not do.** Two tiers. The login path (`app_user`,
+`api_session`, `person`, `user_role`, `user_permission_override`, `permission`,
+`role_permission`) is readable without an identity, because reading it is how an
+identity comes to exist. Everything else requires `app.current_user_id()` to be
+non-null — an authenticated, *active* employee published into the transaction.
+
+That is a boundary around the connection, not around the user. **RLS in AOS
+does not enforce per-user or per-case access and must not be described as
+doing so.** Ownership is decided in `Backend/authorize.ts` and proven in
+`Backend/api.test.ts`; ADR-022 exists to keep that answered once. What tier B
+buys is concrete and narrower: someone holding the `aos_app` password but not
+inside an authenticated AOS transaction — a leaked `.env`, a `psql` session
+from another PC on the office LAN — reads no customer, case, document or
+submission row.
+
+**The office still connects as `postgres` until someone changes it.** `0033`
+creates the role with no password, so it cannot authenticate and nothing
+changes until an administrator sets one and edits `.env`. See
+`Docs/Installation.md` §5a.
+
+ADR-026's masked views remain unbuilt. Column masking is still a real gap and
+is not what this migration addressed.
 
 ## Migration order
 
@@ -36,6 +62,8 @@ making.
 | `0008_seed_permissions.sql` | **Generated.** Permission catalog, role grants, thresholds |
 | `0009_seed_reference_data.sql` | Loan products, document types, rejection reasons |
 | `0010_security_defaults.sql` | `app.has_permission()`, RLS enabled, base tables revoked |
+| … | |
+| `0033_application_role.sql` | `aos_app`, least-privilege grants, the RLS policies |
 
 They must run in order. The dependencies are real: `app_user` cannot exist before
 `person`, and the permission seed cannot run before the tables it fills.

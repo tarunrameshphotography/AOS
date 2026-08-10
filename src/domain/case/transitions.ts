@@ -150,6 +150,24 @@ const TRANSITION_RULES: readonly TransitionRule[] = [
 ];
 
 /**
+ * The stages a case at `from` can be moved to by a person choosing "Move
+ * stage" — i.e. rows in `TRANSITION_RULES` whose actor is `user`.
+ *
+ * System-actor rows (`ready_for_submission`, `submitted`, `sanctioned`,
+ * `disbursed`, and the automatic `documents_pending` reversion) are excluded
+ * on purpose: those transitions are consequences of other actions (a
+ * submission being created, a sanction offer attached), not choices, and
+ * offering them here would let a user pick a move that
+ * `evaluateTransition` always rejects with a "system transition" error. See
+ * ADR-019 and `TransitionActor`.
+ */
+export function userSelectableStages(from: CaseStage): readonly CaseStage[] {
+  return TRANSITION_RULES.filter(
+    (rule) => rule.from === from && rule.actor === "user",
+  ).map((rule) => rule.to);
+}
+
+/**
  * Decide whether a case may move as requested.
  *
  * Returns a reason on refusal rather than a bare boolean: the reason is shown to

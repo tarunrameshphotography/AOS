@@ -5,6 +5,7 @@ import {
   deriveSystemStage,
   deriveSystemStagePath,
   evaluateTransition,
+  userSelectableStages,
 } from "./transitions.js";
 
 function snapshot(overrides: Partial<CaseSnapshot> = {}): CaseSnapshot {
@@ -401,5 +402,37 @@ describe("deriveSystemStagePath — advancing more than one stage", () => {
     );
 
     expect(path).toEqual([]);
+  });
+});
+
+describe("userSelectableStages", () => {
+  it("never offers a stage reached only by a system transition", () => {
+    // ready_for_submission, submitted, sanctioned and disbursed are each only
+    // reachable via a system-actor rule — the Move stage UI must not offer
+    // them, or the user hits "X → Y is a system transition" for a move the
+    // dropdown itself suggested.
+    for (const stage of ["ready_for_submission", "submitted", "sanctioned", "disbursed"] as const) {
+      expect(userSelectableStages(stage)).not.toContain(stage);
+    }
+  });
+
+  it("offers nothing from documents_pending — it only advances on its own", () => {
+    expect(userSelectableStages("documents_pending")).toEqual([]);
+  });
+
+  it("offers nothing from ready_for_submission — submission and reversion are both automatic", () => {
+    expect(userSelectableStages("ready_for_submission")).toEqual([]);
+  });
+
+  it("offers nothing from submitted or sanctioned — both only advance automatically", () => {
+    expect(userSelectableStages("submitted")).toEqual([]);
+    expect(userSelectableStages("sanctioned")).toEqual([]);
+  });
+
+  it("still offers the legitimate manual moves", () => {
+    expect(userSelectableStages("new")).toEqual(["contacted"]);
+    expect(userSelectableStages("contacted")).toEqual(["appointment_fixed", "documents_pending"]);
+    expect(userSelectableStages("appointment_fixed")).toEqual(["documents_pending", "contacted"]);
+    expect(userSelectableStages("disbursed")).toEqual(["closed"]);
   });
 });

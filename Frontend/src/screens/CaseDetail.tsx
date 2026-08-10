@@ -41,13 +41,13 @@ import { useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
-  CASE_STAGES,
   CASE_STAGE_LABELS,
   LOST_REASONS,
   LOST_REASON_LABELS,
   type CaseStage,
   type LostReason,
 } from "@domain/case/stages.js";
+import { userSelectableStages } from "@domain/case/transitions.js";
 import {
   DOCUMENT_CATALOGUE,
   DOCUMENT_CATEGORIES,
@@ -337,7 +337,27 @@ function MoveStageModal({
 }): ReactNode {
   const mutation = useMutation();
   const toast = useToast();
-  const [stage, setStage] = useState<CaseStage>(loanCase.stage);
+  const options = userSelectableStages(loanCase.stage);
+  const [stage, setStage] = useState<CaseStage>(options[0] ?? loanCase.stage);
+
+  if (options.length === 0) {
+    return (
+      <Modal open title="Move stage" onClose={onClose}>
+        <div className="space-y-3">
+          <p className="text-sm text-ink-700">
+            {loanCase.stage === "ready_for_submission"
+              ? "This case is ready for submission. It moves to Submitted automatically once it's sent to a bank — that workflow isn't available here yet."
+              : `There is nothing to choose here — ${CASE_STAGE_LABELS[loanCase.stage]} only advances automatically, by what happens on the case.`}
+          </p>
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal open title="Move stage" onClose={onClose}>
@@ -347,7 +367,7 @@ function MoveStageModal({
           hint="The server judges the move. Some stages are reached automatically by what happens on the case, not by choosing them here."
         >
           <Select value={stage} onChange={(event) => setStage(event.target.value as CaseStage)}>
-            {CASE_STAGES.filter((value) => value !== "lost").map((value) => (
+            {options.map((value) => (
               <option key={value} value={value}>
                 {CASE_STAGE_LABELS[value]}
               </option>

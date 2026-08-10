@@ -6,6 +6,12 @@
  * cases — proved end to end against PostgreSQL, so the architecture is
  * demonstrated before the other ~85 store functions are ported to it.
  *
+ * Stage 3A adds the second surface: user administration and per-user
+ * permission overrides (`Backend/users.ts`). It is here rather than in a later
+ * stage because the frontend cutover in 3B will be run BY these accounts —
+ * creating the real employees, and being able to enforce an exception granted
+ * to one of them, has to be true of the server before anyone depends on it.
+ *
  * WHAT CHANGED CONCEPTUALLY: the browser is no longer the database. It was
  * `Frontend/src/fake/store.ts`, an in-memory object graph persisted to one
  * profile's localStorage, which meant a Telecaller's cases existed only on the
@@ -20,8 +26,11 @@
  *     rule that is the entire point of the exercise.
  *   - Document bytes. They stay on disk via `storage-server.mjs`; the database
  *     holds only the storage path. Untouched by this milestone.
- *   - Everything outside the slice: requirements, verification, submissions,
- *     the event log. Stage 2 is a proof, not the migration.
+ *   - Everything outside the slice: requirements, verification, submissions.
+ *     Stage 2 is a proof, not the migration. The event log was on this list
+ *     too and has come off it for administrative actions only (see
+ *     `Backend/events.ts`); case and customer writes still append nothing, and
+ *     that debt is carried into 3B rather than half-paid here.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -33,6 +42,20 @@ import type { Role } from "@domain/permissions/index.js";
 
 import { pool, withActor } from "./db.js";
 import { can, canActOnCase, refusal, widestScopeFor, type Actor } from "./authorize.js";
+import {
+  UserAdminError,
+  changeOwnPassword,
+  createUser,
+  getUser,
+  getUserPermissions,
+  listUsers,
+  loadOverrides,
+  resetUserPassword,
+  revokeOverride,
+  setOverride,
+  setUserActive,
+  setUserRoles,
+} from "./users.js";
 
 const PORT = Number(process.env.AOS_API_PORT ?? 4321);
 
@@ -91,7 +114,7 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
  * explicit here keeps a later cookie switch from silently becoming permissive. */
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Origin", req.headers.origin ?? "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Vary", "Origin");
 }
@@ -142,8 +165,9 @@ async function loadActor(client: pg.PoolClient, token: string | null): Promise<A
     userId: session.id,
     authIdentityId: session.auth_identity_id,
     roles: roleRows.rows.map((r: { role: string }) => r.role as Role),
-    // See Actor's doc comment: `permission_override` has no table yet.
-    overrides: [],
+    // Live overrides, read fresh alongside the roles — a withdrawn exception
+    // stops applying on the next request, not at the next login (Stage 3A).
+    overrides: await loadOverrides(client, session.id),
   };
 }
 
@@ -543,6 +567,64 @@ async function route(
     return await describeUser(client, requireActor(actor).userId);
   }
 
+  if (method === "POST" && path === "/api/auth/password") {
+    const token = bearerToken(req);
+    return await changeOwnPassword(
+      client,
+      requireActor(actor),
+      token ? hashToken(token) : null,
+      body,
+    );
+  }
+
+  // ── User administration ───────────────────────────────────────────────────
+  // Named after the operations rather than the table, for the same reason the
+  // case routes are: "replace this user's roles" and "deactivate this user"
+  // carry different permissions and different rules, and a generic
+  // `PATCH /api/users/:id` would have nowhere to put that distinction.
+
+  if (method === "GET" && path === "/api/users") {
+    return await listUsers(client, requireActor(actor));
+  }
+  if (method === "POST" && path === "/api/users") {
+    return await createUser(client, requireActor(actor), body);
+  }
+
+  const userMatch = new RegExp(`^/api/users/(${UUID})$`).exec(path);
+  if (userMatch && method === "GET") {
+    return await getUser(client, requireActor(actor), userMatch[1]!);
+  }
+
+  const rolesMatch = new RegExp(`^/api/users/(${UUID})/roles$`).exec(path);
+  if (rolesMatch && method === "PUT") {
+    return await setUserRoles(client, requireActor(actor), rolesMatch[1]!, body);
+  }
+
+  const activeMatch = new RegExp(`^/api/users/(${UUID})/active$`).exec(path);
+  if (activeMatch && method === "PUT") {
+    return await setUserActive(client, requireActor(actor), activeMatch[1]!, body);
+  }
+
+  const passwordMatch = new RegExp(`^/api/users/(${UUID})/password$`).exec(path);
+  if (passwordMatch && method === "PUT") {
+    return await resetUserPassword(client, requireActor(actor), passwordMatch[1]!, body);
+  }
+
+  const permissionsMatch = new RegExp(`^/api/users/(${UUID})/permissions$`).exec(path);
+  if (permissionsMatch && method === "GET") {
+    return await getUserPermissions(client, requireActor(actor), permissionsMatch[1]!);
+  }
+
+  const overridesMatch = new RegExp(`^/api/users/(${UUID})/overrides$`).exec(path);
+  if (overridesMatch && method === "POST") {
+    return await setOverride(client, requireActor(actor), overridesMatch[1]!, body);
+  }
+
+  const overrideMatch = new RegExp(`^/api/users/(${UUID})/overrides/(${UUID})$`).exec(path);
+  if (overrideMatch && method === "DELETE") {
+    return await revokeOverride(client, requireActor(actor), overrideMatch[1]!, overrideMatch[2]!);
+  }
+
   if (method === "GET" && path === "/api/customers") {
     return await listCustomers(client, requireActor(actor));
   }
@@ -586,7 +668,10 @@ export function createApiServer() {
       const path = new URL(req.url ?? "/", "http://localhost").pathname;
 
       try {
-        const body = method === "POST" || method === "PATCH" ? await readJsonBody(req) : {};
+        const body =
+          method === "POST" || method === "PATCH" || method === "PUT"
+            ? await readJsonBody(req)
+            : {};
         const token = bearerToken(req);
 
         // Every request runs in one transaction with the actor's identity
@@ -603,7 +688,11 @@ export function createApiServer() {
 
         json(res, 200, result);
       } catch (error) {
-        if (error instanceof HttpError) {
+        // Two error types, one boundary: `users.ts` raises its own rather than
+        // importing HttpError from here, which would be a cycle (this module
+        // imports it). Both carry a status and a message written to be read by
+        // an employee.
+        if (error instanceof HttpError || error instanceof UserAdminError) {
           json(res, error.status, { message: error.message });
           return;
         }

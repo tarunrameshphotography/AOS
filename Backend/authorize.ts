@@ -17,9 +17,6 @@
 
 import {
   hasPermissionWithOverrides,
-  scopeSatisfies,
-  widestScope,
-  ROLE_GRANTS,
   type PermissionOverride,
   type Role,
   type Scope,
@@ -28,12 +25,16 @@ import {
 /**
  * Who is making the request.
  *
- * `overrides` is presently always empty: `permission_override` has no table in
- * the schema. The Employee Authentication milestone put per-user grants and
- * denials on the in-memory `AppUser` and no migration ever gave them a home.
- * That gap is real and is recorded in the Stage 2 report rather than papered
- * over — passing `[]` is honest ("this installation has no overrides"), and
- * the moment the table exists this is the only line that changes.
+ * `overrides` carries the actor's LIVE per-user grants and denials, read fresh
+ * from `user_permission_override` on every request by `loadOverrides`
+ * (Backend/users.ts) — as of Stage 3A. Through Stage 2 it was hard-coded to
+ * `[]`: the table existed (migration 0029) but had no reader and no writer,
+ * because the Employee Authentication milestone put overrides on an in-memory
+ * `AppUser` in the browser store and nothing server-side ever consulted them.
+ *
+ * Read per request rather than baked into the session token, for the same
+ * reason roles are: a manager who withdraws an exception expects it to stop
+ * applying now, not whenever that employee next logs in.
  */
 export interface Actor {
   readonly userId: string;
@@ -61,19 +62,23 @@ export function can(actor: Actor, permission: string, scope: Scope = "own"): boo
  * `own` reads only rows the actor owns, null reads nothing and the request is
  * refused before a query is built.
  *
- * Overrides are consulted through `can()` rather than read out of
- * `ROLE_GRANTS` directly, so an explicit denial cannot be widened by a role
- * grant that happens to sit at a broader scope.
+ * Every candidate is asked through `can()`, which consults roles AND overrides
+ * together. Nothing here reads `ROLE_GRANTS` directly.
+ *
+ * IT USED TO, AND THAT WAS A BUG. Stage 2 computed the role-derived scope
+ * first and refused to consider any candidate wider than it, on the stated
+ * grounds that a denial must not be widened by a role grant sitting at a
+ * broader scope. That reasoning was wrong twice over: `can()` already handles
+ * denials — a deny blocks the permission at every scope, so no candidate can
+ * pass — and the cap made an override GRANT unable to widen anything. It was
+ * invisible while `Actor.overrides` was always `[]`, and became a live defect
+ * the moment Stage 3A started loading them: a Telecaller granted `case.read`
+ * at `all` could open a colleague's case by URL (which goes through `can()`)
+ * but saw an empty list on the cases screen (which comes through here). An
+ * override that half-applies is worse than one that does not apply at all.
  */
 export function widestScopeFor(actor: Actor, permission: string): Scope | null {
-  const fromRoles = widestScope(
-    actor.roles.flatMap((role) =>
-      ROLE_GRANTS[role].filter((g) => g.permission === permission).map((g) => g.scope),
-    ),
-  );
-
   for (const candidate of ["all", "team", "own"] as const) {
-    if (fromRoles !== null && !scopeSatisfies(fromRoles, candidate)) continue;
     if (can(actor, permission, candidate)) return candidate;
   }
   return null;

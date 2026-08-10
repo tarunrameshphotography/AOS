@@ -15,6 +15,7 @@
     "dev": "concurrently -k -n vite,api,storage,mail -c blue,cyan,green,magenta \"vite\" \"npm run api-server\" \"node Backend/storage-server.mjs\" \"node Backend/mail-server.mjs\"",
     "api-server": "vite-node --config vite.server.config.ts Backend/api-server.ts",
     "seed-users": "vite-node --config vite.server.config.ts Backend/seed-users.ts",
+    "bootstrap-production": "vite-node --config vite.server.config.ts Backend/bootstrap-production.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "migrate": "node Backend/migrate.mjs",
     "migrate:status": "node Backend/migrate.mjs --status",

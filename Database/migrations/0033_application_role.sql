@@ -34,6 +34,13 @@
 --
 -- Additive only: CREATE ROLE, GRANT, CREATE POLICY. Nothing is dropped, no
 -- table changes owner, and no row is touched.
+--
+-- THIS MIGRATION MUST BE RUN BY A SUPERUSER. `create role` and `comment on
+-- role` both require it, and roles are cluster-wide rather than per-database,
+-- so this is the one migration that reaches outside the AOS database.
+-- `Docs/Installation.md` has migrations running as `postgres`, which is
+-- correct and stays correct: the point of this file is that the APPLICATION
+-- stops being a superuser, not that nothing ever is.
 -- ===========================================================================
 
 
@@ -91,9 +98,14 @@ comment on role aos_app is
 -- Schema access
 --
 -- USAGE only. USAGE on a schema is the right to name what is in it; it grants
--- nothing on any object. CREATE is deliberately withheld from both schemas, so
--- this role cannot add a table, a function or a type anywhere — which is what
--- makes "owns nothing" durable rather than merely true today.
+-- nothing on any object. CREATE is withheld from all three, so this role
+-- cannot add a table, a function or a type anywhere — which is what makes
+-- "owns nothing" durable rather than merely true today.
+--
+-- The revokes are belt-and-braces: `aos_app` was never granted CREATE, and on
+-- PostgreSQL 15+ PUBLIC no longer holds it on `public` either. They are here so
+-- that a cluster restored from an older dump, or one where somebody granted it
+-- by hand, converges on the same answer.
 -- ---------------------------------------------------------------------------
 
 grant usage on schema public to aos_app;
@@ -101,6 +113,8 @@ grant usage on schema app    to aos_app;
 grant usage on schema auth   to aos_app;
 
 revoke create on schema public from aos_app;
+revoke create on schema app    from aos_app;
+revoke create on schema auth   from aos_app;
 
 
 -- ---------------------------------------------------------------------------

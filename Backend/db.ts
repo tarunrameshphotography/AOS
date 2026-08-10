@@ -124,11 +124,18 @@ export async function closeAdminPool(): Promise<void> {
  * under concurrency.
  *
  * `auth.uid()` (migration 0010) reads this setting, and `app.current_user_id()`
- * reads `auth.uid()`. Nothing depends on it yet — authorization is enforced in
- * `authorize.ts` above the query, because 0010 ships RLS with zero policies by
- * design. Publishing the identity anyway means the policy work, when it lands,
- * needs no change here and can be verified against a backend that has been
- * setting it correctly all along.
+ * reads `auth.uid()`.
+ *
+ * THIS IS NOW LOAD-BEARING. Through Stage 3 it was not: 0010 shipped RLS with
+ * zero policies, so publishing the identity was groundwork for a security
+ * surface that did not exist, and the comment here said so. Migration 0033
+ * built that surface. Every operational table now carries a policy of the form
+ * `app.current_user_id() is not null`, so a transaction that fails to set this
+ * — or sets it to a deactivated employee — reads no customer, case, document
+ * or submission row when the connection is `aos_app`.
+ *
+ * It is deliberately NOT the ownership boundary. Which cases a given employee
+ * may see is decided in `authorize.ts`; ADR-022 keeps that answered once.
  */
 export async function withActor<T>(
   authIdentityId: string | null,
@@ -169,8 +176,4 @@ async function runInTransaction<T>(
   } finally {
     client.release();
   }
-}
-
-export async function closePool(): Promise<void> {
-  await pool.end();
 }

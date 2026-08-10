@@ -89,6 +89,8 @@ The values that matter on the server:
 AOS_DB_HOST=127.0.0.1
 AOS_DB_PORT=5432
 AOS_DB_NAME=aos
+# Superuser. Correct for the migration in step 5 and WRONG to leave here —
+# step 5a replaces these two lines once the schema exists.
 AOS_DB_USER=postgres
 AOS_DB_PASSWORD=<the password from step 1>
 

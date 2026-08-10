@@ -23,9 +23,9 @@
  * AOS_BOOTSTRAP_CONFIRM matched the database name, which put the SAFE state
  * behind two opt-ins and made the dangerous one the default: a plain
  * `npm run bootstrap-production` produced a database with real employee
- * accounts on it and `partner.p` — a Managing Partner whose password is
- * written down in a file in this repository — still able to sign in. The
- * warning it printed instead was doing the work a guard should have been
+ * accounts on it and `partner.p` — a Managing Partner whose password was, at
+ * the time, written down in a file in this repository — still able to sign in.
+ * The warning it printed instead was doing the work a guard should have been
  * doing.
  *
  * The double-confirmation was the right instinct pointed at the wrong
@@ -69,7 +69,6 @@ const EMPLOYEES: readonly { username: string; fullName: string; roles: Role[] }[
   { username: "keerthivhasan", fullName: "V Keerthivhasan", roles: ["managing_partner"] },
 ];
 
-
 /**
  * A password a person has to type, generated rather than chosen.
  *
@@ -94,7 +93,6 @@ function fail(message: string): never {
   console.error(`\n  ${message}\n`);
   process.exit(1);
 }
-
 
 async function main(): Promise<void> {
   const args = new Set(process.argv.slice(2));

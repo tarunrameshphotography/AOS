@@ -386,7 +386,11 @@ const loginAttempts = new Map<string, { failures: number; first: number; lockedU
 function throttleKey(username: string, req: IncomingMessage): string {
   // The socket address, not X-Forwarded-For: nothing in the AOS topology sets
   // that header, so trusting it would let a caller choose their own bucket.
-  return `${username.toLowerCase()} ${req.socket.remoteAddress ?? "unknown"}`;
+  // Length-prefixed rather than delimited: no separator character can be
+  // smuggled in through a username, and unlike the NUL byte that did the
+  // same job a moment ago, it leaves this file as text that git can diff.
+  const who = username.toLowerCase();
+  return `${who.length}:${who}:${req.socket.remoteAddress ?? "unknown"}`;
 }
 
 /** Throws 429 when this username/address pair is locked out. Called before the

@@ -62,7 +62,7 @@ is not what this migration addressed.
 | `0008_seed_permissions.sql` | **Generated.** Permission catalog, role grants, thresholds |
 | `0009_seed_reference_data.sql` | Loan products, document types, rejection reasons |
 | `0010_security_defaults.sql` | `app.has_permission()`, RLS enabled, base tables revoked |
-| … | |
+| `0011`–`0032` | Master data, lending products, lenders, document rules, submissions, employee authentication, sessions |
 | `0033_application_role.sql` | `aos_app`, least-privilege grants, the RLS policies |
 
 They must run in order. The dependencies are real: `app_user` cannot exist before

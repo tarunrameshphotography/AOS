@@ -30,15 +30,23 @@ import {
   financialYearOf,
   recentCompletedFinancialYears,
   recentFinancialYears,
+  summariseProgress,
   type CaseFacts,
   type FinancialYear,
   type GeneratedRequirement,
   type PartyFacts,
   type PropertyFacts,
   type RequirementRule,
+  type RequirementStatus as ProgressRequirementStatus,
 } from "@domain/requirements/index.js";
 import type { ApplicabilityCode as RequirementApplicabilityCode } from "@domain/products/catalogue.js";
-import type { ProgressionStage } from "@domain/case/stages.js";
+import { CASE_STAGE_PROGRESSION, type CaseStage, type ProgressionStage } from "@domain/case/stages.js";
+
+/** Stages from which a requirement can be due (ADR-020) — the cases worth
+ * regenerating requirements for when computing progress in bulk. */
+const COLLECTING_STAGES = new Set<CaseStage>(
+  CASE_STAGE_PROGRESSION.slice(CASE_STAGE_PROGRESSION.indexOf("documents_pending")),
+);
 
 import type { Queryable } from "./db.js";
 
@@ -359,7 +367,10 @@ interface ExistingRequirementRow {
  * produced them, so no rule's absence may withdraw them.
  */
 export async function regenerateRequirements(client: Queryable, caseId: string): Promise<void> {
-  const [facts, rules] = await Promise.all([loadCaseFacts(client, caseId), loadActiveRules(client)]);
+  // Sequential, not Promise.all: both read from the same pooled connection,
+  // and node-postgres does not support two queries in flight on one client.
+  const facts = await loadCaseFacts(client, caseId);
+  const rules = await loadActiveRules(client);
   const generated = evaluateRules(rules, facts);
 
   const { rows: existingRows } = await client.query<ExistingRequirementRow>(
@@ -470,4 +481,74 @@ export async function outstandingRequirementCount(client: Queryable, caseId: str
     [caseId],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// Progress for a list of cases — All Cases, cheaply
+// ---------------------------------------------------------------------------
+
+interface ProgressCaseRow {
+  case_id: string;
+  status: string;
+  applicable_from_stage: ProgressionStage;
+  applicability: RequirementApplicabilityCode;
+}
+
+/**
+ * Progress for a set of cases, for the All Cases list — restoring the
+ * indicator the audit found removed, now backed by real requirement data
+ * instead of the prototype's local store.
+ *
+ * Only cases already at `documents_pending` or beyond are worth
+ * regenerating: nothing is due before then (ADR-020), so an earlier-stage
+ * case correctly has zero applicable requirements without a single query.
+ * At Amaze's actual case volume (ADR-024: roughly ten a month) regenerating
+ * a handful of in-flight cases on every list load is cheap; this is not
+ * meant to scale to a portfolio of thousands without revisiting.
+ */
+export async function caseListProgress(
+  client: Queryable,
+  cases: readonly { id: string; stage: CaseStage }[],
+): Promise<Map<string, ReturnType<typeof summariseProgressFor>>> {
+  // Sequential — one pooled connection, one query at a time.
+  const inFlight = cases.filter((c) => COLLECTING_STAGES.has(c.stage));
+  for (const c of inFlight) {
+    await regenerateRequirements(client, c.id);
+  }
+
+  const caseIds = cases.map((c) => c.id);
+  const { rows } = caseIds.length
+    ? await client.query<ProgressCaseRow>(
+        `select r.case_id, r.status, r.applicable_from_stage, a.code as applicability
+           from document_requirement r
+           join requirement_applicability a on a.id = r.applicability_id
+          where r.case_id = any($1) and r.status <> 'not_applicable'`,
+        [caseIds],
+      )
+    : { rows: [] };
+
+  const byCaseId = new Map<string, ProgressCaseRow[]>();
+  for (const row of rows) {
+    const list = byCaseId.get(row.case_id) ?? [];
+    list.push(row);
+    byCaseId.set(row.case_id, list);
+  }
+
+  const result = new Map<string, ReturnType<typeof summariseProgressFor>>();
+  for (const c of cases) {
+    result.set(c.id, summariseProgressFor(byCaseId.get(c.id) ?? [], c.stage));
+  }
+  return result;
+}
+
+function summariseProgressFor(rows: readonly ProgressCaseRow[], stage: CaseStage) {
+  return summariseProgress(
+    rows.map((row) => ({
+      id: "",
+      status: row.status as ProgressRequirementStatus,
+      applicableFromStage: row.applicable_from_stage,
+      applicability: row.applicability,
+    })),
+    stage,
+  );
 }

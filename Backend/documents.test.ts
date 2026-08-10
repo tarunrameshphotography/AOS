@@ -386,6 +386,26 @@ describe("the complete document path: upload, storage, verification, progress, r
     expect(same.status).toBe("received");
   });
 
+  it("restores real progress on the case list — no fake-store number", async () => {
+    const telecaller = await signInAs("telecaller");
+    const loanCase = await aCase(telecaller);
+
+    const beforeCollecting = await api("/api/cases", { token: telecaller.token });
+    const freshRow = beforeCollecting.body.find((c: any) => c.id === loanCase.id);
+    // Nothing is due yet at `new` (ADR-020) — zero applicable, not a lie about
+    // completeness.
+    expect(freshRow.progress.applicableCount).toBe(0);
+
+    await toDocumentsPending(telecaller, loanCase.id);
+    const listing = await api(`/api/cases/${loanCase.id}/requirements`, { token: telecaller.token });
+    await upload(telecaller, loanCase.id, listing.body.requirements[0].id);
+
+    const afterOneUpload = await api("/api/cases", { token: telecaller.token });
+    const row = afterOneUpload.body.find((c: any) => c.id === loanCase.id);
+    expect(row.progress.applicableCount).toBeGreaterThan(0);
+    expect(row.progress.percentComplete).toBeLessThan(100); // received, not yet verified
+  });
+
   it("never leaks a raw database error to the client", async () => {
     const telecaller = await signInAs("telecaller");
     const loanCase = await aCase(telecaller);

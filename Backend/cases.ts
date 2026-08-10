@@ -32,7 +32,7 @@ import type { Queryable } from "./db.js";
 import { can, canActOnCase, widestScopeFor, type Actor } from "./authorize.js";
 import { recordCaseEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
-import { outstandingRequirementCount } from "./requirements.js";
+import { caseListProgress, outstandingRequirementCount } from "./requirements.js";
 
 const COLUMNS = `c.id, c.case_number, c.loan_product_id, c.requested_amount, c.stage,
                  c.owner_user_id, c.created_by, c.source, c.referral_source_id,
@@ -58,7 +58,10 @@ const APPLICANT_COLUMNS = `pa.person_id as applicant_id, ap.full_name as applica
       and (i.valid_to is null or i.valid_to > current_date)
     limit 1) as applicant_phone`;
 
-export function caseFromRow(row: Record<string, unknown>) {
+export function caseFromRow(
+  row: Record<string, unknown>,
+  progress?: { percentComplete: number; applicableCount: number },
+) {
   return {
     id: row.id,
     caseNumber: row.case_number,
@@ -83,6 +86,7 @@ export function caseFromRow(row: Record<string, unknown>) {
     applicantId: row.applicant_id ?? null,
     applicantName: row.applicant_name ?? null,
     applicantPhone: row.applicant_phone ?? null,
+    ...(progress ? { progress } : {}),
   };
 }
 
@@ -173,7 +177,22 @@ export async function listCases(client: Queryable, actor: Actor) {
       order by c.created_at desc limit 500`,
     ownOnly ? [actor.userId] : [],
   );
-  return rows.map(caseFromRow);
+
+  // Real, Postgres-backed progress (Stage 3C) — restores the indicator the
+  // audit found removed from this screen, replacing a number computed from
+  // the prototype's local store, which the audit correctly refused to trust.
+  const progressByCase = await caseListProgress(
+    client,
+    rows.map((row: Record<string, unknown>) => ({ id: row.id as string, stage: row.stage as CaseStage })),
+  );
+
+  return rows.map((row: Record<string, unknown>) => {
+    const progress = progressByCase.get(row.id as string);
+    return caseFromRow(
+      row,
+      progress ? { percentComplete: progress.percentComplete, applicableCount: progress.applicableCount } : undefined,
+    );
+  });
 }
 
 export async function readCase(client: Queryable, actor: Actor, id: string) {

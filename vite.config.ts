@@ -24,6 +24,17 @@ export default defineConfig({
       // src/domain is outside the Vite root, so it has to be allowed explicitly.
       allow: [fileURLToPath(new URL(".", import.meta.url))],
     },
+    // The API runs as its own process on 4321 (Backend/api-server.ts). Proxying
+    // it under the dev server's own origin rather than calling it directly
+    // means the browser makes same-origin requests: no CORS preflight on every
+    // mutation, and one base path (`/api`) that is identical in dev, in the
+    // Playwright suite, and behind whatever serves the built app in the office.
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${process.env.AOS_API_PORT ?? 4321}`,
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: fileURLToPath(new URL("./Frontend/dist", import.meta.url)),

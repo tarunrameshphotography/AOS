@@ -1,39 +1,55 @@
+/**
+ * Every case the signed-in employee may see.
+ *
+ * Stage 3B: the rows come from `GET /api/cases`, which applies the scope rule
+ * in SQL. THE FILTERING IS NOT DONE HERE ANY MORE, and that is the change that
+ * matters. The old version fetched every case in the browser's store and hid
+ * the ones the user should not see — a filter anyone could step around by
+ * opening devtools. Now a Telecaller's request returns their own cases and
+ * nothing else; there is nothing on the wire to hide.
+ *
+ * The stage and owner selects still filter client-side, over the rows the
+ * server already decided this person may have. Those are conveniences, not
+ * boundaries.
+ *
+ * Document progress has left the table. It was `progressFor(caseId)` out of
+ * the prototype store, and requirements have not migrated — a column computed
+ * from data that no longer describes these cases would be a confident lie.
+ * It returns with the requirements slice.
+ */
+
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { CASE_STAGES, CASE_STAGE_LABELS, type CaseStage } from "@domain/case/stages.js";
 
-import { progressFor } from "../fake/store.js";
-import { useDatabase } from "../fake/useDatabase.js";
-import { lakhs, ownerName, primaryApplicant, productLabel, when } from "../lib.js";
+import { useReference, useUsers } from "../api/catalogue.js";
+import { useApiQuery } from "../api/hooks.js";
+import type { ApiCase } from "../api/types.js";
+import { lakhs, when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, ProgressBar, Select, StageBadge, cx } from "../ui/index.js";
+import { Badge, Button, Card, Empty, Select, StageBadge, cx } from "../ui/index.js";
 
 export function CaseList(): ReactNode {
-  const db = useDatabase();
   const session = useSession();
+  const cases = useApiQuery<readonly ApiCase[]>("/cases");
+  const reference = useReference();
+  const users = useUsers();
 
   const [stage, setStage] = useState<CaseStage | "all" | "active">("active");
   const [owner, setOwner] = useState<string>("all");
 
-  const scoped = useMemo(() => {
-    if (session.can("case.read", "all")) return db.cases;
-    if (session.can("case.read", "own")) {
-      return db.cases.filter((c) => c.ownerUserId === session.user.id);
-    }
-    return [];
-  }, [db.cases, session]);
+  const seesEverything = session.can("case.read", "all");
 
   const filtered = useMemo(() => {
-    return scoped
+    return (cases.data ?? [])
       .filter((c) => {
         if (stage === "active") return c.stage !== "closed" && c.stage !== "lost";
         if (stage === "all") return true;
         return c.stage === stage;
       })
-      .filter((c) => owner === "all" || c.ownerUserId === owner)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [scoped, stage, owner]);
+      .filter((c) => owner === "all" || c.ownerUserId === owner);
+  }, [cases.data, stage, owner]);
 
   return (
     <div className="space-y-4">
@@ -41,7 +57,7 @@ export function CaseList(): ReactNode {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Cases</h1>
           <p className="mt-1 text-sm text-ink-500">
-            {session.can("case.read", "all")
+            {seesEverything
               ? "Every case."
               : "Cases you own. A colleague's cases are not yours to browse."}
           </p>
@@ -64,16 +80,16 @@ export function CaseList(): ReactNode {
             ))}
           </Select>
 
-          {session.can("case.read", "all") && (
+          {seesEverything && (
             <Select
               value={owner}
               onChange={(event) => setOwner(event.target.value)}
               className="w-48"
             >
               <option value="all">Any owner</option>
-              {db.users.map((user) => (
+              {users.activeUsers.map((user) => (
                 <option key={user.id} value={user.id}>
-                  {user.name}
+                  {user.fullName}
                 </option>
               ))}
             </Select>
@@ -88,9 +104,13 @@ export function CaseList(): ReactNode {
       </div>
 
       <Card>
-        {filtered.length === 0 ? (
+        {cases.loading ? (
+          <Empty>Loading cases…</Empty>
+        ) : cases.error ? (
+          <Empty>{cases.error.message}</Empty>
+        ) : filtered.length === 0 ? (
           <Empty>
-            {scoped.length === 0
+            {(cases.data ?? []).length === 0
               ? "You cannot see any cases with the permissions this user holds."
               : "No cases match this filter."}
           </Empty>
@@ -103,64 +123,60 @@ export function CaseList(): ReactNode {
                   <th className="px-4 py-2 font-medium">Applicant</th>
                   <th className="px-4 py-2 font-medium">Product</th>
                   <th className="px-4 py-2 text-right font-medium">Amount</th>
-                  <th className="px-4 py-2 font-medium">Documents</th>
                   <th className="px-4 py-2 font-medium">Stage</th>
                   <th className="px-4 py-2 font-medium">Owner</th>
                   <th className="px-4 py-2 font-medium">Opened</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-100">
-                {filtered.map((loanCase) => {
-                  const applicant = primaryApplicant(db, loanCase.id);
-                  const progress = progressFor(loanCase.id);
-                  return (
-                    <tr
-                      key={loanCase.id}
-                      className={cx("hover:bg-ink-50", loanCase.isOnHold && "opacity-70")}
-                    >
-                      <td className="px-4 py-2">
+                {filtered.map((loanCase) => (
+                  <tr
+                    key={loanCase.id}
+                    className={cx("hover:bg-ink-50", loanCase.isOnHold && "opacity-70")}
+                  >
+                    <td className="px-4 py-2">
+                      <Link
+                        to={`/cases/${loanCase.id}`}
+                        className="tnum font-medium hover:underline"
+                      >
+                        {loanCase.caseNumber}
+                      </Link>
+                      {loanCase.isOnHold && (
+                        <span className="ml-2">
+                          <Badge tone="warn">Hold</Badge>
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {loanCase.applicantId ? (
                         <Link
-                          to={`/cases/${loanCase.id}`}
-                          className="tnum font-medium hover:underline"
+                          to={`/people/${loanCase.applicantId}`}
+                          className="hover:underline"
                         >
-                          {loanCase.caseNumber}
+                          {loanCase.applicantName}
                         </Link>
-                        {loanCase.isOnHold && (
-                          <span className="ml-2">
-                            <Badge tone="warn">Hold</Badge>
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        {applicant ? (
-                          <Link to={`/people/${applicant.id}`} className="hover:underline">
-                            {applicant.fullName}
-                          </Link>
-                        ) : (
-                          <span className="text-ink-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2 text-ink-700">{productLabel(db, loanCase)}</td>
-                      <td className="tnum px-4 py-2 text-right">
-                        {lakhs(loanCase.requestedAmount)}
-                      </td>
-                      <td className="w-40 px-4 py-2">
-                        <ProgressBar
-                          percent={progress.percentComplete}
-                          applicable={progress.applicableCount}
-                        />
-                      </td>
-                      <td className="px-4 py-2">
-                        <StageBadge
-                          stage={loanCase.stage}
-                          label={CASE_STAGE_LABELS[loanCase.stage]}
-                        />
-                      </td>
-                      <td className="px-4 py-2 text-ink-500">{ownerName(db, loanCase)}</td>
-                      <td className="px-4 py-2 text-ink-500">{when(loanCase.createdAt)}</td>
-                    </tr>
-                  );
-                })}
+                      ) : (
+                        <span className="text-ink-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-ink-700">
+                      {reference.productLabel(loanCase.loanProductId)}
+                    </td>
+                    <td className="tnum px-4 py-2 text-right">
+                      {lakhs(loanCase.requestedAmount ?? undefined)}
+                    </td>
+                    <td className="px-4 py-2">
+                      <StageBadge
+                        stage={loanCase.stage}
+                        label={CASE_STAGE_LABELS[loanCase.stage]}
+                      />
+                    </td>
+                    <td className="px-4 py-2 text-ink-500">
+                      {users.ownerName(loanCase.ownerUserId)}
+                    </td>
+                    <td className="px-4 py-2 text-ink-500">{when(loanCase.createdAt)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

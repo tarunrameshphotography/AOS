@@ -5129,6 +5129,82 @@ export function lendersAsDomain(source: Database = db): LenderCatalogueView {
 // these functions awaits `hashPassword()` first.
 // ---------------------------------------------------------------------------
 
+/**
+ * THE IDENTITY BRIDGE (Stage 3B) — read this before touching it.
+ *
+ * Authentication moved to the server. `session.user.id` is now a PostgreSQL
+ * uuid issued by `app_user`, not an id this store minted. But roughly half the
+ * application has NOT migrated yet — master data, lending products, the lender
+ * catalogue, document rules, user management — and every one of those screens
+ * still writes through this file, passing `session.user.id` as the actor. Each
+ * of those writes calls `authorize()`, which resolves the actor by looking
+ * them up in `db.users`.
+ *
+ * Without this function that lookup misses, `actorRoles` returns `[]`, and
+ * every un-migrated screen refuses every action for every user — including the
+ * Managing Partners. The prototype would appear to have lost all its
+ * permissions the moment login became real.
+ *
+ * So the authenticated employee is mirrored into `db.users` under their real
+ * uuid, with their real roles and overrides, on sign-in and on every session
+ * restore.
+ *
+ * WHAT THIS IS NOT: it is not a mirror of migrated data. No customer, no case,
+ * no case party is copied here — those come from the API and this store is no
+ * longer their source of truth. This carries one thing, identity, for the sole
+ * purpose of keeping the un-migrated half authorising against the same roles
+ * the server would apply.
+ *
+ * WHAT IT IS NOT A SUBSTITUTE FOR: enforcement. These checks run in the
+ * browser and always did; they are advice (BR-060). The un-migrated screens
+ * are exactly as unenforced as they were before this stage — no better, no
+ * worse. They stop being advice when their own slice moves to the server.
+ *
+ * DELETE THIS when the last screen stops calling into `fake/store.ts`.
+ *
+ * `passwordHash` is deliberately an empty string: this record can never
+ * authenticate anybody. `attemptLogin` against the store is gone, and a
+ * password hash that verifies nothing is the honest value for an identity
+ * whose credentials live somewhere else entirely.
+ */
+export function adoptAuthenticatedUser(user: {
+  id: Id;
+  username: string;
+  fullName: string;
+  roles: readonly Role[];
+  overrides: readonly { permission: string; scope: Scope; decision: "grant" | "deny" }[];
+}): void {
+  const mirrored: AppUser = {
+    id: user.id,
+    // The store's `Person`/`AppUser` split is not modelled server-side in a
+    // way this needs; the user's own id stands in, and nothing reads it.
+    personId: user.id,
+    name: user.fullName,
+    username: user.username,
+    passwordHash: "",
+    roles: [...user.roles],
+    isActive: true,
+    permissionOverrides: user.overrides.map((override, index) => ({
+      id: `${user.id}:override:${index}`,
+      permission: override.permission,
+      scope: override.scope,
+      decision: override.decision,
+      grantedByUserId: user.id,
+      grantedAt: new Date().toISOString(),
+    })),
+  };
+
+  db.users = [...db.users.filter((u) => u.id !== user.id), mirrored];
+  commit();
+}
+
+/** Drops the mirrored identity on sign-out, so a shared office PC does not
+ * leave the last employee's roles sitting in the next person's browser. */
+export function forgetAuthenticatedUser(): void {
+  db.users = db.users.filter((u) => u.passwordHash !== "" || u.username === "");
+  commit();
+}
+
 /** Case-insensitive username lookup — the pre-authentication step, so it takes no actor. */
 export function findUserByUsername(username: string): AppUser | undefined {
   const needle = username.trim().toLowerCase();

@@ -21,6 +21,11 @@ const MAIL_CAPTURE_DIR = process.env.AOS_MAIL_CAPTURE_DIR ?? "C:/AOS/QA-Mail";
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  // Stage 3B: authentication and the customer/case slice are server-side, so
+  // the suite needs a database and accounts to sign in with. `aos_e2e` is
+  // created and seeded here, separate from the office database and from the
+  // vitest integration one.
+  globalSetup: "./tests/support/e2e-globalsetup.ts",
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false,
@@ -43,6 +48,9 @@ export default defineConfig({
       AOS_STORAGE_ROOT: STORAGE_ROOT,
       AOS_MAIL_PROVIDER: "capture",
       AOS_MAIL_CAPTURE_DIR: MAIL_CAPTURE_DIR,
+      // The API process `npm run dev` starts must talk to the suite's own
+      // database, never the office one.
+      AOS_DB_NAME: "aos_e2e",
     },
   },
 });

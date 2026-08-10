@@ -42,18 +42,12 @@ import {
 import type { Queryable } from "./db.js";
 import { recordUserEvent } from "./events.js";
 import type { Actor } from "./authorize.js";
+import { ApiError } from "./http.js";
 
-/** Thrown by handlers, caught by the API server's error boundary. Declared
- * here rather than imported from api-server.ts, which imports this module —
- * the cycle is avoidable and the shape is two fields. */
-export class UserAdminError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+/** Handlers raise `ApiError` (Backend/http.ts) and the API server's error
+ * boundary turns it into a status code. `UserAdminError` is kept as an alias
+ * so this module's own call sites read as they always did. */
+export { ApiError as UserAdminError } from "./http.js";
 
 /**
  * The shortest password this API will store.
@@ -124,7 +118,7 @@ function userFromRow(row: Record<string, unknown>) {
 
 function requirePermission(actor: Actor, permission: string): void {
   if (!hasPermissionWithOverrides(actor.roles, actor.overrides, permission, "all")) {
-    throw new UserAdminError(403, `You do not have permission to do that (${permission}).`);
+    throw new ApiError(403, `You do not have permission to do that (${permission}).`);
   }
 }
 
@@ -132,18 +126,18 @@ async function loadUserOr404(client: Queryable, userId: string) {
   const { rows } = await client.query(`${USER_SELECT} where u.id = $1 group by u.id, p.full_name`, [
     userId,
   ]);
-  if (!rows[0]) throw new UserAdminError(404, "No such user.");
+  if (!rows[0]) throw new ApiError(404, "No such user.");
   return rows[0];
 }
 
 function parseRoles(value: unknown): Role[] {
   if (!Array.isArray(value)) {
-    throw new UserAdminError(400, "Roles must be a list.");
+    throw new ApiError(400, "Roles must be a list.");
   }
   const roles = value.map((r) => String(r));
   for (const role of roles) {
     if (!(ROLES as readonly string[]).includes(role)) {
-      throw new UserAdminError(400, `Unknown role: ${role}.`);
+      throw new ApiError(400, `Unknown role: ${role}.`);
     }
   }
   // BR-061 gives a user the union of their roles, so a duplicate changes
@@ -152,7 +146,7 @@ function parseRoles(value: unknown): Role[] {
   // without making it the client's problem.
   const unique = [...new Set(roles)] as Role[];
   if (unique.length === 0) {
-    throw new UserAdminError(400, "At least one role is required.");
+    throw new ApiError(400, "At least one role is required.");
   }
   return unique;
 }
@@ -192,7 +186,7 @@ async function assertAnAdministratorRemains(client: Queryable): Promise<void> {
     }
   }
 
-  throw new UserAdminError(
+  throw new ApiError(
     409,
     "That would leave nobody able to administer users. Give someone else user administration first.",
   );
@@ -301,10 +295,10 @@ export async function createUser(
   const password = typeof body.password === "string" ? body.password : "";
   const roles = parseRoles(body.roles);
 
-  if (fullName.length === 0) throw new UserAdminError(400, "A user needs a name.");
-  if (username.length === 0) throw new UserAdminError(400, "A user needs a username.");
+  if (fullName.length === 0) throw new ApiError(400, "A user needs a name.");
+  if (username.length === 0) throw new ApiError(400, "A user needs a username.");
   if (password.length < MIN_PASSWORD_LENGTH) {
-    throw new UserAdminError(
+    throw new ApiError(
       400,
       `A password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
     );
@@ -318,7 +312,7 @@ export async function createUser(
     username,
   ]);
   if (clash.rows[0]) {
-    throw new UserAdminError(409, `The username "${username}" is already in use.`);
+    throw new ApiError(409, `The username "${username}" is already in use.`);
   }
 
   const person = await client.query<{ id: string }>(
@@ -427,13 +421,13 @@ export async function setUserActive(
 ) {
   requirePermission(actor, "user.manage");
   if (typeof body.isActive !== "boolean") {
-    throw new UserAdminError(400, "isActive must be true or false.");
+    throw new ApiError(400, "isActive must be true or false.");
   }
   const isActive = body.isActive;
   const existing = await loadUserOr404(client, userId);
 
   if (userId === actor.userId && !isActive) {
-    throw new UserAdminError(409, "You cannot deactivate your own account.");
+    throw new ApiError(409, "You cannot deactivate your own account.");
   }
   if (existing.is_active === isActive) {
     return userFromRow(existing);
@@ -482,7 +476,7 @@ export async function resetUserPassword(
   requirePermission(actor, "user.manage");
   const password = typeof body.password === "string" ? body.password : "";
   if (password.length < MIN_PASSWORD_LENGTH) {
-    throw new UserAdminError(
+    throw new ApiError(
       400,
       `A password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
     );
@@ -529,7 +523,7 @@ export async function changeOwnPassword(
   const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
 
   if (newPassword.length < MIN_PASSWORD_LENGTH) {
-    throw new UserAdminError(
+    throw new ApiError(
       400,
       `A password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
     );
@@ -540,7 +534,7 @@ export async function changeOwnPassword(
   ]);
   const stored = rows[0]?.password_hash;
   if (!stored || !(await verifyPassword(currentPassword, stored))) {
-    throw new UserAdminError(403, "That is not your current password.");
+    throw new ApiError(403, "That is not your current password.");
   }
 
   await client.query(`update app_user set password_hash = $1 where id = $2`, [
@@ -595,13 +589,13 @@ export async function setOverride(
   // anything.
   const definition = findPermission(permission);
   if (definition === undefined) {
-    throw new UserAdminError(400, `No such permission: ${permission}.`);
+    throw new ApiError(400, `No such permission: ${permission}.`);
   }
   if (decision === null) {
-    throw new UserAdminError(400, "A decision must be 'grant' or 'deny'.");
+    throw new ApiError(400, "A decision must be 'grant' or 'deny'.");
   }
   if (!definition.permittedScopes.includes(scope)) {
-    throw new UserAdminError(
+    throw new ApiError(
       400,
       `${permission} cannot be held at scope "${scope}". Permitted: ${definition.permittedScopes.join(", ")}.`,
     );
@@ -669,9 +663,9 @@ export async function revokeOverride(
     [overrideId, userId],
   );
   const override = rows[0];
-  if (!override) throw new UserAdminError(404, "No such override.");
+  if (!override) throw new ApiError(404, "No such override.");
   if (override.revoked_at !== null) {
-    throw new UserAdminError(409, "That override has already been revoked.");
+    throw new ApiError(409, "That override has already been revoked.");
   }
 
   await client.query(

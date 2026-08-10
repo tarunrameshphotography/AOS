@@ -308,11 +308,21 @@ describe("cases", () => {
     const updated = await api(`/api/cases/${created.body.id}`, {
       method: "PATCH",
       token: session.token,
-      body: { stage: "contacted", requestedAmount: 999000 },
+      body: { requestedAmount: 999000 },
     });
     expect(updated.status).toBe(200);
-    expect(updated.body.stage).toBe("contacted");
     expect(updated.body.requestedAmount).toBe(999000);
+
+    // Stage moves go through their own route as of Stage 3B, so the domain's
+    // transition table gets to judge them. A generic field patch that could
+    // also set `stage` would be a way past every guard in it.
+    const moved = await api(`/api/cases/${created.body.id}/stage`, {
+      method: "PUT",
+      token: session.token,
+      body: { stage: "contacted" },
+    });
+    expect(moved.status).toBe(200);
+    expect(moved.body.stage).toBe("contacted");
   });
 });
 
@@ -398,8 +408,8 @@ describe("case visibility is enforced by the server", () => {
     const { caseId } = await twoTelecallers();
     const manager = await signIn(await createEmployee("manager"));
 
-    const updated = await api(`/api/cases/${caseId}`, {
-      method: "PATCH",
+    const updated = await api(`/api/cases/${caseId}/stage`, {
+      method: "PUT",
       token: manager.token,
       body: { stage: "contacted" },
     });
@@ -477,11 +487,18 @@ describe("multiple sessions share one authoritative database", () => {
       body: { applicantId: customer.body.id, loanProductId: await anyLoanProductId() },
     });
 
-    await api(`/api/cases/${created.body.id}`, {
-      method: "PATCH",
-      token: manager.token,
-      body: { stage: "documents_pending" },
-    });
+    // Two hops, because `new -> documents_pending` is not a transition the
+    // domain allows: a case is contacted before its documents are chased.
+    // The old test reached it in one PATCH, which is exactly the kind of move
+    // routing stage changes through `evaluateTransition` now prevents.
+    for (const stage of ["contacted", "documents_pending"]) {
+      const moved = await api(`/api/cases/${created.body.id}/stage`, {
+        method: "PUT",
+        token: manager.token,
+        body: { stage },
+      });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    }
 
     // No cache, no sync, no shared browser storage: the Telecaller reads the
     // same row the Manager just wrote.

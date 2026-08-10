@@ -1,17 +1,34 @@
 /**
- * Login screen (Employee Authentication milestone).
+ * Login screen.
  *
  * The application's front door — an internal business tool, not a consumer
  * product, so this stays plain: mark, two fields, one action, a clear error.
+ *
+ * Stage 3B: the credentials go to the server. `POST /api/auth/login` verifies
+ * the password against `app_user.password_hash` in PostgreSQL and issues a
+ * session token; the browser no longer holds any password material and no
+ * longer decides whether the answer was right. The failure message is the
+ * server's, which is one message for "no such user", "wrong password" and
+ * "deactivated" — the login form must not become a way to enumerate who works
+ * here.
  */
 
 import { useState, type FormEvent, type ReactNode } from "react";
 
-import { attemptLogin } from "../auth.js";
-import type { Id } from "../fake/types.js";
+import { api, storeToken } from "../api/client.js";
+import type { ApiSessionUser } from "../api/types.js";
 import { Button, Field, Input } from "../ui/index.js";
 
-export function LoginScreen({ onLogin }: { onLogin: (userId: Id) => void }): ReactNode {
+interface LoginResponse {
+  readonly token: string;
+  readonly user: ApiSessionUser;
+}
+
+export function LoginScreen({
+  onAuthenticated,
+}: {
+  onAuthenticated: (user: ApiSessionUser) => void;
+}): ReactNode {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -23,12 +40,17 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: Id) => void }): Rea
     setError(null);
     setSubmitting(true);
     try {
-      const result = await attemptLogin(username, password);
-      if (result.ok) {
-        onLogin(result.userId);
-      } else {
-        setError(result.message);
-      }
+      // `anonymous` so a wrong password — a 401 — is shown as a wrong
+      // password, rather than tripping the global "your session ended" path.
+      const result = await api<LoginResponse>("/auth/login", {
+        method: "POST",
+        body: { username: username.trim(), password },
+        anonymous: true,
+      });
+      storeToken(result.token);
+      onAuthenticated(result.user);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not sign in.");
     } finally {
       setSubmitting(false);
     }
@@ -51,6 +73,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: Id) => void }): Rea
           <Field label="Username / Employee ID">
             <Input
               autoFocus
+              name="username"
               autoComplete="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -60,6 +83,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: Id) => void }): Rea
           <Field label="Password">
             <Input
               type="password"
+              name="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

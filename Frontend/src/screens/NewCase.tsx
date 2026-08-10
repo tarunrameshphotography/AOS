@@ -8,28 +8,36 @@
  *
  * The interesting part is the duplicate check: typing a name or a number that
  * AOS already knows surfaces the match inline, because recognising a repeat
- * customer is the moment the system visibly beats memory.
+ * customer is the moment the system visibly beats memory. As of Stage 3B that
+ * check runs against PostgreSQL rather than the browser's own copy, so it sees
+ * every customer the company has, not the ones this tab happened to load.
+ *
+ * TWO REQUESTS, ONE ACT. A brand-new applicant is created first and the case
+ * second. They are not one transaction, and the failure that implies is worth
+ * being honest about: if the case call fails, the customer exists with no case.
+ * That leaves a searchable person and a telecaller who retries — recoverable,
+ * and better than the alternative of inventing a combined endpoint whose only
+ * caller is this form. An existing applicant skips the first call entirely.
  */
 
 import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { createCase } from "../fake/store.js";
+import { api } from "../api/client.js";
+import { useReference } from "../api/catalogue.js";
+import { useMutation } from "../api/hooks.js";
+import type { ApiCase, ApiCustomer } from "../api/types.js";
 import { clearDrafts, useDraft } from "../fake/drafts.js";
-import { useDatabase } from "../fake/useDatabase.js";
 import { useSession } from "../session.js";
 import { Button, Card, Field, Input, PermissionCode, Select, cx, useToast } from "../ui/index.js";
-import { PersonSearchField } from "../ui/pickers.js";
+import { CustomerSearchField } from "../ui/customer-picker.js";
 
 export function NewCase(): ReactNode {
-  const db = useDatabase();
   const session = useSession();
   const navigate = useNavigate();
   const toast = useToast();
-
-  const activeReferralSources = db.referralSources
-    .filter((r) => r.isActive)
-    .sort((a, b) => a.displayOrder - b.displayOrder);
+  const reference = useReference();
+  const mutation = useMutation();
 
   /**
    * Drafted, not merely typed (Telecaller Workflow milestone, Part 7).
@@ -38,23 +46,25 @@ export function NewCase(): ReactNode {
    * somebody navigates away mid-form to look something up. Losing the
    * applicant's name at that moment teaches a telecaller to write the details
    * on paper first and type them in afterwards, which is how a system stops
-   * being used live.
+   * being used live. The drafts stay in localStorage deliberately: an
+   * unsubmitted form is not case data, and round-tripping every keystroke to
+   * the server would be worse in every way.
    */
   const [name, setName] = useDraft("new-case:name");
   const [phone, setPhone] = useDraft("new-case:phone");
   const [draftProductId, setProductId] = useDraft("new-case:product");
   const [amount, setAmount] = useDraft("new-case:amount");
   const [draftSourceId, setReferralSourceId] = useDraft("new-case:source");
-  const [chosenPersonId, setChosenPersonId] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<ApiCustomer | null>(null);
 
-  // A drafted id that master data no longer contains is ignored rather than
+  // A drafted id the catalogue no longer offers is ignored rather than
   // selected — a deactivated product must not be revived by an old draft.
-  const productId = db.loanProducts.some((p) => p.id === draftProductId)
+  const productId = reference.selectableProducts.some((p) => p.id === draftProductId)
     ? draftProductId
-    : (db.loanProducts[0]?.id ?? "");
-  const referralSourceId = activeReferralSources.some((s) => s.id === draftSourceId)
+    : (reference.selectableProducts[0]?.id ?? "");
+  const referralSourceId = reference.selectableSources.some((s) => s.id === draftSourceId)
     ? draftSourceId
-    : (activeReferralSources[0]?.id ?? "");
+    : (reference.selectableSources[0]?.id ?? "");
 
   if (!session.can("case.create", "all")) {
     return (
@@ -65,32 +75,45 @@ export function NewCase(): ReactNode {
     );
   }
 
-  const submit = (): void => {
-    const caseId = createCase(
-      {
-        ...(chosenPersonId ? { applicantPersonId: chosenPersonId } : {}),
-        ...(chosenPersonId ? {} : { newApplicantName: name.trim(), newApplicantPhone: phone.trim() }),
-        loanProductId: productId,
-        ...(amount ? { requestedAmount: Number(amount) } : {}),
-        ...(referralSourceId ? { referralSourceId } : {}),
-      },
-      session.user.id,
-    );
+  const submit = async (): Promise<void> => {
+    const created = await mutation.run(async () => {
+      const applicant =
+        chosen ??
+        (await api<ApiCustomer>("/customers", {
+          method: "POST",
+          body: { fullName: name.trim(), phone: phone.trim() },
+        }));
+
+      return await api<ApiCase>("/cases", {
+        method: "POST",
+        body: {
+          applicantId: applicant.id,
+          loanProductId: productId,
+          ...(amount ? { requestedAmount: Number(amount) } : {}),
+          ...(referralSourceId ? { referralSourceId } : {}),
+        },
+      });
+    });
+
+    if (!created) return;
+
     // The draft has become a case. Leaving it behind would greet the next new
     // case with the last one's applicant already typed in.
     clearDrafts("new-case:");
     toast.show("Case opened. Its number was allocated straight away — quotable on this call.");
-    navigate(`/cases/${caseId}`);
+    navigate(`/cases/${created.id}`);
   };
 
-  const hasApplicant = chosenPersonId !== null || name.trim().length > 1;
-  const ready = productId !== "" && hasApplicant;
+  const hasApplicant = chosen !== null || name.trim().length > 1;
+  const ready = productId !== "" && hasApplicant && !mutation.pending;
   // Same conditions `ready` checks, in the order a telecaller would fix them —
   // the button going quietly unresponsive is the actual complaint this answers.
   const readyReason = !hasApplicant
     ? "Add a customer name to open this case."
     : productId === ""
-      ? "No loan type is set up to choose from yet."
+      ? reference.loading
+        ? "Loading loan types…"
+        : "No loan type is set up to choose from yet."
       : null;
 
   return (
@@ -103,15 +126,14 @@ export function NewCase(): ReactNode {
       </div>
 
       <Card title="Who is applying">
-        <PersonSearchField
-          db={db}
+        <CustomerSearchField
           name={name}
           phone={phone}
-          chosenPersonId={chosenPersonId}
+          chosen={chosen}
           onNameChange={setName}
           onPhoneChange={setPhone}
-          onChoose={setChosenPersonId}
-          chosenHint="Their KYC carries over. This case will open with those requirements already satisfied."
+          onChoose={setChosen}
+          chosenHint="Their details carry over. This case opens against the record AOS already holds."
         />
       </Card>
 
@@ -121,10 +143,14 @@ export function NewCase(): ReactNode {
             label="Loan type"
             hint="Known at creation, before any bank is chosen — which is what makes the requirement list possible."
           >
-            <Select value={productId} onChange={(event) => setProductId(event.target.value)}>
-              {db.loanProducts.map((product) => (
+            <Select
+              name="loanProduct"
+              value={productId}
+              onChange={(event) => setProductId(event.target.value)}
+            >
+              {reference.selectableProducts.map((product) => (
                 <option key={product.id} value={product.id}>
-                  {product.category} · {product.variant}
+                  {product.label}
                 </option>
               ))}
             </Select>
@@ -133,6 +159,7 @@ export function NewCase(): ReactNode {
             <Field label="Amount" hint="Rough is fine.">
               <Input
                 type="number"
+                name="requestedAmount"
                 value={amount}
                 onChange={(event) => setAmount(event.target.value)}
                 placeholder="3500000"
@@ -140,10 +167,11 @@ export function NewCase(): ReactNode {
             </Field>
             <Field label="Source" hint="Configurable in Master Data — Administration workspace.">
               <Select
+                name="referralSource"
                 value={referralSourceId}
                 onChange={(event) => setReferralSourceId(event.target.value)}
               >
-                {activeReferralSources.map((source) => (
+                {reference.selectableSources.map((source) => (
                   <option key={source.id} value={source.id}>
                     {source.name}
                   </option>
@@ -153,6 +181,12 @@ export function NewCase(): ReactNode {
           </div>
         </div>
       </Card>
+
+      {mutation.error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {mutation.error}
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-4">
         <p className="text-xs text-ink-500">
@@ -167,6 +201,7 @@ export function NewCase(): ReactNode {
           <Button
             onClick={() => {
               clearDrafts("new-case:");
+              setChosen(null);
               toast.show("Cleared.");
             }}
           >
@@ -176,10 +211,10 @@ export function NewCase(): ReactNode {
             <Button
               variant="primary"
               disabled={!ready}
-              onClick={submit}
+              onClick={() => void submit()}
               className={cx(!ready && "opacity-60")}
             >
-              Open case
+              {mutation.pending ? "Opening…" : "Open case"}
             </Button>
             {readyReason ? (
               <p className="text-xs text-amber-700" role="status">

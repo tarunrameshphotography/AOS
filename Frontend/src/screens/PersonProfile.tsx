@@ -2,31 +2,35 @@
  * A person, across every case.
  *
  * This screen is where "information is entered once" becomes visible: one
- * person, every case they have ever been on in any role, and their documents on
- * file — because a document belongs to the person, not to the loan application
- * that referenced it (ADR-007).
+ * person, every case they have ever been on in any role — because a customer
+ * belongs to the company, not to the loan application that first referenced
+ * them (ADR-007).
+ *
+ * Stage 3B: the person and their cases come from PostgreSQL. Two consequences
+ * worth knowing.
+ *
+ * FIRST, the case list here is SCOPE-FILTERED by the server. A Telecaller
+ * looking at a customer they share with a colleague sees their own cases on
+ * that person and not the colleague's. That is not a new rule — `case.read` at
+ * `own` always meant this — it is the first time the rule is actually applied
+ * to this screen, which used to read every case in the store.
+ *
+ * SECOND, employment, documents and conversations are gone from this screen
+ * for now. They were the prototype store's, they have not migrated, and
+ * showing a person's document count from a store that no longer describes
+ * these cases would be a confident lie. Each returns with its own slice.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { CASE_STAGE_LABELS } from "@domain/case/stages.js";
 
-import { updatePerson, updatePersonIdentifiers } from "../fake/store.js";
-import { useDatabase } from "../fake/useDatabase.js";
-import type { CaseParty, PersonIdentifier } from "../fake/types.js";
-import {
-  bytes,
-  casesForPerson,
-  lakhs,
-  maskedPan,
-  money,
-  panOf,
-  primaryPhone,
-  productLabel,
-  titleCase,
-  when,
-} from "../lib.js";
+import { api } from "../api/client.js";
+import { useReference } from "../api/catalogue.js";
+import { useApiQuery, useMutation } from "../api/hooks.js";
+import type { ApiCaseForPerson, ApiCustomer, ApiIdentifier, IdentifierType } from "../api/types.js";
+import { lakhs, titleCase, when } from "../lib.js";
 import { useSession } from "../session.js";
 import {
   Badge,
@@ -41,43 +45,38 @@ import {
   StageBadge,
   useToast,
 } from "../ui/index.js";
-import { StorageLocation } from "../ui/storage-location.js";
+
+/** PAN, masked. Stands in for what ADR-026 does in the database: everyone sees
+ * the shape, only `identifier.view_full` sees the value. */
+function maskPan(value: string): string {
+  return `${value.slice(0, 3)}xxxxx${value.slice(-1)}`;
+}
 
 export function PersonProfile(): ReactNode {
   const { personId = "" } = useParams();
-  const db = useDatabase();
   const session = useSession();
-  const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null);
-  const [editOpen, setEditOpen] = useState(false);
-  const [addPhoneOpen, setAddPhoneOpen] = useState(false);
+  const reference = useReference();
 
-  const person = db.people.find((p) => p.id === personId);
-  if (!person) return <Empty>Person not found.</Empty>;
-
-  const canEdit = session.can("person.update", "all");
-
-  const cases = casesForPerson(db, person.id);
-  const documents = db.documents.filter((d) => d.personId === person.id);
-  const employment = db.employments.find((e) => e.personId === person.id && e.isCurrent);
-  const employer = db.organisations.find((o) => o.id === employment?.organisationId);
-  const communications = db.communications
-    .filter((c) => c.personId === person.id)
-    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
-
-  const roleOn = (caseId: string): CaseParty | undefined =>
-    db.caseParties.find((p) => p.caseId === caseId && p.personId === person.id && !p.removedAt);
-
-  // People who share a phone number. Usually a family phone; occasionally a
-  // recycled one. Either way it is worth showing rather than silently fusing.
-  const sharedPhone = db.people.filter(
-    (other) =>
-      other.id !== person.id &&
-      other.identifiers.some((a) =>
-        person.identifiers.some(
-          (b) => b.type === "phone" && a.type === "phone" && a.value === b.value,
-        ),
-      ),
+  const customer = useApiQuery<ApiCustomer>(personId ? `/customers/${personId}` : null);
+  const cases = useApiQuery<readonly ApiCaseForPerson[]>(
+    personId ? `/customers/${personId}/cases` : null,
   );
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [contactsOpen, setContactsOpen] = useState(false);
+
+  if (customer.loading) return <Empty>Loading…</Empty>;
+  if (customer.error || !customer.data) {
+    return <Empty>{customer.error?.message ?? "Person not found."}</Empty>;
+  }
+
+  const person = customer.data;
+  const canEdit = session.can("person.update", "all");
+  const seesFullIdentifiers = session.can("identifier.view_full", "all");
+
+  const primaryPhone = person.identifiers.find((i) => i.type === "phone" && i.isPrimary)?.value;
+  const pan = person.identifiers.find((i) => i.type === "pan")?.value;
+  const theirCases = cases.data ?? [];
 
   return (
     <div className="space-y-6">
@@ -85,12 +84,10 @@ export function PersonProfile(): ReactNode {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{person.fullName}</h1>
           <p className="tnum mt-1 text-sm text-ink-500">
-            {primaryPhone(person) ?? "No number"}
+            {primaryPhone ?? "No number"}
             {" · "}
-            {session.can("identifier.view_full", "all")
-              ? (panOf(person) ?? "No PAN")
-              : (maskedPan(person) ?? "No PAN")}
-            {person.locality && ` · ${person.locality}, ${person.city}`}
+            {pan ? (seesFullIdentifiers ? pan : maskPan(pan)) : "No PAN"}
+            {person.locality && ` · ${person.locality}, ${person.city ?? ""}`}
           </p>
           {(person.addressLine || person.pincode || person.district || person.state) && (
             <p className="mt-0.5 text-xs text-ink-500">
@@ -108,7 +105,7 @@ export function PersonProfile(): ReactNode {
               spelling stays searchable, because that is what somebody will type next time.
             </p>
           )}
-          {!session.can("identifier.view_full", "all") && (
+          {!seesFullIdentifiers && pan && (
             <div className="mt-1">
               <p className="text-xs text-ink-400">
                 PAN is masked. Full PAN is only visible to Login Desk and above.
@@ -127,82 +124,66 @@ export function PersonProfile(): ReactNode {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <Card
-            title={`${cases.length} case${cases.length === 1 ? "" : "s"}`}
-            subtitle="Every role, every year. This is the question AOS exists to answer."
+            title={`${theirCases.length} case${theirCases.length === 1 ? "" : "s"}`}
+            subtitle={
+              session.can("case.read", "all")
+                ? "Every role, every year. This is the question AOS exists to answer."
+                : "Cases you own. A colleague's case on this customer is not yours to browse."
+            }
           >
-            {cases.length === 0 ? (
+            {cases.loading ? (
+              <Empty>Loading cases…</Empty>
+            ) : theirCases.length === 0 ? (
               <Empty>No cases yet.</Empty>
             ) : (
               <ul className="divide-y divide-ink-100">
-                {cases
-                  .slice()
-                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-                  .map((loanCase) => (
-                    <li key={loanCase.id} className="py-2.5 first:pt-0 last:pb-0">
-                      <Link
-                        to={`/cases/${loanCase.id}`}
-                        className="flex flex-wrap items-center gap-2 hover:underline"
-                      >
-                        <span className="tnum text-sm font-medium">{loanCase.caseNumber}</span>
-                        <Badge>{titleCase(roleOn(loanCase.id)?.role ?? "party")}</Badge>
-                        <span className="text-sm text-ink-700">{productLabel(db, loanCase)}</span>
-                        <span className="tnum text-sm text-ink-500">
-                          {lakhs(loanCase.requestedAmount)}
-                        </span>
-                        <span className="ml-auto">
-                          <StageBadge
-                            stage={loanCase.stage}
-                            label={CASE_STAGE_LABELS[loanCase.stage]}
-                          />
-                        </span>
-                      </Link>
-                      <p className="mt-0.5 text-xs text-ink-500">
-                        Opened {when(loanCase.createdAt)}
-                      </p>
-                    </li>
-                  ))}
+                {theirCases.map((loanCase) => (
+                  <li key={loanCase.id} className="py-2.5 first:pt-0 last:pb-0">
+                    <Link
+                      to={`/cases/${loanCase.id}`}
+                      className="flex flex-wrap items-center gap-2 hover:underline"
+                    >
+                      <span className="tnum text-sm font-medium">{loanCase.caseNumber}</span>
+                      <Badge>{titleCase(loanCase.partyRole)}</Badge>
+                      <span className="text-sm text-ink-700">
+                        {reference.productLabel(loanCase.loanProductId)}
+                      </span>
+                      <span className="tnum text-sm text-ink-500">
+                        {lakhs(loanCase.requestedAmount ?? undefined)}
+                      </span>
+                      <span className="ml-auto">
+                        <StageBadge
+                          stage={loanCase.stage}
+                          label={CASE_STAGE_LABELS[loanCase.stage]}
+                        />
+                      </span>
+                    </Link>
+                    <p className="mt-0.5 text-xs text-ink-500">
+                      Opened {when(loanCase.createdAt)}
+                    </p>
+                  </li>
+                ))}
               </ul>
             )}
           </Card>
 
-          {session.can("communication.read", "own") && (
-            <Card
-              title="Every conversation"
-              subtitle="Across all their cases — a person's history is theirs, not a case's"
-            >
-              {communications.length === 0 ? (
-                <Empty>Nothing logged.</Empty>
-              ) : (
-                <ul className="divide-y divide-ink-100">
-                  {communications.map((communication) => (
-                    <li key={communication.id} className="py-2.5 first:pt-0 last:pb-0">
-                      <div className="flex items-center gap-2">
-                        <Badge tone={communication.direction === "inbound" ? "good" : "neutral"}>
-                          {communication.channel}
-                        </Badge>
-                        <span className="text-sm font-medium">{communication.subject}</span>
-                        <span className="ml-auto text-xs text-ink-500">
-                          {when(communication.occurredAt)}
-                        </span>
-                      </div>
-                      {communication.body && (
-                        <p className="mt-1 text-sm text-ink-700">{communication.body}</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          )}
+          <Card title="Documents, employment and conversations">
+            <div className="max-w-prose space-y-3">
+              <p className="text-sm font-medium text-ink-900">Not yet migrated.</p>
+              <p className="text-sm text-ink-700">
+                This customer lives in PostgreSQL. Their documents, employment record and logged
+                conversations have not moved to the server yet, so they are not shown here rather
+                than shown from a store that no longer describes these cases.
+              </p>
+            </div>
+          </Card>
         </div>
 
         <div className="space-y-6">
           <Card
             title="Contact details"
             subtitle="A person can have more than one phone or email — an alternate number is a second entry, not a second person."
-            actions={
-              canEdit && <Button onClick={() => setAddPhoneOpen(true)}>Add phone or email</Button>
-            }
+            actions={canEdit && <Button onClick={() => setContactsOpen(true)}>Edit contacts</Button>}
           >
             {person.identifiers.length === 0 ? (
               <Empty>Nothing on file.</Empty>
@@ -211,8 +192,8 @@ export function PersonProfile(): ReactNode {
                 {person.identifiers.map((identifier) => (
                   <li key={identifier.id} className="flex items-center gap-2 text-sm">
                     <span className="tnum flex-1">
-                      {identifier.type === "pan" && !session.can("identifier.view_full", "all")
-                        ? maskedPan(person)
+                      {identifier.type === "pan" && !seesFullIdentifiers
+                        ? maskPan(identifier.value)
                         : identifier.value}
                     </span>
                     <Badge>{titleCase(identifier.type)}</Badge>
@@ -223,192 +204,134 @@ export function PersonProfile(): ReactNode {
             )}
           </Card>
 
-          {employment && employer && (
-            <Card title="Employment">
-              <p className="text-sm font-medium">{employer.canonicalName}</p>
-              <p className="text-xs text-ink-500">
-                {employment.designation} · {titleCase(employment.employmentType)}
-              </p>
-              {employment.monthlyIncome && (
-                <p className="tnum mt-1 text-sm">{money(employment.monthlyIncome)} / month</p>
-              )}
-              <p className="mt-2 border-t border-ink-100 pt-2 text-xs text-ink-500">
-                Employment type drives which income documents this person's cases ask for.
-              </p>
-            </Card>
-          )}
-
-          {session.can("document.read", "own") && (
-            <Card
-              title="Documents on file"
-              subtitle="Owned by the person, reused by every case"
-            >
-              {documents.length === 0 ? (
-                <Empty>Nothing on file.</Empty>
-              ) : (
-                <ul className="space-y-2">
-                  {documents.map((document) => {
-                    const type = db.documentTypes.find((t) => t.id === document.documentTypeId);
-                    const expanded = expandedDocumentId === document.id;
-                    return (
-                      <li key={document.id} className="space-y-1.5">
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm">{type?.name}</span>
-                            <span className="block truncate text-xs text-ink-500">
-                              {document.fileName} · {bytes(document.fileSizeBytes)}
-                            </span>
-                          </span>
-                          <Badge tone={document.verifiedAt ? "good" : "info"}>
-                            {document.verifiedAt ? "Verified" : "Unverified"}
-                          </Badge>
-                          <Button
-                            variant="ghost"
-                            onClick={() => setExpandedDocumentId(expanded ? null : document.id)}
-                          >
-                            {expanded ? "Hide storage" : "Storage"}
-                          </Button>
-                        </div>
-                        {expanded && <StorageLocation filePath={document.filePath} />}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Card>
-          )}
-
-          {sharedPhone.length > 0 && (
-            <Card title="Shares a phone number">
-              <ul className="space-y-1.5">
-                {sharedPhone.map((other) => (
-                  <li key={other.id}>
-                    <Link to={`/people/${other.id}`} className="text-sm hover:underline">
-                      {other.fullName}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-2 border-t border-ink-100 pt-2 text-xs text-ink-500">
-                Deliberately two records. A number is evidence, not identity: numbers are shared and
-                recycled, and fusing these two would attach one person's history to another's.
-              </p>
-            </Card>
-          )}
+          <Card title="Where this data lives">
+            <p className="text-xs text-ink-600">
+              This customer is a row in PostgreSQL. Anyone in the office searching their name or
+              number finds this same record — which is what stops the same person being created
+              twice on two PCs.
+            </p>
+          </Card>
         </div>
       </div>
 
-      <EditPersonDialog personId={person.id} open={editOpen} onClose={() => setEditOpen(false)} />
-      <AddIdentifierDialog
-        personId={person.id}
-        open={addPhoneOpen}
-        onClose={() => setAddPhoneOpen(false)}
-      />
+      {editOpen && (
+        <EditPersonModal
+          person={person}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            customer.refetch();
+            setEditOpen(false);
+          }}
+        />
+      )}
+      {contactsOpen && (
+        <EditContactsModal
+          person={person}
+          onClose={() => setContactsOpen(false)}
+          onSaved={() => {
+            customer.refetch();
+            setContactsOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-/**
- * Correct a person's own record — name, date of birth, residential address.
- *
- * NOT case-specific (Telecaller Real-World Issues milestone, Part 3). This
- * writes through `updatePerson`, which changes what every case involving
- * this person shows — a date of birth is a fact about the person, not about
- * whichever loan happened to be open when someone learned it.
- */
-function EditPersonDialog({
-  personId,
-  open,
+// ---------------------------------------------------------------------------
+
+function EditPersonModal({
+  person,
   onClose,
+  onSaved,
 }: {
-  personId: string;
-  open: boolean;
+  person: ApiCustomer;
   onClose: () => void;
+  onSaved: () => void;
 }): ReactNode {
-  const db = useDatabase();
-  const session = useSession();
+  const mutation = useMutation();
   const toast = useToast();
-  const person = db.people.find((p) => p.id === personId);
+  const [form, setForm] = useState({
+    fullName: person.fullName,
+    dateOfBirth: person.dateOfBirth ?? "",
+    addressLine: person.addressLine ?? "",
+    locality: person.locality ?? "",
+    city: person.city ?? "",
+    district: person.district ?? "",
+    state: person.state ?? "",
+    pincode: person.pincode ?? "",
+  });
 
-  const [fullName, setFullName] = useState("");
-  const [dateOfBirth, setDateOfBirth] = useState("");
-  const [addressLine, setAddressLine] = useState("");
-  const [locality, setLocality] = useState("");
-  const [city, setCity] = useState("");
-  const [pincode, setPincode] = useState("");
-  const [district, setDistrict] = useState("");
-  const [state, setState] = useState("");
-
-  useEffect(() => {
-    if (!open || !person) return;
-    setFullName(person.fullName);
-    setDateOfBirth(person.dateOfBirth ?? "");
-    setAddressLine(person.addressLine ?? "");
-    setLocality(person.locality ?? "");
-    setCity(person.city ?? "");
-    setPincode(person.pincode ?? "");
-    setDistrict(person.district ?? "");
-    setState(person.state ?? "");
-  }, [open, person]);
-
-  if (!person) return null;
-
-  const save = (): void => {
-    const result = updatePerson(
-      personId,
-      { fullName, dateOfBirth, addressLine, locality, city, pincode, district, state },
-      session.user.id,
-    );
-    if (!result.ok) {
-      toast.show(result.message ?? "", "bad");
-      return;
-    }
-    toast.show("Saved.");
-    onClose();
-  };
+  const set = (key: keyof typeof form) => (value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
 
   return (
-    <Modal open={open} title={`Edit ${person.fullName}`} onClose={onClose}>
+    <Modal open title="Edit customer" onClose={onClose}>
       <div className="space-y-3">
-        <Field label="Full name">
-          <Input value={fullName} onChange={(event) => setFullName(event.target.value)} />
-        </Field>
-        <Field label="Date of birth">
+        <Field label="Name">
           <Input
-            type="date"
-            value={dateOfBirth}
-            onChange={(event) => setDateOfBirth(event.target.value)}
-          />
-        </Field>
-        <Field label="Address">
-          <Input
-            value={addressLine}
-            onChange={(event) => setAddressLine(event.target.value)}
-            placeholder="12 Mill Road"
+            name="fullName"
+            value={form.fullName}
+            onChange={(e) => set("fullName")(e.target.value)}
           />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Locality">
-            <Input value={locality} onChange={(event) => setLocality(event.target.value)} />
+          <Field label="Date of birth">
+            <Input
+              type="date"
+              value={form.dateOfBirth}
+              onChange={(e) => set("dateOfBirth")(e.target.value)}
+            />
           </Field>
-          <Field label="City">
-            <Input value={city} onChange={(event) => setCity(event.target.value)} />
-          </Field>
-          <Field label="District">
-            <Input value={district} onChange={(event) => setDistrict(event.target.value)} />
-          </Field>
-          <Field label="State">
-            <Input value={state} onChange={(event) => setState(event.target.value)} />
-          </Field>
-          <Field label="PIN code">
-            <Input value={pincode} onChange={(event) => setPincode(event.target.value)} />
+          <Field label="Pincode">
+            <Input value={form.pincode} onChange={(e) => set("pincode")(e.target.value)} />
           </Field>
         </div>
-        <div className="flex justify-end gap-2 pt-1">
+        <Field label="Address">
+          <Input value={form.addressLine} onChange={(e) => set("addressLine")(e.target.value)} />
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Locality">
+            <Input
+              name="locality"
+              value={form.locality}
+              onChange={(e) => set("locality")(e.target.value)}
+            />
+          </Field>
+          <Field label="City">
+            <Input value={form.city} onChange={(e) => set("city")(e.target.value)} />
+          </Field>
+          <Field label="District">
+            <Input value={form.district} onChange={(e) => set("district")(e.target.value)} />
+          </Field>
+          <Field label="State">
+            <Input value={form.state} onChange={(e) => set("state")(e.target.value)} />
+          </Field>
+        </div>
+
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
-            Back
+            Cancel
           </Button>
-          <Button variant="primary" onClick={save}>
+          <Button
+            variant="primary"
+            disabled={mutation.pending || form.fullName.trim().length === 0}
+            onClick={async () => {
+              const saved = await mutation.run(() =>
+                api<ApiCustomer>(`/customers/${person.id}`, { method: "PATCH", body: form }),
+              );
+              if (saved) {
+                toast.show("Saved.");
+                onSaved();
+              }
+            }}
+          >
             Save
           </Button>
         </div>
@@ -417,96 +340,141 @@ function EditPersonDialog({
   );
 }
 
-/**
- * Add another phone number or email — an "alternate mobile" is a second
- * identifier, not a field this schema has a dedicated place for (Part 3).
- * Editing an existing one is not offered here; the value shown on the
- * profile is corrected by adding a fresh one and leaving the old one on
- * file, exactly like every other identifier already on the person.
- */
-function AddIdentifierDialog({
-  personId,
-  open,
-  onClose,
-}: {
-  personId: string;
-  open: boolean;
-  onClose: () => void;
-}): ReactNode {
-  const session = useSession();
-  const toast = useToast();
-  const [type, setType] = useState<PersonIdentifier["type"]>("phone");
-  const [value, setValue] = useState("");
-  const [makePrimary, setMakePrimary] = useState(false);
+// ---------------------------------------------------------------------------
 
-  const close = (): void => {
-    setValue("");
-    setMakePrimary(false);
-    onClose();
-  };
+const IDENTIFIER_TYPES: readonly IdentifierType[] = ["phone", "pan", "email", "bank_account"];
+
+/**
+ * Editing contact details as one list rather than one "add" dialog per kind.
+ *
+ * The server replaces the set: anything dropped here is EXPIRED rather than
+ * deleted, so a call logged against an old number stays attributable to the
+ * person who held it at the time. That is why removing a number is safe enough
+ * to offer inline.
+ */
+function EditContactsModal({
+  person,
+  onClose,
+  onSaved,
+}: {
+  person: ApiCustomer;
+  onClose: () => void;
+  onSaved: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const [rows, setRows] = useState<
+    { type: IdentifierType; value: string; isPrimary: boolean }[]
+  >(() =>
+    person.identifiers.map((i: ApiIdentifier) => ({
+      type: i.type,
+      value: i.value,
+      isPrimary: i.isPrimary,
+    })),
+  );
+
+  const update = (index: number, patch: Partial<(typeof rows)[number]>): void =>
+    setRows((current) =>
+      current.map((row, i) => {
+        if (i !== index) {
+          // At most one primary per kind, so selecting one clears the others.
+          return patch.isPrimary && row.type === (patch.type ?? current[index]!.type)
+            ? { ...row, isPrimary: false }
+            : row;
+        }
+        return { ...row, ...patch };
+      }),
+    );
 
   return (
-    <Modal open={open} title="Add a phone number or email" onClose={close}>
+    <Modal open title="Contact details" onClose={onClose}>
       <div className="space-y-3">
-        <Field label="Kind">
-          <Select
-            value={type}
-            onChange={(event) => setType(event.target.value as PersonIdentifier["type"])}
-          >
-            <option value="phone">Phone</option>
-            <option value="email">Email</option>
-          </Select>
-        </Field>
-        <Field label="Value">
-          <Input
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            placeholder={type === "phone" ? "+91 90000 00000" : "name@example.com"}
-          />
-        </Field>
-        <label className="flex items-center gap-2 text-sm text-ink-700">
-          <input
-            type="checkbox"
-            checked={makePrimary}
-            onChange={(event) => setMakePrimary(event.target.checked)}
-          />
-          Make this the primary {type}
-        </label>
+        {rows.length === 0 && <Empty>Nothing on file. Add a number below.</Empty>}
+
+        <ul className="space-y-2">
+          {rows.map((row, index) => (
+            <li key={index} className="flex items-end gap-2">
+              <Field label="Type">
+                <Select
+                  value={row.type}
+                  onChange={(e) => update(index, { type: e.target.value as IdentifierType })}
+                >
+                  {IDENTIFIER_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {titleCase(type)}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Value">
+                <Input
+                  value={row.value}
+                  onChange={(e) => update(index, { value: e.target.value })}
+                />
+              </Field>
+              <label className="flex items-center gap-1 pb-2 text-xs text-ink-600">
+                <input
+                  type="checkbox"
+                  checked={row.isPrimary}
+                  onChange={(e) => update(index, { isPrimary: e.target.checked })}
+                />
+                Primary
+              </label>
+              <Button
+                className="mb-1"
+                onClick={() => setRows((current) => current.filter((_, i) => i !== index))}
+              >
+                Remove
+              </Button>
+            </li>
+          ))}
+        </ul>
+
+        <Button
+          onClick={() =>
+            setRows((current) => [...current, { type: "phone", value: "", isPrimary: false }])
+          }
+        >
+          Add another
+        </Button>
+
         <p className="text-xs text-ink-500">
-          {makePrimary
-            ? `The current primary ${type}, if there is one, stops being primary — it stays on file.`
-            : `Kept alongside the existing ${type} numbers, not instead of them.`}
+          A number you remove is kept as expired, never deleted — a call logged in 2024 stays
+          attributed to whoever held that number in 2024.
         </p>
-        <div className="flex flex-col items-end gap-1 pt-1">
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={close}>
-              Back
-            </Button>
-            <Button
-              variant="primary"
-              disabled={value.trim().length < 3}
-              onClick={() => {
-                const result = updatePersonIdentifiers(
-                  personId,
-                  { type, value, isPrimary: makePrimary },
-                  session.user.id,
-                );
-                if (!result.ok) {
-                  toast.show(result.message ?? "", "bad");
-                  return;
-                }
-                toast.show("Added.");
-                close();
-              }}
-            >
-              Add
-            </Button>
-          </div>
-          {value.trim().length < 3 ? (
-            <p className="text-xs text-amber-700" role="status">
-              Enter at least 3 characters for the {type === "phone" ? "phone number" : "email address"}.
-            </p>
-          ) : null}
+
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={mutation.pending}
+            onClick={async () => {
+              const saved = await mutation.run(() =>
+                api<ApiCustomer>(`/customers/${person.id}/identifiers`, {
+                  method: "PUT",
+                  body: {
+                    identifiers: rows
+                      .filter((row) => row.value.trim().length > 0)
+                      .map((row) => ({ ...row, value: row.value.trim() })),
+                  },
+                }),
+              );
+              if (saved) {
+                toast.show("Contact details saved.");
+                onSaved();
+              }
+            }}
+          >
+            Save
+          </Button>
         </div>
       </div>
     </Modal>

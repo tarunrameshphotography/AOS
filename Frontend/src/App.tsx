@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Link,
   NavLink,
@@ -10,9 +10,9 @@ import {
 
 import { ROLE_LABELS, type Role } from "@domain/permissions/index.js";
 
+import { api } from "./api/client.js";
+import type { ApiSearchHit } from "./api/types.js";
 import { resetDatabase } from "./fake/store.js";
-import { useDatabase } from "./fake/useDatabase.js";
-import { search } from "./lib.js";
 import { CaseDetail } from "./screens/CaseDetail.js";
 import { CaseList } from "./screens/CaseList.js";
 import { DocumentRules } from "./screens/DocumentRules.js";
@@ -186,15 +186,50 @@ function TopBar(): ReactNode {
 /**
  * One search box. Not a person search and a case search and a document search —
  * one box, mixed results, grouped by type.
+ *
+ * Stage 3B: the search runs on the server (`GET /api/search`). That is not a
+ * performance change, it is a correctness one. The old version searched the
+ * cases and people the browser happened to be holding, so it found things in
+ * proportion to what had already been loaded. It now searches the database,
+ * and — importantly — the server applies the case scope rule, so a Telecaller
+ * typing a colleague's case number finds nothing rather than finding a case
+ * they may not open.
+ *
+ * Organisations and properties have dropped out of the results for now: they
+ * have not migrated, and searching the prototype store for them would return
+ * records with ids that no longer resolve to anything the case screens can
+ * open.
  */
 function GlobalSearch(): ReactNode {
-  const db = useDatabase();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [hits, setHits] = useState<readonly ApiSearchHit[]>([]);
   const container = useRef<HTMLDivElement>(null);
 
-  const hits = useMemo(() => search(db, query).slice(0, 8), [db, query]);
+  const trimmed = query.trim();
+
+  // Debounced: this fires per keystroke, and the office runs one small server.
+  useEffect(() => {
+    if (trimmed.length < 2) {
+      setHits([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api<readonly ApiSearchHit[]>(`/search?q=${encodeURIComponent(trimmed)}`)
+        .then((found) => {
+          if (!cancelled) setHits(found);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmed]);
 
   useEffect(() => {
     const onClick = (event: MouseEvent): void => {
@@ -204,27 +239,28 @@ function GlobalSearch(): ReactNode {
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
-  const go = (hit: (typeof hits)[number]): void => {
+  const go = (hit: ApiSearchHit): void => {
     setOpen(false);
     setQuery("");
     if (hit.kind === "case") navigate(`/cases/${hit.id}`);
-    else if (hit.kind === "person") navigate(`/people/${hit.id}`);
+    else navigate(`/people/${hit.id}`);
   };
 
   return (
     <div ref={container} className="relative w-full max-w-md">
       <input
         value={query}
+        name="search"
         onChange={(event) => {
           setQuery(event.target.value);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Ravi · 9843 · Anna Nagar · IIFL · AL-2026-00041"
+        placeholder="Ravi · 9843 · Anna Nagar · AL-2026-00041"
         className="w-full rounded-md bg-ink-50 px-3 py-1.5 text-sm ring-1 ring-ink-200 focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
       />
 
-      {open && query.trim().length >= 2 && (
+      {open && trimmed.length >= 2 && (
         <div className="absolute top-full left-0 mt-1 w-full overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-ink-200">
           {hits.length === 0 ? (
             <p className="px-3 py-4 text-sm text-ink-500">
@@ -320,10 +356,10 @@ function IdentityMenu(): ReactNode {
         className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-ink-50"
       >
         <span className="grid h-7 w-7 place-items-center rounded-full bg-ink-200 text-xs font-semibold">
-          {session.user.name.slice(0, 2).toUpperCase()}
+          {session.displayName.slice(0, 2).toUpperCase()}
         </span>
         <span className="hidden text-left sm:block">
-          <span className="block text-xs leading-tight font-medium">{session.user.name}</span>
+          <span className="block text-xs leading-tight font-medium">{session.displayName}</span>
           <span className="block text-xs leading-tight text-ink-500">
             {session.roles.map((role) => ROLE_LABELS[role as Role]).join(" + ")}
           </span>
@@ -333,7 +369,7 @@ function IdentityMenu(): ReactNode {
       {open && (
         <div className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-lg ring-1 ring-ink-200">
           <div className="px-2 py-1.5">
-            <p className="text-sm font-medium">{session.user.name}</p>
+            <p className="text-sm font-medium">{session.displayName}</p>
             <p className="text-xs text-ink-500">
               {session.roles.map((role) => ROLE_LABELS[role as Role]).join(" + ")}
             </p>

@@ -42,8 +42,28 @@ import type { Role } from "@domain/permissions/index.js";
 
 import { pool, withActor } from "./db.js";
 import { can, canActOnCase, refusal, widestScopeFor, type Actor } from "./authorize.js";
+import { ApiError } from "./http.js";
 import {
-  UserAdminError,
+  casesForPerson,
+  createCase,
+  listCases,
+  markLost,
+  moveStage,
+  readCase,
+  reopen,
+  assignOwner,
+  setHold,
+  updateCase,
+} from "./cases.js";
+import {
+  createCustomer,
+  getCustomer,
+  listCustomers,
+  setCustomerIdentifiers,
+  updateCustomer,
+} from "./customers.js";
+import { readReference, search } from "./reference.js";
+import {
   changeOwnPassword,
   createUser,
   getUser,
@@ -240,294 +260,32 @@ async function describeUser(client: pg.PoolClient, userId: string) {
   );
   const row = rows[0];
   if (!row) throw new HttpError(404, "No such user.");
-  return { id: row.id, username: row.username, fullName: row.full_name, roles: row.roles };
-}
-
-// ---------------------------------------------------------------------------
-// Handlers — customers (the `person` table)
-// ---------------------------------------------------------------------------
-
-const CUSTOMER_COLUMNS = `id, full_name, date_of_birth, address_line, locality, city,
-                          district, state, pincode, is_active, created_at, updated_at`;
-
-function customerFromRow(row: Record<string, unknown>) {
   return {
     id: row.id,
+    username: row.username,
     fullName: row.full_name,
-    dateOfBirth: row.date_of_birth,
-    addressLine: row.address_line,
-    locality: row.locality,
-    city: row.city,
-    district: row.district,
-    state: row.state,
-    pincode: row.pincode,
-    isActive: row.is_active,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    roles: row.roles,
+    /**
+     * The signed-in employee's OWN live overrides (Stage 3B).
+     *
+     * The browser needs these to answer "should this button be shown", which
+     * it answers by calling `hasPermissionWithOverrides` — the same function
+     * the server enforces with. Without them the UI would compute permissions
+     * from roles alone and disagree with the server for any employee holding
+     * an exception: a button that produces a 403, or a button that is hidden
+     * from someone who was explicitly granted the thing.
+     *
+     * This is their own data and nobody else's. Reading somebody ELSE's
+     * overrides needs `permission.override` and goes through
+     * `/api/users/:id/permissions`.
+     *
+     * NONE OF THIS IS A SECURITY BOUNDARY. It decides what is drawn, never
+     * what is allowed — every request is re-checked server-side against the
+     * same overrides, read fresh, so a tampered client gets a refusal rather
+     * than an action (BR-060).
+     */
+    overrides: await loadOverrides(client, userId),
   };
-}
-
-/** Field name in the API → column in `person`. A whitelist, not a loop over
- * the body: without it, `PATCH` would happily set `created_by` or clear
- * `merged_into_id`. */
-const CUSTOMER_WRITABLE: Record<string, string> = {
-  fullName: "full_name",
-  dateOfBirth: "date_of_birth",
-  addressLine: "address_line",
-  locality: "locality",
-  city: "city",
-  district: "district",
-  state: "state",
-  pincode: "pincode",
-};
-
-async function listCustomers(client: pg.PoolClient, actor: Actor) {
-  requirePermission(actor, "person.read", "all");
-  const { rows } = await client.query(
-    `select ${CUSTOMER_COLUMNS} from person
-      where is_active and merged_into_id is null
-      order by created_at desc limit 500`,
-  );
-  return rows.map(customerFromRow);
-}
-
-async function createCustomer(client: pg.PoolClient, actor: Actor, body: Record<string, unknown>) {
-  requirePermission(actor, "person.create", "all");
-
-  const fullName = typeof body.fullName === "string" ? body.fullName.trim() : "";
-  if (fullName.length === 0) throw new HttpError(400, "A customer needs a name.");
-
-  const columns = ["full_name", "created_by"];
-  const values: unknown[] = [fullName, actor.userId];
-  for (const [field, column] of Object.entries(CUSTOMER_WRITABLE)) {
-    if (field === "fullName") continue;
-    if (body[field] !== undefined && body[field] !== null && body[field] !== "") {
-      columns.push(column);
-      values.push(body[field]);
-    }
-  }
-
-  const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
-  const { rows } = await client.query(
-    `insert into person (${columns.join(", ")}) values (${placeholders})
-     returning ${CUSTOMER_COLUMNS}`,
-    values,
-  );
-  return customerFromRow(rows[0]!);
-}
-
-async function getCustomer(client: pg.PoolClient, actor: Actor, id: string) {
-  requirePermission(actor, "person.read", "all");
-  const { rows } = await client.query(
-    `select ${CUSTOMER_COLUMNS} from person where id = $1`,
-    [id],
-  );
-  if (!rows[0]) throw new HttpError(404, "No such customer.");
-  return customerFromRow(rows[0]);
-}
-
-async function updateCustomer(
-  client: pg.PoolClient,
-  actor: Actor,
-  id: string,
-  body: Record<string, unknown>,
-) {
-  requirePermission(actor, "person.update", "all");
-
-  const sets: string[] = [];
-  const values: unknown[] = [];
-  for (const [field, column] of Object.entries(CUSTOMER_WRITABLE)) {
-    if (body[field] !== undefined) {
-      values.push(body[field]);
-      sets.push(`${column} = $${values.length}`);
-    }
-  }
-  if (sets.length === 0) throw new HttpError(400, "Nothing to update.");
-
-  values.push(id);
-  const { rows } = await client.query(
-    `update person set ${sets.join(", ")} where id = $${values.length}
-     returning ${CUSTOMER_COLUMNS}`,
-    values,
-  );
-  if (!rows[0]) throw new HttpError(404, "No such customer.");
-  return customerFromRow(rows[0]);
-}
-
-// ---------------------------------------------------------------------------
-// Handlers — cases (the `loan_case` table)
-// ---------------------------------------------------------------------------
-
-const CASE_COLUMNS = `c.id, c.case_number, c.loan_product_id, c.requested_amount, c.stage,
-                      c.owner_user_id, c.source, c.is_on_hold, c.created_at, c.updated_at`;
-
-function caseFromRow(row: Record<string, unknown>) {
-  return {
-    id: row.id,
-    caseNumber: row.case_number,
-    loanProductId: row.loan_product_id,
-    requestedAmount: row.requested_amount === null ? null : Number(row.requested_amount),
-    stage: row.stage,
-    ownerUserId: row.owner_user_id,
-    source: row.source,
-    isOnHold: row.is_on_hold,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    applicantId: row.applicant_id ?? null,
-    applicantName: row.applicant_name ?? null,
-  };
-}
-
-/**
- * The scope rule, as a SQL filter.
- *
- * A Telecaller holds `case.read` at `own`, a Login Executive and above at
- * `all` (src/domain/permissions/roles.ts). So this is not a convenience —
- * without the `own` branch, one Telecaller would list another Telecaller's
- * cases, which is the precise thing Stage 2 has to prove cannot happen.
- */
-async function listCases(client: pg.PoolClient, actor: Actor) {
-  const scope = widestScopeFor(actor, "case.read");
-  if (scope === null) throw new HttpError(403, refusal("case.read"));
-
-  const ownOnly = scope === "own";
-  const { rows } = await client.query(
-    `select ${CASE_COLUMNS},
-            pa.person_id as applicant_id, p.full_name as applicant_name
-       from loan_case c
-       left join case_party pa
-              on pa.case_id = c.id and pa.is_primary and pa.removed_at is null
-       left join person p on p.id = pa.person_id
-      ${ownOnly ? "where c.owner_user_id = $1" : ""}
-      order by c.created_at desc limit 500`,
-    ownOnly ? [actor.userId] : [],
-  );
-  return rows.map(caseFromRow);
-}
-
-async function createCase(client: pg.PoolClient, actor: Actor, body: Record<string, unknown>) {
-  requirePermission(actor, "case.create", "all");
-
-  const applicantId = typeof body.applicantId === "string" ? body.applicantId : null;
-  const loanProductId = typeof body.loanProductId === "string" ? body.loanProductId : null;
-  if (!applicantId) throw new HttpError(400, "A case needs an applicant.");
-  if (!loanProductId) throw new HttpError(400, "A case needs a loan product.");
-
-  const applicant = await client.query(`select id from person where id = $1`, [applicantId]);
-  if (!applicant.rows[0]) throw new HttpError(400, "No such customer.");
-
-  const product = await client.query(`select id from loan_product where id = $1`, [loanProductId]);
-  if (!product.rows[0]) throw new HttpError(400, "No such loan product.");
-
-  // ADR-024: the number comes from the sequence function, never from the
-  // application. Two PCs creating a case at the same moment is exactly the
-  // case the row lock in there exists for.
-  const numbered = await client.query<{ case_number: string }>(
-    `select app.allocate_case_number() as case_number`,
-  );
-  const caseNumber = numbered.rows[0]!.case_number;
-
-  // A case is owned by whoever created it. Reassignment is `case.assign`, a
-  // separate permission and a later slice.
-  const inserted = await client.query(
-    `insert into loan_case (case_number, loan_product_id, requested_amount, stage,
-                            owner_user_id, source, created_by)
-     values ($1, $2, $3, 'new', $4, $5, $4)
-     returning id`,
-    [
-      caseNumber,
-      loanProductId,
-      body.requestedAmount ?? null,
-      actor.userId,
-      typeof body.source === "string" ? body.source : null,
-    ],
-  );
-  const caseId = inserted.rows[0]!.id;
-
-  await client.query(
-    `insert into case_party (case_id, person_id, role, is_primary, created_by)
-     values ($1, $2, 'applicant', true, $3)`,
-    [caseId, applicantId, actor.userId],
-  );
-
-  return await readCase(client, actor, caseId);
-}
-
-/**
- * Read one case, enforcing ownership.
- *
- * Refuses with 404 rather than 403 when the actor may not see it. 403 would
- * confirm the case exists, which is itself information: a Telecaller probing
- * `/api/cases/<uuid>` could map colleagues' caseload without reading a single
- * field. "No such case, or you do not have access to it" is the honest answer
- * to both questions at once.
- */
-async function readCase(client: pg.PoolClient, actor: Actor, id: string) {
-  if (widestScopeFor(actor, "case.read") === null) {
-    throw new HttpError(403, refusal("case.read"));
-  }
-
-  const { rows } = await client.query(
-    `select ${CASE_COLUMNS},
-            pa.person_id as applicant_id, p.full_name as applicant_name
-       from loan_case c
-       left join case_party pa
-              on pa.case_id = c.id and pa.is_primary and pa.removed_at is null
-       left join person p on p.id = pa.person_id
-      where c.id = $1`,
-    [id],
-  );
-  const row = rows[0];
-  const notFound = new HttpError(404, "No such case, or you do not have access to it.");
-  if (!row) throw notFound;
-  if (!canActOnCase(actor, row.owner_user_id, "case.read")) throw notFound;
-  return caseFromRow(row);
-}
-
-const CASE_WRITABLE: Record<string, string> = {
-  requestedAmount: "requested_amount",
-  source: "source",
-  stage: "stage",
-};
-
-async function updateCase(
-  client: pg.PoolClient,
-  actor: Actor,
-  id: string,
-  body: Record<string, unknown>,
-) {
-  const { rows: existing } = await client.query(
-    `select owner_user_id from loan_case where id = $1`,
-    [id],
-  );
-  const current = existing[0];
-  const notFound = new HttpError(404, "No such case, or you do not have access to it.");
-  if (!current) throw notFound;
-
-  // Read access decides whether the case is even acknowledged; write access is
-  // checked separately, so someone who may see a case but not edit it gets a
-  // 403 that names the permission rather than a misleading 404.
-  if (!canActOnCase(actor, current.owner_user_id, "case.read")) throw notFound;
-  if (!canActOnCase(actor, current.owner_user_id, "case.update")) {
-    throw new HttpError(403, refusal("case.update"));
-  }
-
-  const sets: string[] = [];
-  const values: unknown[] = [];
-  for (const [field, column] of Object.entries(CASE_WRITABLE)) {
-    if (body[field] !== undefined) {
-      values.push(body[field]);
-      sets.push(`${column} = $${values.length}`);
-    }
-  }
-  if (sets.length === 0) throw new HttpError(400, "Nothing to update.");
-
-  values.push(id);
-  await client.query(
-    `update loan_case set ${sets.join(", ")} where id = $${values.length}`,
-    values,
-  );
-  return await readCase(client, actor, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -625,8 +383,21 @@ async function route(
     return await revokeOverride(client, requireActor(actor), overrideMatch[1]!, overrideMatch[2]!);
   }
 
+  // ── Reference data and search ─────────────────────────────────────────────
+
+  if (method === "GET" && path === "/api/reference") {
+    return await readReference(client, requireActor(actor));
+  }
+  if (method === "GET" && path === "/api/search") {
+    const query = new URL(req.url ?? "/", "http://localhost").searchParams.get("q") ?? "";
+    return await search(client, requireActor(actor), query);
+  }
+
+  // ── Customers ─────────────────────────────────────────────────────────────
+
   if (method === "GET" && path === "/api/customers") {
-    return await listCustomers(client, requireActor(actor));
+    const query = new URL(req.url ?? "/", "http://localhost").searchParams.get("q");
+    return await listCustomers(client, requireActor(actor), query);
   }
   if (method === "POST" && path === "/api/customers") {
     return await createCustomer(client, requireActor(actor), body);
@@ -637,6 +408,23 @@ async function route(
     if (method === "GET") return await getCustomer(client, requireActor(actor), id);
     if (method === "PATCH") return await updateCustomer(client, requireActor(actor), id, body);
   }
+
+  const identifiersMatch = new RegExp(`^/api/customers/(${UUID})/identifiers$`).exec(path);
+  if (identifiersMatch && method === "PUT") {
+    return await setCustomerIdentifiers(client, requireActor(actor), identifiersMatch[1]!, body);
+  }
+
+  const personCasesMatch = new RegExp(`^/api/customers/(${UUID})/cases$`).exec(path);
+  if (personCasesMatch && method === "GET") {
+    return await casesForPerson(client, requireActor(actor), personCasesMatch[1]!);
+  }
+
+  // ── Cases ─────────────────────────────────────────────────────────────────
+  //
+  // The verbs are separate routes, not flags on a PATCH. `case.hold`,
+  // `case.mark_lost`, `case.reopen` and `case.assign` are four different
+  // permissions, held at different scopes by different roles; folding them
+  // into one field patch would make `case.update` silently grant all of them.
 
   if (method === "GET" && path === "/api/cases") {
     return await listCases(client, requireActor(actor));
@@ -649,6 +437,31 @@ async function route(
     const id = caseMatch[1]!;
     if (method === "GET") return await readCase(client, requireActor(actor), id);
     if (method === "PATCH") return await updateCase(client, requireActor(actor), id, body);
+  }
+
+  const stageMatch = new RegExp(`^/api/cases/(${UUID})/stage$`).exec(path);
+  if (stageMatch && method === "PUT") {
+    return await moveStage(client, requireActor(actor), stageMatch[1]!, body);
+  }
+
+  const holdMatch = new RegExp(`^/api/cases/(${UUID})/hold$`).exec(path);
+  if (holdMatch && method === "PUT") {
+    return await setHold(client, requireActor(actor), holdMatch[1]!, body);
+  }
+
+  const lostMatch = new RegExp(`^/api/cases/(${UUID})/lost$`).exec(path);
+  if (lostMatch && method === "PUT") {
+    return await markLost(client, requireActor(actor), lostMatch[1]!, body);
+  }
+
+  const reopenMatch = new RegExp(`^/api/cases/(${UUID})/reopen$`).exec(path);
+  if (reopenMatch && method === "POST") {
+    return await reopen(client, requireActor(actor), reopenMatch[1]!);
+  }
+
+  const ownerMatch = new RegExp(`^/api/cases/(${UUID})/owner$`).exec(path);
+  if (ownerMatch && method === "PUT") {
+    return await assignOwner(client, requireActor(actor), ownerMatch[1]!, body);
   }
 
   throw new HttpError(404, "No such endpoint.");
@@ -688,11 +501,11 @@ export function createApiServer() {
 
         json(res, 200, result);
       } catch (error) {
-        // Two error types, one boundary: `users.ts` raises its own rather than
-        // importing HttpError from here, which would be a cycle (this module
-        // imports it). Both carry a status and a message written to be read by
-        // an employee.
-        if (error instanceof HttpError || error instanceof UserAdminError) {
+        // Two error types, one boundary. `HttpError` is this module's own, for
+        // the plumbing above; `ApiError` (Backend/http.ts) is what the handler
+        // modules raise — they cannot import from here, since this imports
+        // them. Both carry a status and a message written for an employee.
+        if (error instanceof HttpError || error instanceof ApiError) {
           json(res, error.status, { message: error.message });
           return;
         }

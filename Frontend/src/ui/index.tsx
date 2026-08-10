@@ -295,14 +295,22 @@ export function Modal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/30 p-4 pt-16">
+      {/* `role="dialog"` and `aria-modal` so a screen reader announces this as
+          a dialog rather than as more of the page behind it, and so its title
+          is what names it. */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
         className={cx(
           "w-full rounded-lg bg-white shadow-xl ring-1 ring-ink-200",
           size === "wide" ? "max-w-3xl" : "max-w-lg",
         )}
       >
         <header className="flex items-center justify-between border-b border-ink-100 px-4 py-3">
-          <h2 className="text-sm font-semibold">{title}</h2>
+          <h2 id="modal-title" className="text-sm font-semibold">
+            {title}
+          </h2>
           <Button variant="ghost" onClick={onClose} aria-label="Close">
             ✕
           </Button>

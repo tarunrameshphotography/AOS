@@ -2,6 +2,7 @@
 
 import type { Database, Id, LoanCase, Organisation, Person, SubmissionStatus } from "./fake/types.js";
 import type { ProgressSummary } from "@domain/requirements/progress.js";
+import { matchTier, worthSearching } from "./identity-match.js";
 
 export function money(amount?: number): string {
   if (amount === undefined) return "—";
@@ -393,31 +394,29 @@ export interface PersonCandidate {
 }
 
 /**
- * A phone match alone is never Definite — that is the family-phone and
- * recycled-number case, and assuming identity there is how one person's
- * history ends up attached to another's (ADR-013).
+ * Candidates from the prototype store.
+ *
+ * The judgement itself lives in `identity-match.ts` as of Stage 3B, so the
+ * API-backed picker on the new-case screen and this one cannot drift apart —
+ * a phone match alone is never Definite, and that has to be true in both.
  */
 export function personCandidates(db: Database, name: string, phone: string): PersonCandidate[] {
-  const digits = phone.replace(/\D/g, "");
-  const needle = name.trim().toLowerCase();
-  if (digits.length < 4 && needle.length < 3) return [];
+  if (!worthSearching(name, phone)) return [];
 
   return db.people
     .map((person) => {
-      const phoneHit =
-        digits.length >= 4 &&
-        person.identifiers.some(
-          (identifier) =>
-            identifier.type === "phone" && identifier.value.replace(/\D/g, "").includes(digits),
-        );
-      const nameHit =
-        needle.length >= 3 &&
-        [person.fullName, ...person.aliases].some((value) => value.toLowerCase().includes(needle));
-
-      if (!phoneHit && !nameHit) return null;
-      const tier: PersonCandidate["tier"] =
-        phoneHit && nameHit ? "definite" : phoneHit ? "probable" : "possible";
-      return { person, tier };
+      const tier = matchTier(
+        {
+          fullName: person.fullName,
+          aliases: person.aliases,
+          phones: person.identifiers
+            .filter((identifier) => identifier.type === "phone")
+            .map((identifier) => identifier.value),
+        },
+        name,
+        phone,
+      );
+      return tier === null ? null : { person, tier };
     })
     .filter((entry): entry is PersonCandidate => entry !== null)
     .slice(0, 4);

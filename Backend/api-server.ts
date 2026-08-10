@@ -77,6 +77,16 @@ import {
   setUserRoles,
 } from "./users.js";
 import { listCaseRequirements, uploadDocument, decideDocument, downloadDocument } from "./documents.js";
+import { listLenders } from "./lenders.js";
+import {
+  createSubmission,
+  listPackages,
+  listSubmissions,
+  preparePackage,
+  retryPackage,
+  sendableDocuments,
+  sendPackage,
+} from "./submissions.js";
 
 const PORT = Number(process.env.AOS_API_PORT ?? 4321);
 
@@ -527,6 +537,58 @@ async function route(
   if (downloadMatch && method === "GET") {
     const result = await downloadDocument(client, requireActor(actor), downloadMatch[1]!);
     return new RawResponse(result.bytes, result.contentType, result.fileName);
+  }
+
+  // ── Lenders ───────────────────────────────────────────────────────────────
+
+  if (method === "GET" && path === "/api/lenders") {
+    return await listLenders(client, requireActor(actor));
+  }
+
+  // ── Bank submissions ─────────────────────────────────────────────────────
+  //
+  // Stage 3D. The verbs mirror documents.ts's shape: a submission is created
+  // separately from sending its documents, and sending is itself two steps —
+  // `prepare` plans and writes nothing, `send`/`retry` write and dispatch —
+  // so the review screen and the sender walk the same object (package.ts).
+
+  const submissionsMatch = new RegExp(`^/api/cases/(${UUID})/submissions$`).exec(path);
+  if (submissionsMatch && method === "GET") {
+    return await listSubmissions(client, requireActor(actor), submissionsMatch[1]!);
+  }
+  if (submissionsMatch && method === "POST") {
+    return await createSubmission(client, requireActor(actor), submissionsMatch[1]!, body);
+  }
+
+  const sendableMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/sendable-documents$`).exec(path);
+  if (sendableMatch && method === "GET") {
+    return await sendableDocuments(client, requireActor(actor), sendableMatch[1]!, sendableMatch[2]!);
+  }
+
+  const prepareMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/package/prepare$`).exec(path);
+  if (prepareMatch && method === "POST") {
+    return await preparePackage(client, requireActor(actor), prepareMatch[1]!, prepareMatch[2]!, body);
+  }
+
+  const sendMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/package/send$`).exec(path);
+  if (sendMatch && method === "POST") {
+    return await sendPackage(client, requireActor(actor), sendMatch[1]!, sendMatch[2]!, body);
+  }
+
+  const packagesMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/packages$`).exec(path);
+  if (packagesMatch && method === "GET") {
+    return await listPackages(client, requireActor(actor), packagesMatch[1]!, packagesMatch[2]!);
+  }
+
+  const retryMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/packages/(${UUID})/retry$`).exec(path);
+  if (retryMatch && method === "POST") {
+    return await retryPackage(
+      client,
+      requireActor(actor),
+      retryMatch[1]!,
+      retryMatch[2]!,
+      retryMatch[3]!,
+    );
   }
 
   throw new HttpError(404, "No such endpoint.");

@@ -30,6 +30,10 @@ export default defineConfig({
       // storage-server instance on this port, rooted in a throwaway temp
       // directory.
       AOS_STORAGE_SERVER_URL: "http://127.0.0.1:4329",
+      // Same reasoning, for mail: a dedicated port and the `capture` provider,
+      // never the office Gmail mailbox on 4320. Backend/submissions.test.ts
+      // spawns its own mail-server instance on this port.
+      AOS_MAIL_SERVER_URL: "http://127.0.0.1:4330",
     },
     // One database, shared state. Parallel files would race on the case-number
     // sequence and on each other's fixtures.

@@ -64,6 +64,7 @@ import { useApiQuery, useMutation } from "../api/hooks.js";
 import type { ApiCase, ApiCaseRequirements, ApiRequirement } from "../api/types.js";
 import { bytes, exactly, lakhs, money, when } from "../lib.js";
 import { useSession } from "../session.js";
+import { BanksTab } from "./BanksTab.js";
 import {
   CASE_TABS,
   CASE_TAB_LABELS,
@@ -144,6 +145,12 @@ export function CaseDetail(): ReactNode {
               )}
             >
               {CASE_TAB_LABELS[value]}
+              {value === "banks" && loanCase.stage === "ready_for_submission" && (
+                <span
+                  className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-sky-500"
+                  title="Ready for submission — add a bank and send"
+                />
+              )}
             </button>
           ))}
           <span className="ml-3 text-xs text-ink-500">{CASE_TAB_PURPOSE[tab]}</span>
@@ -152,7 +159,8 @@ export function CaseDetail(): ReactNode {
 
       {tab === "overview" && <Overview loanCase={loanCase} onChanged={query.refetch} />}
       {tab === "documents" && <DocumentsTab loanCase={loanCase} onCaseChanged={query.refetch} />}
-      {(tab === "banks" || tab === "timeline") && <NotYetMigrated tab={tab} />}
+      {tab === "banks" && <BanksTab loanCase={loanCase} onCaseChanged={query.refetch} />}
+      {tab === "timeline" && <NotYetMigrated tab={tab} />}
     </div>
   );
 }
@@ -1154,19 +1162,16 @@ function RejectModal({
 /** What each un-migrated tab is waiting for, in the words of the thing it
  * needs. Vague placeholders ("coming soon") teach nobody anything; naming the
  * dependency tells a reader when to expect it back. Documents moved in
- * Stage 3C — see `DocumentsTab` below — and left this list. */
-const WAITING_ON: Record<"banks" | "timeline", { what: string; why: string }> = {
-  banks: {
-    what: "Bank submissions and offers",
-    why: "Submissions depend on verified documents, which now exist (Stage 3C) — this is the next slice, not a re-statement of the same gap.",
-  },
+ * Stage 3C, Banks in Stage 3D — see `DocumentsTab`/`BanksTab` — and left
+ * this list. */
+const WAITING_ON: Record<"timeline", { what: string; why: string }> = {
   timeline: {
     what: "The case timeline",
-    why: "The event log records what every other slice does. It is written for administrative actions, case, customer and document events already; the reading screen is what has not moved.",
+    why: "The event log records what every other slice does. It is written for administrative actions, case, customer, document and submission events already; the reading screen is what has not moved.",
   },
 };
 
-function NotYetMigrated({ tab }: { tab: "banks" | "timeline" }): ReactNode {
+function NotYetMigrated({ tab }: { tab: "timeline" }): ReactNode {
   const waiting = WAITING_ON[tab];
 
   return (

@@ -100,14 +100,20 @@ export function caseFromRow(
  * against genuine data, since `evaluateTransition` is never bypassed:
  * whatever this function reports is exactly what the domain layer judges.
  *
- * `liveSubmissionCount`, `hasSanctionedSubmissionWithOffer` and
- * `hasDisbursedSubmission` remain zero/false — submissions are still out of
- * scope (Stage 3C did not migrate them). Every transition whose guard reads
- * those — → submitted, → sanctioned, → disbursed — is declared
- * `actor: "system"`, and `evaluateTransition` checks the actor BEFORE running
- * the guard, so a request from this API is refused on the actor check and the
- * zeros are never consulted. Nothing beyond `ready_for_submission` is assumed
- * satisfied.
+ * `liveSubmissionCount` is real as of Stage 3D — `Backend/submissions.ts`
+ * writes genuine `submission` rows now, so this counts them rather than
+ * assuming zero. `hasSanctionedSubmissionWithOffer` and
+ * `hasDisbursedSubmission` remain false — sanction and disbursement are still
+ * out of scope (Stage 3D built the submission vertical only). Every
+ * transition whose guard reads those two — → sanctioned, → disbursed — is
+ * declared `actor: "system"`, and `evaluateTransition` checks the actor
+ * BEFORE running the guard, so a request from this API is refused on the
+ * actor check and the `false`s are never consulted. → submitted is the same
+ * shape but its guard (`hasLiveSubmission`) now reads a genuine count: this
+ * function existing to serve `moveStage`, a `user`-actor endpoint, means the
+ * actor check still refuses it first, exactly as before — the fact only
+ * matters to `Backend/submissions.ts`'s own system-actor evaluation after a
+ * send succeeds.
  *
  * The one guarded USER transition, disbursed → closed, reads `isInvoiceRaised`
  * — a column on `loan_case`, which the server does know and passes honestly.
@@ -116,12 +122,23 @@ async function snapshotOf(client: Queryable, row: Record<string, unknown>): Prom
   return {
     stage: row.stage as CaseStage,
     outstandingRequirementCount: await outstandingRequirementCount(client, row.id as string),
-    liveSubmissionCount: 0,
+    liveSubmissionCount: await liveSubmissionCount(client, row.id as string),
     hasSanctionedSubmissionWithOffer: false,
     hasDisbursedSubmission: false,
     isInvoiceRaised: row.is_invoice_raised === true,
     stageBeforeLost: (row.stage_before_lost as CaseStage | null) ?? null,
   };
+}
+
+/** Submissions that have actually gone to a bank — status beyond
+ * `not_submitted` — matching `CaseSnapshot.liveSubmissionCount`'s own
+ * definition (`src/domain/case/transitions.ts`). */
+async function liveSubmissionCount(client: Queryable, caseId: string): Promise<number> {
+  const { rows } = await client.query<{ n: string }>(
+    `select count(*) as n from submission where case_id = $1 and status <> 'not_submitted'`,
+    [caseId],
+  );
+  return Number(rows[0]?.n ?? 0);
 }
 
 /** 404 rather than 403 when the actor may not see a case. 403 would confirm it

@@ -225,3 +225,138 @@ export interface ApiSearchHit {
   readonly subtitle: string;
   readonly matchedOn: string;
 }
+
+// ---------------------------------------------------------------------------
+// Banks & submissions (Stage 3D) — mirrors Backend/lenders.ts, Backend/submissions.ts
+// ---------------------------------------------------------------------------
+
+export interface ApiLenderContact {
+  readonly id: string;
+  readonly name: string | null;
+  readonly designation: string | null;
+  readonly workEmail: string | null;
+  readonly workMobile: string | null;
+  readonly isPrimary: boolean;
+}
+
+export interface ApiLenderBranch {
+  readonly id: string;
+  readonly name: string;
+  readonly city: string | null;
+  readonly addressLine: string | null;
+  readonly operationalStatus: string;
+  readonly contacts: readonly ApiLenderContact[];
+}
+
+export interface ApiLender {
+  readonly id: string;
+  readonly name: string;
+  readonly lenderType: string | null;
+  readonly branches: readonly ApiLenderBranch[];
+}
+
+export type SubmissionStatus =
+  | "not_submitted"
+  | "submitted"
+  | "under_process"
+  | "query_raised"
+  | "eligibility_received"
+  | "sanctioned"
+  | "rejected"
+  | "withdrawn"
+  | "disbursed";
+
+export interface ApiSubmissionRecipient {
+  readonly id: string;
+  readonly email: string;
+  readonly name: string | null;
+  readonly designation: string | null;
+  readonly kind: "to" | "cc";
+  readonly isPrimary: boolean;
+}
+
+export interface ApiSubmissionPackageSummary {
+  readonly id: string;
+  readonly status: "pending" | "sent" | "partially_sent" | "failed";
+  readonly documentCount: number;
+  readonly emailCount: number;
+  readonly initiatedAt: string;
+}
+
+export interface ApiSubmission {
+  readonly id: string;
+  readonly caseId: string;
+  readonly branchOrganisationId: string;
+  readonly counterparty: string;
+  readonly status: SubmissionStatus;
+  readonly submittedAt: string | null;
+  readonly createdAt: string;
+  readonly recipients: readonly ApiSubmissionRecipient[];
+  readonly latestPackage: ApiSubmissionPackageSummary | null;
+}
+
+export interface ApiSendableDocument {
+  readonly requirementId: string;
+  readonly documentId: string;
+  readonly label: string;
+  readonly documentTypeCode: string;
+  readonly category: string;
+  readonly fileName: string;
+  readonly fileSizeBytes: number;
+  readonly financialYearLabel?: string;
+  readonly version: number;
+  /** Present, with the reason, when this document may not be sent (e.g. too
+   * large for one email). Absent means it may be selected. */
+  readonly blockedBecause?: string;
+}
+
+export interface ApiPlannedEmail {
+  readonly sequence: number;
+  readonly subject: string;
+  readonly body: string;
+  readonly documents: readonly { readonly documentId: string; readonly label: string; readonly fileSizeBytes: number }[];
+  readonly totalBytes: number;
+}
+
+export interface ApiPackagePlan {
+  readonly emails: readonly ApiPlannedEmail[];
+  readonly to: readonly { readonly email: string; readonly name?: string }[];
+  readonly cc: readonly { readonly email: string; readonly name?: string }[];
+  readonly documentCount: number;
+  readonly totalBytes: number;
+  readonly sender: { readonly name: string; readonly address: string };
+}
+
+export interface ApiPreparedPackage {
+  readonly plan: ApiPackagePlan;
+  readonly fingerprint: string;
+}
+
+export interface ApiSendResult {
+  readonly submissionPackageId: string;
+  readonly sentCount: number;
+  readonly failedCount: number;
+  readonly message: string;
+}
+
+export interface ApiPackageEmail {
+  readonly id: string;
+  readonly sequence: number;
+  readonly subject: string;
+  readonly status: "pending" | "sent" | "failed";
+  readonly attachmentCount: number;
+  readonly attemptCount: number;
+  readonly sentAt: string | null;
+  readonly providerMessageId: string | null;
+  readonly failureMessage: string | null;
+}
+
+export interface ApiPackage {
+  readonly id: string;
+  readonly status: "pending" | "sent" | "partially_sent" | "failed";
+  readonly documentCount: number;
+  readonly emailCount: number;
+  readonly initiatedAt: string;
+  readonly completedAt: string | null;
+  readonly emails: readonly ApiPackageEmail[];
+}

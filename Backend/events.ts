@@ -286,3 +286,53 @@ export async function recordDocumentEvent(client: Queryable, event: DocumentEven
     ],
   );
 }
+
+// ---------------------------------------------------------------------------
+// Submissions (Stage 3D)
+// ---------------------------------------------------------------------------
+
+/**
+ * Event types for a submission and the packages sent under it, as the
+ * prototype store names them (`Frontend/src/fake/store.ts`'s `record()`
+ * calls for `submission.created`, `submission.email_sent`/`_failed` and
+ * `submission.documents_sent`/`_partially_sent`).
+ */
+export type SubmissionEventType =
+  | "submission.created"
+  | "submission.email_sent"
+  | "submission.email_failed"
+  | "submission.documents_sent"
+  | "submission.documents_partially_sent";
+
+export interface SubmissionEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  /** Which row this event is about: the submission itself for `created`, one
+   * outgoing email for the two `email_*` events, the package as a whole for
+   * `documents_*`. */
+  readonly entityType: "submission" | "submission_package_email" | "submission_package";
+  readonly entityId: string;
+  readonly eventType: SubmissionEventType;
+  /** Ids, statuses and counts only — never a recipient's name or a bank
+   * contact's email, which is personal/business contact data that belongs on
+   * `submission_recipient`, where redaction can reach it, not in a log that
+   * is never redacted (the same discipline `recordCaseEvent` applies to
+   * `hold_reason`). */
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordSubmissionEvent(client: Queryable, event: SubmissionEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, $2, $3, $4, $5, $6, 'ui')`,
+    [
+      event.actorUserId,
+      event.entityType,
+      event.entityId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}

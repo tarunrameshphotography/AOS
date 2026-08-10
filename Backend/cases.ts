@@ -32,6 +32,7 @@ import type { Queryable } from "./db.js";
 import { can, canActOnCase, widestScopeFor, type Actor } from "./authorize.js";
 import { recordCaseEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
+import { outstandingRequirementCount } from "./requirements.js";
 
 const COLUMNS = `c.id, c.case_number, c.loan_product_id, c.requested_amount, c.stage,
                  c.owner_user_id, c.created_by, c.source, c.referral_source_id,
@@ -88,28 +89,29 @@ export function caseFromRow(row: Record<string, unknown>) {
 /**
  * The facts the transition machine judges against, from a case row.
  *
- * THE COUNTS ARE ZERO AND THAT IS SAFE, NOT A FUDGE. Stage 3B has not migrated
- * requirements or submissions, so the server genuinely does not know how many
- * of either a case has. Every transition whose guard reads those counts —
- * documents_pending → ready_for_submission, → submitted, → sanctioned,
- * → disbursed — is declared `actor: "system"` in the transition table, and
- * `evaluateTransition` checks the actor BEFORE running the guard. A request
- * from this API is always `actor: "user"`, so it is refused on the actor check
- * and the zeros are never consulted.
+ * `outstandingRequirementCount` IS REAL, as of Stage 3C — `Backend/requirements.ts`
+ * regenerates the case's requirements from the rule engine and counts what is
+ * not yet verified, waived or not_applicable. The guard on
+ * `documents_pending → ready_for_submission` (and its reverse) now runs
+ * against genuine data, since `evaluateTransition` is never bypassed:
+ * whatever this function reports is exactly what the domain layer judges.
+ *
+ * `liveSubmissionCount`, `hasSanctionedSubmissionWithOffer` and
+ * `hasDisbursedSubmission` remain zero/false — submissions are still out of
+ * scope (Stage 3C did not migrate them). Every transition whose guard reads
+ * those — → submitted, → sanctioned, → disbursed — is declared
+ * `actor: "system"`, and `evaluateTransition` checks the actor BEFORE running
+ * the guard, so a request from this API is refused on the actor check and the
+ * zeros are never consulted. Nothing beyond `ready_for_submission` is assumed
+ * satisfied.
  *
  * The one guarded USER transition, disbursed → closed, reads `isInvoiceRaised`
  * — a column on `loan_case`, which the server does know and passes honestly.
- *
- * So the effect is: the ordinary telecalling path (new → contacted →
- * appointment_fixed → documents_pending) works, loss and reopen work, and the
- * document-driven advances correctly refuse with "that is a system
- * transition" until the stage that owns them lands. Nothing is assumed
- * satisfied.
  */
-function snapshotOf(row: Record<string, unknown>): CaseSnapshot {
+async function snapshotOf(client: Queryable, row: Record<string, unknown>): Promise<CaseSnapshot> {
   return {
     stage: row.stage as CaseStage,
-    outstandingRequirementCount: 0,
+    outstandingRequirementCount: await outstandingRequirementCount(client, row.id as string),
     liveSubmissionCount: 0,
     hasSanctionedSubmissionWithOffer: false,
     hasDisbursedSubmission: false,
@@ -396,7 +398,7 @@ export async function moveStage(
     throw new ApiError(409, "This case is on hold. Release the hold before moving it on.");
   }
 
-  const verdict = evaluateTransition(snapshotOf(current), { to, actor: "user" });
+  const verdict = evaluateTransition(await snapshotOf(client, current), { to, actor: "user" });
   if (!verdict.allowed) throw new ApiError(409, verdict.reason);
 
   await client.query(`update loan_case set stage = $1 where id = $2`, [to, id]);
@@ -490,7 +492,7 @@ export async function markLost(
   // not this module's — `evaluateLoss` already knows that loss is reachable
   // from every non-terminal stage including `sanctioned`, and says why when
   // it is not.
-  const verdict = evaluateTransition(snapshotOf(current), {
+  const verdict = evaluateTransition(await snapshotOf(client, current), {
     to: "lost",
     actor: "user",
     lostReason: reason,
@@ -526,7 +528,7 @@ export async function reopen(client: Queryable, actor: Actor, id: string) {
   // Where a reopened case lands is the domain's decision — the stage it was
   // lost from, and a refusal if that is unknown.
   const restoreTo = (current.stage_before_lost as CaseStage | null) ?? "new";
-  const verdict = evaluateTransition(snapshotOf(current), { to: restoreTo, actor: "user" });
+  const verdict = evaluateTransition(await snapshotOf(client, current), { to: restoreTo, actor: "user" });
   if (!verdict.allowed) throw new ApiError(409, verdict.reason);
 
   await client.query(

@@ -202,3 +202,87 @@ export async function recordCaseEvent(client: Queryable, event: CaseEvent): Prom
     ],
   );
 }
+
+/**
+ * A case moving because of what the requirement/submission facts now say,
+ * not because an employee clicked a stage — `documents_pending` to
+ * `ready_for_submission` once nothing is outstanding, and the reverse
+ * (ADR-019). `actor_user_id` is null, which `event_actor_is_named` only
+ * permits for `actor_kind = 'system'` — the schema itself refuses a system
+ * event that names a person.
+ *
+ * `causedByEntityType` / `causedByEntityId` cite the requirement or document
+ * whose change triggered the move, so the case timeline can answer "why did
+ * this happen" rather than leaving a stage change that nobody clicked.
+ */
+export async function recordSystemCaseEvent(
+  client: Queryable,
+  event: {
+    readonly caseId: string;
+    readonly eventType: CaseEventType;
+    readonly payloadBefore?: Record<string, unknown> | null;
+    readonly payloadAfter?: Record<string, unknown> | null;
+    readonly causedByEntityType?: string;
+    readonly causedByEntityId?: string;
+  },
+): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_before, payload_after, source,
+                        caused_by_entity_type, caused_by_entity_id)
+     values ('system', null, 'case', $1, $1, $2, $3, $4, 'ui', $5, $6)`,
+    [
+      event.caseId,
+      event.eventType,
+      event.payloadBefore == null ? null : JSON.stringify(event.payloadBefore),
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+      event.causedByEntityType ?? null,
+      event.causedByEntityId ?? null,
+    ],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+export type DocumentEventType = "document.uploaded" | "document.verified" | "document.rejected";
+
+export interface DocumentEvent {
+  readonly actorUserId: string;
+  readonly documentId: string;
+  readonly caseId: string;
+  readonly eventType: DocumentEventType;
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+/**
+ * Record one change to a document.
+ *
+ * `case_id` is set so the document's history appears on the case timeline
+ * even though the document itself is owned by a person, property or
+ * organisation, never the case (ADR-007) — a document travels with the
+ * person, but the act of uploading it happened in the context of one case.
+ *
+ * WHAT MAY GO IN THE PAYLOAD: ids, document type, requirement id, version. A
+ * rejection's free-text reason is not personal data about a named human the
+ * way `hold_reason` is — it is a note about a document's quality ("photo is
+ * blurred") — but it stays out of the payload anyway, on the same discipline
+ * this file already applies everywhere else: it lives on
+ * `document_requirement.reason`, which redaction can reach, rather than in a
+ * log that never is.
+ */
+export async function recordDocumentEvent(client: Queryable, event: DocumentEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'document', $2, $3, $4, $5, 'ui')`,
+    [
+      event.actorUserId,
+      event.documentId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}

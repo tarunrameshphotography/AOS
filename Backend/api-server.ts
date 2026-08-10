@@ -76,6 +76,7 @@ import {
   setUserActive,
   setUserRoles,
 } from "./users.js";
+import { listCaseRequirements, uploadDocument, decideDocument, downloadDocument } from "./documents.js";
 
 const PORT = Number(process.env.AOS_API_PORT ?? 4321);
 
@@ -104,6 +105,34 @@ function json(res: ServerResponse, status: number, body: unknown): void {
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+/** Raw bytes for a document upload — never JSON, and capped far higher than
+ * an ordinary form body. Mirrors `storage-server.mjs`'s `readBody`: a
+ * multipart parser buys nothing here, since AOS never sends more than one
+ * file per request and the requirement it belongs to is already in the URL. */
+async function readBinaryBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_UPLOAD_BYTES) throw new HttpError(413, "That file is larger than AOS currently accepts (25 MB).");
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** A route handler that has already written its own response — a document
+ * download, which is bytes, not JSON. `route()` returns this instead of a
+ * value, and the dispatcher below skips the `json()` envelope entirely. */
+class RawResponse {
+  constructor(
+    readonly bytes: Uint8Array,
+    readonly contentType: string,
+    readonly fileName: string,
+  ) {}
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -301,6 +330,7 @@ async function route(
   path: string,
   body: Record<string, unknown>,
   actor: Actor | null,
+  rawBody: Buffer | null,
 ): Promise<unknown> {
   if (method === "GET" && path === "/api/health") {
     await client.query("select 1");
@@ -464,6 +494,41 @@ async function route(
     return await assignOwner(client, requireActor(actor), ownerMatch[1]!, body);
   }
 
+  // ── Requirements and documents ────────────────────────────────────────────
+  //
+  // Stage 3C. `document.upload` and `document.verify` are separate
+  // permissions from `case.update` (Docs/Permission Matrix.md) — a Telecaller
+  // may collect documents on their own case without being able to verify
+  // them, and a Login Executive verifies across every case they can see.
+
+  const requirementsMatch = new RegExp(`^/api/cases/(${UUID})/requirements$`).exec(path);
+  if (requirementsMatch && method === "GET") {
+    return await listCaseRequirements(client, requireActor(actor), requirementsMatch[1]!);
+  }
+
+  const uploadMatch = new RegExp(`^/api/cases/(${UUID})/requirements/(${UUID})/documents$`).exec(path);
+  if (uploadMatch && method === "POST") {
+    if (!rawBody) throw new HttpError(400, "A file is required.");
+    const fileName = decodeURIComponent(req.headers["x-file-name"] as string | undefined ?? "document");
+    const contentType = req.headers["content-type"];
+    return await uploadDocument(client, requireActor(actor), uploadMatch[1]!, uploadMatch[2]!, {
+      bytes: rawBody,
+      fileName,
+      ...(typeof contentType === "string" && contentType.length > 0 ? { contentType } : {}),
+    });
+  }
+
+  const verifyMatch = new RegExp(`^/api/cases/(${UUID})/requirements/(${UUID})/decision$`).exec(path);
+  if (verifyMatch && method === "PUT") {
+    return await decideDocument(client, requireActor(actor), verifyMatch[1]!, verifyMatch[2]!, body);
+  }
+
+  const downloadMatch = new RegExp(`^/api/documents/(${UUID})/download$`).exec(path);
+  if (downloadMatch && method === "GET") {
+    const result = await downloadDocument(client, requireActor(actor), downloadMatch[1]!);
+    return new RawResponse(result.bytes, result.contentType, result.fileName);
+  }
+
   throw new HttpError(404, "No such endpoint.");
 }
 
@@ -480,11 +545,17 @@ export function createApiServer() {
       const method = req.method ?? "GET";
       const path = new URL(req.url ?? "/", "http://localhost").pathname;
 
+      // The one route that carries file bytes instead of form fields — read
+      // as a raw body, never through the JSON parser (which caps a request at
+      // 1MB precisely because it never expects a file).
+      const isUpload = method === "POST" && /^\/api\/cases\/[^/]+\/requirements\/[^/]+\/documents$/.test(path);
+
       try {
         const body =
-          method === "POST" || method === "PATCH" || method === "PUT"
+          !isUpload && (method === "POST" || method === "PATCH" || method === "PUT")
             ? await readJsonBody(req)
             : {};
+        const rawBody = isUpload ? await readBinaryBody(req) : null;
         const token = bearerToken(req);
 
         // Every request runs in one transaction with the actor's identity
@@ -494,10 +565,20 @@ export function createApiServer() {
         const result = await withActor(null, async (client) => {
           const actor = await loadActor(client, token);
           const inner = await withActorIdentity(client, actor, () =>
-            route(client, req, method, path, body, actor),
+            route(client, req, method, path, body, actor, rawBody),
           );
           return inner;
         });
+
+        if (result instanceof RawResponse) {
+          res.writeHead(200, {
+            "Content-Type": result.contentType,
+            "Content-Length": result.bytes.byteLength,
+            "Content-Disposition": `inline; filename="${result.fileName.replace(/"/g, "")}"`,
+          });
+          res.end(result.bytes);
+          return;
+        }
 
         json(res, 200, result);
       } catch (error) {

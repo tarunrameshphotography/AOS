@@ -23,6 +23,13 @@ export default defineConfig({
       // api-server.ts listens on import when started as a process; the tests
       // want to bind their own ephemeral port instead.
       AOS_API_NO_LISTEN: "1",
+      // A dedicated port, never the office storage backend's 4319 — a suite
+      // that could accidentally write real document bytes to the office disk
+      // is exactly the class of mistake `AOS_REQUIRE_DB_NAME` (db.ts) exists
+      // to prevent for Postgres. Backend/documents.test.ts spawns its own
+      // storage-server instance on this port, rooted in a throwaway temp
+      // directory.
+      AOS_STORAGE_SERVER_URL: "http://127.0.0.1:4329",
     },
     // One database, shared state. Parallel files would race on the case-number
     // sequence and on each other's fixtures.

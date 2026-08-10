@@ -260,9 +260,12 @@ describe("the stage machine is enforced by the server", () => {
     await move(session, loanCase.id, "contacted");
     await move(session, loanCase.id, "documents_pending");
 
-    // Requirements have not been migrated, so the server cannot know whether
-    // this file is ready. It does not guess: the move is declared a system
-    // transition and a person asking for it is refused by name.
+    // `documents_pending` → `ready_for_submission` is a system transition
+    // (ADR-019): it happens automatically once requirements are settled, not
+    // by a person choosing it from the stage picker. A direct request is
+    // refused on the actor check before the (now real, Stage 3C) requirement
+    // count is even consulted — see Backend/documents.test.ts for the
+    // automatic advance itself.
     const attempt = await move(session, loanCase.id, "ready_for_submission");
     expect(attempt.status).toBe(409);
     expect(attempt.body.message).toContain("system transition");

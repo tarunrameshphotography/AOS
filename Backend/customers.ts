@@ -23,6 +23,7 @@
 
 import type { Queryable } from "./db.js";
 import type { Actor } from "./authorize.js";
+import { recordCustomerEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
 import { can } from "./authorize.js";
 
@@ -218,9 +219,33 @@ export async function createCustomer(
     );
   }
 
+  // Field NAMES, not values — every column on `person` is personal data. See
+  // the payload rules in events.ts. No duplicate-event guard is needed on a
+  // create: a retried request creates a second person and correctly gets a
+  // second event, because there genuinely are two records.
+  await recordCustomerEvent(client, {
+    actorUserId: actor.userId,
+    personId,
+    eventType: "person.created",
+    payloadAfter: {
+      fields: columns.filter((column) => column !== "created_by"),
+      identifierTypes: phone.length > 0 ? ["phone"] : [],
+    },
+  });
+
   return await getCustomer(client, actor, personId);
 }
 
+/**
+ * Edit a customer's own fields.
+ *
+ * ONLY GENUINELY CHANGED FIELDS ARE WRITTEN, and an edit that changes nothing
+ * writes no event. This is not a micro-optimisation: the screen submits the
+ * whole form, so "Save" pressed twice, or a request the browser retried after
+ * a dropped connection, would otherwise append a second `person.updated`
+ * saying somebody edited a record they did not edit. An audit log that records
+ * non-events is one people stop believing.
+ */
 export async function updateCustomer(
   client: Queryable,
   actor: Actor,
@@ -229,23 +254,58 @@ export async function updateCustomer(
 ) {
   requirePermission(actor, "person.update");
 
+  const submitted = Object.entries(WRITABLE).filter(([field]) => body[field] !== undefined);
+  if (submitted.length === 0) throw new ApiError(400, "Nothing to update.");
+
+  const { rows: existing } = await client.query(
+    `select ${Object.values(WRITABLE).join(", ")} from person where id = $1`,
+    [id],
+  );
+  if (!existing[0]) throw new ApiError(404, "No such customer.");
+
   const sets: string[] = [];
   const values: unknown[] = [];
-  for (const [field, column] of Object.entries(WRITABLE)) {
-    if (body[field] !== undefined) {
-      values.push(body[field] === "" ? null : body[field]);
-      sets.push(`${column} = $${values.length}`);
-    }
+  const changedFields: string[] = [];
+  for (const [field, column] of submitted) {
+    const wanted = body[field] === "" ? null : body[field];
+    if (sameValue(existing[0][column], wanted)) continue;
+    values.push(wanted);
+    sets.push(`${column} = $${values.length}`);
+    changedFields.push(field);
   }
-  if (sets.length === 0) throw new ApiError(400, "Nothing to update.");
+
+  if (sets.length === 0) return await getCustomer(client, actor, id);
 
   values.push(id);
-  const { rows } = await client.query(
-    `update person set ${sets.join(", ")} where id = $${values.length} returning id`,
+  await client.query(
+    `update person set ${sets.join(", ")} where id = $${values.length}`,
     values,
   );
-  if (!rows[0]) throw new ApiError(404, "No such customer.");
+
+  await recordCustomerEvent(client, {
+    actorUserId: actor.userId,
+    personId: id,
+    eventType: "person.updated",
+    payloadAfter: { changedFields },
+  });
+
   return await getCustomer(client, actor, id);
+}
+
+/**
+ * Whether a stored column and a submitted value are the same fact.
+ *
+ * Compared as text because the driver hands back a `Date` for `date_of_birth`
+ * while the form submits `"1985-03-14"`, and `===` on those is false forever —
+ * which would make every save look like a change and every re-save append an
+ * event. `null` and `undefined` are one case: both mean "not set".
+ */
+function sameValue(stored: unknown, submitted: unknown): boolean {
+  if (stored == null && submitted == null) return true;
+  if (stored == null || submitted == null) return false;
+  const asText = (value: unknown): string =>
+    value instanceof Date ? value.toISOString().slice(0, 10) : String(value);
+  return asText(stored) === asText(submitted);
 }
 
 /**
@@ -318,12 +378,20 @@ export async function setCustomerIdentifiers(
   const keyOf = (type: string, normalised: string): string => `${type} ${normalised}`;
   const wantedKeys = new Set(wanted.map((entry) => keyOf(entry.type, entry.normalised)));
 
+  // IDs and types, never values — a phone number copied into the log is
+  // unerasable personal data (ADR-018), and the id is enough to find the row
+  // it describes.
+  const expired: { id: string; type: string }[] = [];
+  const added: { type: string }[] = [];
+  const amended: { id: string; type: string }[] = [];
+
   for (const row of current) {
     if (!wantedKeys.has(keyOf(row.identifier_type, row.value_normalised))) {
       await client.query(
         `update person_identifier set valid_to = current_date where id = $1`,
         [row.id],
       );
+      expired.push({ id: row.id, type: row.identifier_type });
     }
   }
 
@@ -342,6 +410,7 @@ export async function setCustomerIdentifiers(
           `update person_identifier set is_primary = $1, verification_source = $2 where id = $3`,
           [entry.isPrimary, entry.verificationSource, existing.id],
         );
+        amended.push({ id: existing.id, type: entry.type });
       }
       continue;
     }
@@ -360,6 +429,20 @@ export async function setCustomerIdentifiers(
         actor.userId,
       ],
     );
+    added.push({ type: entry.type });
+  }
+
+  // Re-submitting the same contacts unchanged is a no-op, so it appends
+  // nothing. The screen sends the whole list every time and the browser may
+  // retry it; an event per submission would turn "who changed this number"
+  // into a list of people who opened the dialog.
+  if (expired.length > 0 || added.length > 0 || amended.length > 0) {
+    await recordCustomerEvent(client, {
+      actorUserId: actor.userId,
+      personId: id,
+      eventType: "person.identifier_updated",
+      payloadAfter: { added, expired, amended },
+    });
   }
 
   return await getCustomer(client, actor, id);

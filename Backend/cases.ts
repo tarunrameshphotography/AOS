@@ -30,6 +30,7 @@ import { evaluateTransition, type CaseSnapshot } from "@domain/case/transitions.
 
 import type { Queryable } from "./db.js";
 import { can, canActOnCase, widestScopeFor, type Actor } from "./authorize.js";
+import { recordCaseEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
 
 const COLUMNS = `c.id, c.case_number, c.loan_product_id, c.requested_amount, c.stage,
@@ -271,6 +272,21 @@ export async function createCase(client: Queryable, actor: Actor, body: Record<s
     [caseId, applicantId, actor.userId],
   );
 
+  // IDs and case facts only. The applicant is referenced, never named.
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    eventType: "case.created",
+    payloadAfter: {
+      stage: "new",
+      loanProductId,
+      requestedAmount: body.requestedAmount ?? null,
+      referralSourceId,
+      ownerUserId: actor.userId,
+      applicantId,
+    },
+  });
+
   return await readCase(client, actor, caseId);
 }
 
@@ -295,21 +311,58 @@ export async function updateCase(
   id: string,
   body: Record<string, unknown>,
 ) {
-  await loadForWrite(client, actor, id, "case.update");
+  const current = await loadForWrite(client, actor, id, "case.update");
 
+  const submitted = Object.entries(WRITABLE).filter(([field]) => body[field] !== undefined);
+  if (submitted.length === 0) throw new ApiError(400, "Nothing to update.");
+
+  // Only genuinely changed fields are written, and an edit that changes
+  // nothing appends nothing. The case screen submits the whole form on Save,
+  // so without this a double-click — or a request the browser retried after a
+  // dropped connection — would record a second edit nobody made.
   const sets: string[] = [];
   const values: unknown[] = [];
-  for (const [field, column] of Object.entries(WRITABLE)) {
-    if (body[field] !== undefined) {
-      values.push(body[field] === "" ? null : body[field]);
-      sets.push(`${column} = $${values.length}`);
-    }
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  for (const [field, column] of submitted) {
+    const wanted = body[field] === "" ? null : body[field];
+    if (sameValue(current[column], wanted)) continue;
+    values.push(wanted);
+    sets.push(`${column} = $${values.length}`);
+    before[field] = current[column] ?? null;
+    after[field] = wanted ?? null;
   }
-  if (sets.length === 0) throw new ApiError(400, "Nothing to update.");
+
+  if (sets.length === 0) return await readCase(client, actor, id);
 
   values.push(id);
   await client.query(`update loan_case set ${sets.join(", ")} where id = $${values.length}`, values);
+
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: "case.facts_updated",
+    payloadBefore: before,
+    payloadAfter: after,
+  });
+
   return await readCase(client, actor, id);
+}
+
+/**
+ * Whether a stored column and a submitted value are the same fact.
+ *
+ * Text comparison, because `requested_amount` is `numeric` and the driver
+ * returns it as the string `"3500000.00"` while the form submits the number
+ * `3500000`. `===` on those is false forever, which would make every save look
+ * like a change. `null` and `undefined` are one case: both mean "not set".
+ */
+function sameValue(stored: unknown, submitted: unknown): boolean {
+  if (stored == null && submitted == null) return true;
+  if (stored == null || submitted == null) return false;
+  const numeric = Number(stored);
+  if (!Number.isNaN(numeric) && typeof submitted === "number") return numeric === submitted;
+  return String(stored) === String(submitted);
 }
 
 /**
@@ -347,6 +400,15 @@ export async function moveStage(
   if (!verdict.allowed) throw new ApiError(409, verdict.reason);
 
   await client.query(`update loan_case set stage = $1 where id = $2`, [to, id]);
+
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: "case.stage_changed",
+    payloadBefore: { stage: current.stage },
+    payloadAfter: { stage: to },
+  });
+
   return await readCase(client, actor, id);
 }
 
@@ -358,7 +420,7 @@ export async function setHold(
   id: string,
   body: Record<string, unknown>,
 ) {
-  await loadForWrite(client, actor, id, "case.hold");
+  const current = await loadForWrite(client, actor, id, "case.hold");
 
   if (typeof body.isOnHold !== "boolean") {
     throw new ApiError(400, "isOnHold must be true or false.");
@@ -369,17 +431,37 @@ export async function setHold(
     throw new ApiError(400, "A hold needs a reason.");
   }
 
+  const holdUntil =
+    body.isOnHold && typeof body.holdUntil === "string" && body.holdUntil.length > 0
+      ? body.holdUntil
+      : null;
+
+  // Releasing a case that is not on hold changes nothing, and neither does
+  // re-placing an identical hold. Both are things a retried request does.
+  const unchanged =
+    current.is_on_hold === body.isOnHold &&
+    (body.isOnHold
+      ? current.hold_reason === reason && sameValue(current.hold_until, holdUntil)
+      : true);
+  if (unchanged) return await readCase(client, actor, id);
+
   await client.query(
     `update loan_case set is_on_hold = $1, hold_reason = $2, hold_until = $3 where id = $4`,
-    [
-      body.isOnHold,
-      body.isOnHold ? reason : null,
-      body.isOnHold && typeof body.holdUntil === "string" && body.holdUntil.length > 0
-        ? body.holdUntil
-        : null,
-      id,
-    ],
+    [body.isOnHold, body.isOnHold ? reason : null, holdUntil, id],
   );
+
+  // `holdReason` is free text and stays out of the payload — see the payload
+  // rules on `recordCaseEvent`. Whether there is a hold, and until when, are
+  // facts about the case; what an employee typed about the customer's brother
+  // is not.
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: body.isOnHold ? "case.held" : "case.hold_lifted",
+    payloadBefore: { isOnHold: current.is_on_hold },
+    payloadAfter: { isOnHold: body.isOnHold, holdUntil },
+  });
+
   return await readCase(client, actor, id);
 }
 
@@ -422,6 +504,17 @@ export async function markLost(
       where id = $4`,
     [current.stage, reason, typeof body.lostNote === "string" ? body.lostNote.trim() : null, id],
   );
+
+  // The reason CODE travels; `lostNote` does not. The code is a closed list
+  // the business counts by; the note is free text about a named human.
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: "case.marked_lost",
+    payloadBefore: { stage: current.stage },
+    payloadAfter: { stage: "lost", lostReason: reason },
+  });
+
   return await readCase(client, actor, id);
 }
 
@@ -443,6 +536,15 @@ export async function reopen(client: Queryable, actor: Actor, id: string) {
       where id = $1`,
     [id],
   );
+
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: "case.reopened",
+    payloadBefore: { stage: "lost", stageBeforeLost: current.stage_before_lost ?? null },
+    payloadAfter: { stage: restoreTo },
+  });
+
   return await readCase(client, actor, id);
 }
 
@@ -454,7 +556,7 @@ export async function assignOwner(
   id: string,
   body: Record<string, unknown>,
 ) {
-  await loadForWrite(client, actor, id, "case.assign");
+  const current = await loadForWrite(client, actor, id, "case.assign");
 
   const ownerUserId = typeof body.ownerUserId === "string" ? body.ownerUserId : "";
   const { rows } = await client.query(
@@ -464,6 +566,19 @@ export async function assignOwner(
   // Assigning a case to a deactivated account is how a case becomes nobody's.
   if (!rows[0]) throw new ApiError(400, "No such active employee.");
 
+  // Reassigning to the current owner is a no-op, and a retried request must
+  // not read as a second handover.
+  if (current.owner_user_id === ownerUserId) return await readCase(client, actor, id);
+
   await client.query(`update loan_case set owner_user_id = $1 where id = $2`, [ownerUserId, id]);
+
+  await recordCaseEvent(client, {
+    actorUserId: actor.userId,
+    caseId: id,
+    eventType: "case.assigned",
+    payloadBefore: { ownerUserId: current.owner_user_id },
+    payloadAfter: { ownerUserId },
+  });
+
   return await readCase(client, actor, id);
 }

@@ -2,8 +2,9 @@
  * Playwright bootstrap — a database of its own, and the accounts to sign in with.
  *
  * WHY A SEPARATE DATABASE: the browser suite creates customers and cases for
- * real now. Pointed at `aos` it would fill the office database with test
- * records; pointed at `aos_test` it would race the vitest integration suite,
+ * real, and as of Stage 3C-0 it also creates employees, assigns roles, resets
+ * passwords and deactivates accounts. Pointed at `aos` it would administer the
+ * office; pointed at `aos_test` it would race the vitest integration suite,
  * which truncates and reseeds. `aos_e2e` belongs to this suite alone.
  *
  * WHY IT SEEDS ITS OWN USERS: authentication is server-side as of Stage 3B, so
@@ -22,24 +23,13 @@ import pg from "pg";
 
 import { loadDotEnv } from "../../Backend/env.mjs";
 import { hashPassword } from "../../src/domain/auth/password.js";
-import type { Role } from "../../src/domain/permissions/index.js";
+import { E2E_DB, E2E_PASSWORD, E2E_USERS, assertNotOfficeDatabase } from "./e2e-environment.js";
 
 // Playwright's config process does not inherit the app's environment, so the
 // connection details have to be read the same way the backend reads them.
 loadDotEnv();
 
-export const E2E_DB = "aos_e2e";
-export const E2E_PASSWORD = "e2e-test-password";
-
-/** The accounts the specs sign in as. One Telecaller is not enough: proving
- * that a colleague's case is invisible needs a second one. */
-export const E2E_USERS: readonly { username: string; fullName: string; roles: Role[] }[] = [
-  { username: "e2e.telecaller", fullName: "E2E Telecaller", roles: ["telecaller"] },
-  { username: "e2e.telecaller2", fullName: "E2E Second Telecaller", roles: ["telecaller"] },
-  { username: "e2e.loginexec", fullName: "E2E Login Executive", roles: ["login_executive"] },
-  { username: "e2e.manager", fullName: "E2E Manager", roles: ["manager"] },
-  { username: "e2e.partner", fullName: "E2E Managing Partner", roles: ["managing_partner"] },
-];
+export { E2E_DB, E2E_PASSWORD, E2E_USERS };
 
 function connection(database: string): pg.Client {
   return new pg.Client({
@@ -52,6 +42,10 @@ function connection(database: string): pg.Client {
 }
 
 export default async function globalSetup(): Promise<void> {
+  // Before anything is created, migrated or inserted. Everything below this
+  // line writes, and the office database must never be what it writes to.
+  assertNotOfficeDatabase(E2E_DB);
+
   const admin = connection("postgres");
   await admin.connect();
   try {
@@ -80,12 +74,37 @@ export default async function globalSetup(): Promise<void> {
   try {
     const passwordHash = await hashPassword(E2E_PASSWORD);
     for (const user of E2E_USERS) {
-      // Idempotent: a re-run reuses the accounts rather than colliding on the
-      // username unique index.
-      const existing = await db.query(`select id from app_user where username = $1`, [
-        user.username,
-      ]);
-      if (existing.rows[0]) continue;
+      // Idempotent, and self-repairing: a previous run may have deactivated an
+      // account or changed its password on purpose (the User Management specs
+      // do both). Left as they were, the next run would fail at sign-in with
+      // an error that says nothing about why.
+      const existing = await db.query<{ id: string }>(
+        `select id from app_user where username = $1`,
+        [user.username],
+      );
+      if (existing.rows[0]) {
+        await db.query(
+          `update app_user set is_active = true, password_hash = $1 where id = $2`,
+          [passwordHash, existing.rows[0].id],
+        );
+        for (const role of user.roles) {
+          await db.query(
+            `insert into user_role (user_id, role, granted_by)
+             select $1, $2, $1
+              where not exists (select 1 from user_role
+                                 where user_id = $1 and role = $2 and revoked_at is null)`,
+            [existing.rows[0].id, role],
+          );
+        }
+        // A run that granted or denied an override to one of these accounts
+        // must not change what the next run's assertions mean.
+        await db.query(
+          `update user_permission_override set revoked_at = now(), revoked_by = user_id
+            where user_id = $1 and revoked_at is null`,
+          [existing.rows[0].id],
+        );
+        continue;
+      }
 
       const person = await db.query<{ id: string }>(
         `insert into person (full_name) values ($1) returning id`,
@@ -103,6 +122,13 @@ export default async function globalSetup(): Promise<void> {
         ]);
       }
     }
+
+    // The accounts the User Management specs create are NOT cleaned up here.
+    // They are given a run-unique username by the spec and deactivated by it
+    // when it is finished with them, which is the only cleanup the product
+    // supports: there is no delete, deliberately (BR-062, and the note at the
+    // top of Backend/users.ts). Deleting them behind the API's back would test
+    // a path the office will never take.
   } finally {
     await db.end();
   }

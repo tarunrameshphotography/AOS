@@ -18,10 +18,37 @@ import { loadDotEnv } from "./env.mjs";
 
 loadDotEnv();
 
+const DATABASE = process.env.AOS_DB_NAME ?? "aos";
+
+/**
+ * A backend process may be told which database it is REQUIRED to be talking to,
+ * and refuses to start against any other one.
+ *
+ * WHAT THIS PREVENTS (Stage 3C-0). The Playwright suite creates customers,
+ * opens cases, deactivates users and resets passwords. It is supposed to do
+ * all of that against `aos_e2e`. Before this guard, the only thing standing
+ * between it and the OFFICE database was a `AOS_DB_NAME` set on a server
+ * process that Playwright might or might not have started itself — and with
+ * `reuseExistingServer` it frequently did not. An office dev server left
+ * running on the same port was silently adopted, complete with its connection
+ * to `aos`, and the suite happily administered real employee accounts.
+ *
+ * A misconfiguration must fail at startup, loudly, rather than succeed against
+ * the wrong data. Nothing in the office environment sets this variable, so
+ * ordinary development is unaffected.
+ */
+const required = process.env.AOS_REQUIRE_DB_NAME;
+if (required !== undefined && required !== DATABASE) {
+  throw new Error(
+    `Refusing to start: AOS_REQUIRE_DB_NAME is "${required}" but this process would ` +
+      `connect to "${DATABASE}". Something is pointing a test at the wrong database.`,
+  );
+}
+
 export const pool = new pg.Pool({
   host: process.env.AOS_DB_HOST ?? "127.0.0.1",
   port: Number(process.env.AOS_DB_PORT ?? 5432),
-  database: process.env.AOS_DB_NAME ?? "aos",
+  database: DATABASE,
   user: process.env.AOS_DB_USER ?? "postgres",
   password: process.env.AOS_DB_PASSWORD ?? "",
   // The office runs a handful of PCs against one backend. A small pool keeps

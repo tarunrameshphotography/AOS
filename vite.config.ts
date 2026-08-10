@@ -18,8 +18,15 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
-    open: true,
+    // The Playwright suite runs its own stack on its own ports so it can never
+    // adopt — or be adopted by — the office dev server, which is connected to
+    // the office database (playwright.config.ts, Backend/db.ts).
+    port: Number(process.env.AOS_VITE_PORT ?? 5173),
+    // A busy port must fail rather than silently shift to the next one: Vite's
+    // default would move to 5174 while the test suite kept asking 5173, and
+    // the answers would come from whatever was already there.
+    strictPort: true,
+    open: process.env.AOS_VITE_PORT === undefined,
     fs: {
       // src/domain is outside the Vite root, so it has to be allowed explicitly.
       allow: [fileURLToPath(new URL(".", import.meta.url))],

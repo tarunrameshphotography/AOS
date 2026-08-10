@@ -15,7 +15,7 @@
  */
 
 import type { CaseStage, LostReason } from "@domain/case/stages.js";
-import type { Role, Scope } from "@domain/permissions/index.js";
+import type { EffectivePermissionStatus, Role, Scope } from "@domain/permissions/index.js";
 
 export type IdentifierType = "phone" | "pan" | "email" | "bank_account";
 
@@ -111,6 +111,35 @@ export interface ApiUser {
   readonly roles: readonly Role[];
   readonly lastLoginAt: string | null;
   readonly createdAt: string;
+}
+
+/** One live permission override on a user, from `/api/users/:id/permissions`.
+ * `grantedByName` is a colleague's name, not a customer's — it is who made the
+ * decision, which is the whole point of showing it. */
+export interface ApiPermissionOverride {
+  readonly id: string;
+  readonly permission: string;
+  readonly scope: Scope;
+  readonly decision: "grant" | "deny";
+  readonly grantedBy: string | null;
+  readonly grantedByName: string | null;
+  readonly grantedAt: string;
+}
+
+/**
+ * One user's overrides and the resulting effective access, from
+ * `/api/users/:id/permissions`.
+ *
+ * `effective` is computed SERVER-SIDE and sent whole rather than recomputed in
+ * the browser from roles + overrides. The screen's job is to show what the
+ * server believes, and a second computation of it here is exactly the drift
+ * ADR-022 forbids — it would let the screen show an access level the server
+ * does not agree with, which is worse than showing nothing.
+ */
+export interface ApiUserPermissions {
+  readonly user: ApiUser;
+  readonly overrides: readonly ApiPermissionOverride[];
+  readonly effective: readonly ({ readonly permission: string } & EffectivePermissionStatus)[];
 }
 
 /** The signed-in employee, from `/api/auth/me`. Carries their own live

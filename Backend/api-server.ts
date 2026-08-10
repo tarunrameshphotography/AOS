@@ -28,9 +28,9 @@
  *     holds only the storage path. Untouched by this milestone.
  *   - Everything outside the slice: requirements, verification, submissions.
  *     Stage 2 is a proof, not the migration. The event log was on this list
- *     too and has come off it for administrative actions only (see
- *     `Backend/events.ts`); case and customer writes still append nothing, and
- *     that debt is carried into 3B rather than half-paid here.
+ *     too: administrative actions came off it in 3A, and customer and case
+ *     writes came off it in Stage 3C-0 (`Backend/events.ts`). Every mutation
+ *     this API accepts now appends to `event` in its own transaction.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";

@@ -68,6 +68,68 @@ export interface ApiCase {
   readonly applicantId: string | null;
   readonly applicantName: string | null;
   readonly applicantPhone: string | null;
+  /**
+   * Present on `/api/cases` (the All Cases list) only, from Stage 3C —
+   * `Backend/requirements.ts`'s `caseListProgress`, computed from real
+   * `document_requirement` rows. Absent on a single case fetched by id: the
+   * case-detail screen reads the fuller `ApiCaseRequirements` from
+   * `/api/cases/:id/requirements` instead, which also carries per-requirement
+   * detail this summary does not.
+   */
+  readonly progress?: { readonly percentComplete: number; readonly applicableCount: number };
+}
+
+export type RequirementStatus = "pending" | "received" | "verified" | "rejected" | "waived" | "not_applicable";
+
+export interface ApiRequirementDocument {
+  readonly id: string;
+  readonly fileName: string | null;
+  readonly fileSizeBytes: number | null;
+  readonly version: number;
+  readonly uploadedAt: string;
+  readonly uploadedByUserId: string | null;
+  readonly verifiedAt: string | null;
+  readonly verifiedByUserId: string | null;
+}
+
+export interface ApiRequirement {
+  readonly id: string;
+  /** `document_type.code` — resolve the customer-facing name, description and
+   * category through `DOCUMENT_CATALOGUE` (`@domain/requirements`), which is
+   * the one place those words live (Docs/Document Requirement Engine.md). */
+  readonly documentTypeCode: string;
+  readonly applicableFromStage: string;
+  readonly applicability: "mandatory" | "optional" | "not_applicable";
+  readonly status: RequirementStatus;
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
+  readonly requiredOfCasePartyId: string | null;
+  readonly generatedByRuleCode: string | null;
+  /** A rejection's reason, in the login desk's own words. */
+  readonly reason: string | null;
+  readonly document: ApiRequirementDocument | null;
+}
+
+/** From `@domain/requirements`'s `summariseProgress` — computed server-side
+ * from real `document_requirement` rows, never recomputed in the browser. */
+export interface ApiProgressSummary {
+  readonly applicableCount: number;
+  readonly verifiedCount: number;
+  readonly receivedCount: number;
+  readonly rejectedCount: number;
+  readonly outstandingCount: number;
+  readonly waivedCount: number;
+  readonly notApplicableCount: number;
+  readonly optionalCount: number;
+  readonly upcomingCount: number;
+  readonly percentComplete: number;
+  readonly isReadyForSubmission: boolean;
+}
+
+export interface ApiCaseRequirements {
+  readonly caseStage: CaseStage;
+  readonly requirements: readonly ApiRequirement[];
+  readonly progress: ApiProgressSummary;
 }
 
 /** A case as returned by `/api/customers/:id/cases` — the same shape plus the

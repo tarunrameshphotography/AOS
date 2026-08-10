@@ -342,15 +342,28 @@ function WorkspaceTabs(): ReactNode {
  * role(s), with a logout action. There is no other-user list here any more
  * (Employee Authentication milestone): the normal way to become someone else
  * is for that person to sign in themselves, not to pick their name from a
- * menu. "Reset prototype data" stays — it wipes the fake store back to its
- * seed, which is a dev/QA convenience unrelated to identity.
+ * menu. "Reset local admin data" stays — it wipes the still-local
+ * Products/Lenders/Document Rules/Master Data screens back to their seed, a
+ * dev/QA convenience unrelated to identity and, since Stage 3C, worded to
+ * say plainly that it does not touch anything on the server.
  */
 function IdentityMenu(): ReactNode {
   const session = useSession();
   const [open, setOpen] = useState(false);
+  const container = useRef<HTMLDivElement>(null);
+
+  // Mirrors GlobalSearch's own close-on-outside-click, above — its absence
+  // here was the bug: nothing closed this menu except its own two actions.
+  useEffect(() => {
+    const onClick = (event: MouseEvent): void => {
+      if (!container.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
 
   return (
-    <div className="relative shrink-0">
+    <div ref={container} className="relative shrink-0">
       <button
         onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-ink-50"
@@ -386,14 +399,20 @@ function IdentityMenu(): ReactNode {
           </button>
           <button
             onClick={() => {
-              if (confirm("Reset the prototype to its seed data? Anything you created is lost.")) {
+              if (
+                confirm(
+                  "Reset Products, Lenders, Document Rules and Master Data to their seed values? " +
+                    "This only affects those screens, in this browser — it does not touch real " +
+                    "cases, customers or users, which live on the server.",
+                )
+              ) {
                 resetDatabase();
                 setOpen(false);
               }
             }}
             className="w-full rounded px-2 py-1.5 text-left text-sm text-red-700 hover:bg-red-50"
           >
-            Reset prototype data
+            Reset local admin data
           </button>
         </div>
       )}
@@ -406,10 +425,12 @@ function PrototypeFooter(): ReactNode {
     <footer className="border-t border-ink-200 bg-white">
       <div className="mx-auto w-full max-w-7xl px-4 py-3">
         <p className="text-xs text-ink-500">
-          <strong className="font-medium text-ink-700">Prototype.</strong> Data is fake and lives in
-          your browser. The business rules are not fake — stages, transitions, progress and
-          permissions all run the real domain layer from <code>src/domain/</code>. If something is
-          refused here, it will be refused in production for the same reason.
+          Cases, customers, users, documents and requirements are saved on the office server —
+          shared by every PC, and safe across a refresh. Products, Lenders, Document Rules and
+          Master Data are still local to this browser, pending their own migration. Stages,
+          transitions, progress and permissions all run the real domain layer from{" "}
+          <code>src/domain/</code>; if something is refused here, it is refused for the same
+          reason in every other screen.
         </p>
       </div>
     </footer>

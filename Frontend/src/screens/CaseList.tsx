@@ -12,10 +12,11 @@
  * server already decided this person may have. Those are conveniences, not
  * boundaries.
  *
- * Document progress has left the table. It was `progressFor(caseId)` out of
- * the prototype store, and requirements have not migrated — a column computed
- * from data that no longer describes these cases would be a confident lie.
- * It returns with the requirements slice.
+ * Document progress is back (Stage 3C), from `GET /api/cases`'s `progress`
+ * field — `Backend/requirements.ts`'s `caseListProgress`, computed from real
+ * `document_requirement` rows, not the prototype's local store. A case whose
+ * requirements have not been generated yet (never opened past Documents
+ * Pending) correctly shows "Not started" rather than a wrong number.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -28,7 +29,7 @@ import { useApiQuery } from "../api/hooks.js";
 import type { ApiCase } from "../api/types.js";
 import { lakhs, when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, Select, StageBadge, cx } from "../ui/index.js";
+import { Badge, Button, Card, Empty, ProgressBar, Select, StageBadge, cx } from "../ui/index.js";
 
 export function CaseList(): ReactNode {
   const session = useSession();
@@ -116,7 +117,7 @@ export function CaseList(): ReactNode {
           </Empty>
         ) : (
           <div className="-m-4 overflow-x-auto">
-            <table className="w-full min-w-3xl text-sm">
+            <table className="w-full min-w-4xl text-sm">
               <thead>
                 <tr className="border-b border-ink-100 text-left text-xs text-ink-500">
                   <th className="px-4 py-2 font-medium">Case</th>
@@ -124,6 +125,7 @@ export function CaseList(): ReactNode {
                   <th className="px-4 py-2 font-medium">Product</th>
                   <th className="px-4 py-2 text-right font-medium">Amount</th>
                   <th className="px-4 py-2 font-medium">Stage</th>
+                  <th className="px-4 py-2 font-medium">Documents</th>
                   <th className="px-4 py-2 font-medium">Owner</th>
                   <th className="px-4 py-2 font-medium">Opened</th>
                 </tr>
@@ -170,6 +172,16 @@ export function CaseList(): ReactNode {
                         stage={loanCase.stage}
                         label={CASE_STAGE_LABELS[loanCase.stage]}
                       />
+                    </td>
+                    <td className="w-40 px-4 py-2">
+                      {loanCase.progress ? (
+                        <ProgressBar
+                          percent={loanCase.progress.percentComplete}
+                          applicable={loanCase.progress.applicableCount}
+                        />
+                      ) : (
+                        <span className="text-xs text-ink-400">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-ink-500">
                       {users.ownerName(loanCase.ownerUserId)}

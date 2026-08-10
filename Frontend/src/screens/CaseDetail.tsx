@@ -37,7 +37,7 @@
  * refusals coming from where they are actually enforced.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
@@ -48,12 +48,21 @@ import {
   type CaseStage,
   type LostReason,
 } from "@domain/case/stages.js";
+import {
+  DOCUMENT_CATALOGUE,
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_HINTS,
+  DOCUMENT_CATEGORY_LABELS,
+  documentRowLabel,
+  financialYearOf,
+  type DocumentCategory,
+} from "@domain/requirements/index.js";
 
-import { api } from "../api/client.js";
+import { api, apiDownload, apiUpload } from "../api/client.js";
 import { useReference, useUsers } from "../api/catalogue.js";
 import { useApiQuery, useMutation } from "../api/hooks.js";
-import type { ApiCase } from "../api/types.js";
-import { exactly, lakhs, money, when } from "../lib.js";
+import type { ApiCase, ApiCaseRequirements, ApiRequirement } from "../api/types.js";
+import { bytes, exactly, lakhs, money, when } from "../lib.js";
 import { useSession } from "../session.js";
 import {
   CASE_TABS,
@@ -71,6 +80,7 @@ import {
   Input,
   Modal,
   PermissionCode,
+  ProgressBar,
   Select,
   StageBadge,
   Textarea,
@@ -140,11 +150,9 @@ export function CaseDetail(): ReactNode {
         </div>
       </div>
 
-      {tab === "overview" ? (
-        <Overview loanCase={loanCase} onChanged={query.refetch} />
-      ) : (
-        <NotYetMigrated tab={tab} />
-      )}
+      {tab === "overview" && <Overview loanCase={loanCase} onChanged={query.refetch} />}
+      {tab === "documents" && <DocumentsTab loanCase={loanCase} onCaseChanged={query.refetch} />}
+      {(tab === "banks" || tab === "timeline") && <NotYetMigrated tab={tab} />}
     </div>
   );
 }
@@ -781,28 +789,364 @@ function Fact({
 }
 
 // ---------------------------------------------------------------------------
+// Documents — Stage 3C. Real, PostgreSQL-backed requirements, uploads and
+// verification, replacing what used to say "Not yet migrated" here.
+// ---------------------------------------------------------------------------
+
+const REQUIREMENT_STATUS_LABELS: Record<ApiRequirement["status"], string> = {
+  pending: "Not received",
+  received: "Awaiting verification",
+  verified: "Verified",
+  rejected: "Rejected",
+  waived: "Waived",
+  not_applicable: "Not applicable",
+};
+
+function statusTone(status: ApiRequirement["status"]): "info" | "warn" | "good" | "bad" {
+  if (status === "verified") return "good";
+  if (status === "rejected") return "bad";
+  if (status === "received") return "info";
+  return "warn";
+}
+
+function periodLabelFor(requirement: ApiRequirement): string | undefined {
+  if (!requirement.periodStart) return undefined;
+  return financialYearOf(new Date(requirement.periodStart)).label;
+}
+
+function DocumentsTab({
+  loanCase,
+  onCaseChanged,
+}: {
+  loanCase: ApiCase;
+  onCaseChanged: () => void;
+}): ReactNode {
+  const query = useApiQuery<ApiCaseRequirements>(`/cases/${loanCase.id}/requirements`);
+  const session = useSession();
+
+  if (query.loading) return <Empty>Loading requirements…</Empty>;
+  if (query.error || !query.data) {
+    return (
+      <Card title="Documents">
+        <p className="text-sm text-ink-700">
+          {query.error?.message ?? "Could not load this case's requirements."}
+        </p>
+        {query.error?.isRefusal && <PermissionCode code="document.read" />}
+      </Card>
+    );
+  }
+
+  const { requirements, progress } = query.data;
+  const mayUpload = session.canActOnCase(loanCase.ownerUserId, "document.upload");
+  const mayVerify = session.canActOnCase(loanCase.ownerUserId, "document.verify");
+
+  const refetchAll = (): void => {
+    query.refetch();
+    // A verification or an upload can move the case's stage on its own
+    // (ADR-019) — the header above the tabs must show that without a manual
+    // page reload.
+    onCaseChanged();
+  };
+
+  if (requirements.length === 0) {
+    return (
+      <Card title="Documents">
+        <Empty>
+          {loanCase.stage === "new" || loanCase.stage === "contacted" || loanCase.stage === "appointment_fixed"
+            ? "Nothing is due yet at this stage. Requirements appear once the case reaches Documents Pending."
+            : "This case does not require any documents."}
+        </Empty>
+      </Card>
+    );
+  }
+
+  const byCategory = new Map<DocumentCategory, ApiRequirement[]>();
+  for (const requirement of requirements) {
+    const definition = DOCUMENT_CATALOGUE.find((type) => type.code === requirement.documentTypeCode);
+    const category = definition?.category ?? "additional";
+    const list = byCategory.get(category) ?? [];
+    list.push(requirement);
+    byCategory.set(category, list);
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card title="Progress">
+        <div className="space-y-2">
+          <ProgressBar percent={progress.percentComplete} applicable={progress.applicableCount} />
+          <p className="text-xs text-ink-500">
+            {progress.verifiedCount} verified · {progress.outstandingCount} outstanding
+            {progress.rejectedCount > 0 && ` (${progress.rejectedCount} rejected)`}
+            {progress.optionalCount > 0 && ` · ${progress.optionalCount} optional`}
+            {progress.upcomingCount > 0 && ` · ${progress.upcomingCount} not due yet`}
+          </p>
+          {progress.isReadyForSubmission && loanCase.stage === "documents_pending" && (
+            <p className="text-xs text-ink-500">
+              Everything required is verified — this case moves to Ready for Submission on its
+              own.
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {DOCUMENT_CATEGORIES.filter((category) => byCategory.has(category)).map((category) => (
+        <Card key={category} title={DOCUMENT_CATEGORY_LABELS[category]} subtitle={DOCUMENT_CATEGORY_HINTS[category]}>
+          <div className="divide-y divide-ink-100">
+            {byCategory.get(category)!.map((requirement) => (
+              <RequirementRow
+                key={requirement.id}
+                caseId={loanCase.id}
+                requirement={requirement}
+                mayUpload={mayUpload}
+                mayVerify={mayVerify}
+                onChanged={refetchAll}
+              />
+            ))}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function RequirementRow({
+  caseId,
+  requirement,
+  mayUpload,
+  mayVerify,
+  onChanged,
+}: {
+  caseId: string;
+  requirement: ApiRequirement;
+  mayUpload: boolean;
+  mayVerify: boolean;
+  onChanged: () => void;
+}): ReactNode {
+  const definition = DOCUMENT_CATALOGUE.find((type) => type.code === requirement.documentTypeCode);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const upload = useMutation();
+  const decision = useMutation();
+  const toast = useToast();
+  const [rejectOpen, setRejectOpen] = useState(false);
+
+  const label = documentRowLabel(
+    definition?.name ?? requirement.documentTypeCode,
+    periodLabelFor(requirement),
+    definition?.periodKind,
+  );
+
+  const canReupload = requirement.status === "pending" || requirement.status === "rejected";
+
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 py-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink-900">
+          {label}
+          {requirement.applicability === "optional" && (
+            <span className="ml-2 text-xs font-normal text-ink-400">Optional</span>
+          )}
+        </p>
+        {definition?.description && (
+          <p className="mt-0.5 text-xs text-ink-500">{definition.description}</p>
+        )}
+        {requirement.status === "rejected" && requirement.reason && (
+          <p className="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-900">
+            {requirement.reason}
+          </p>
+        )}
+        {requirement.document && (
+          <p className="mt-1 text-xs text-ink-500">
+            {requirement.document.fileName ?? "File"}
+            {requirement.document.fileSizeBytes !== null && ` · ${bytes(requirement.document.fileSizeBytes)}`}
+            {" · uploaded "}
+            {when(requirement.document.uploadedAt)}
+            {requirement.document.verifiedAt && ` · verified ${when(requirement.document.verifiedAt)}`}
+          </p>
+        )}
+        {(upload.error || decision.error) && (
+          <p className="mt-1 text-xs text-red-700" role="alert">
+            {upload.error ?? decision.error}
+          </p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2">
+        <Badge tone={statusTone(requirement.status)}>{REQUIREMENT_STATUS_LABELS[requirement.status]}</Badge>
+
+        {requirement.document && (
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              try {
+                const { blob, fileName } = await apiDownload(
+                  `/documents/${requirement.document!.id}/download`,
+                );
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
+                anchor.href = url;
+                anchor.download = fileName;
+                anchor.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                toast.show("Could not download this document.");
+              }
+            }}
+          >
+            View
+          </Button>
+        )}
+
+        {mayUpload && canReupload && (
+          <>
+            <input
+              ref={fileInput}
+              type="file"
+              className="hidden"
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                const result = await upload.run(() =>
+                  apiUpload<ApiRequirement>(
+                    `/cases/${caseId}/requirements/${requirement.id}/documents`,
+                    file,
+                  ),
+                );
+                if (result) {
+                  toast.show(`${label} uploaded.`);
+                  onChanged();
+                }
+              }}
+            />
+            <Button
+              disabled={upload.pending}
+              onClick={() => fileInput.current?.click()}
+            >
+              {requirement.status === "rejected" ? "Reupload" : "Upload"}
+            </Button>
+          </>
+        )}
+
+        {mayVerify && requirement.status === "received" && (
+          <>
+            <Button
+              variant="primary"
+              disabled={decision.pending}
+              onClick={async () => {
+                const result = await decision.run(() =>
+                  api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/decision`, {
+                    method: "PUT",
+                    body: { decision: "verified" },
+                  }),
+                );
+                if (result) {
+                  toast.show(`${label} verified.`);
+                  onChanged();
+                }
+              }}
+            >
+              Verify
+            </Button>
+            <Button variant="ghost" disabled={decision.pending} onClick={() => setRejectOpen(true)}>
+              Reject
+            </Button>
+          </>
+        )}
+      </div>
+
+      {rejectOpen && (
+        <RejectModal
+          label={label}
+          onClose={() => setRejectOpen(false)}
+          onSubmit={async (reason) => {
+            const result = await decision.run(() =>
+              api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/decision`, {
+                method: "PUT",
+                body: { decision: "rejected", reason },
+              }),
+            );
+            if (result) {
+              toast.show(`${label} rejected.`);
+              setRejectOpen(false);
+              onChanged();
+            }
+          }}
+          pending={decision.pending}
+          error={decision.error}
+        />
+      )}
+    </div>
+  );
+}
+
+function RejectModal({
+  label,
+  onClose,
+  onSubmit,
+  pending,
+  error,
+}: {
+  label: string;
+  onClose: () => void;
+  onSubmit: (reason: string) => void;
+  pending: boolean;
+  error: string | null;
+}): ReactNode {
+  const [reason, setReason] = useState("");
+
+  return (
+    <Modal open title={`Reject ${label}`} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Why" hint="Shown to whoever collects this document next — be specific.">
+          <Textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={2}
+            placeholder="Photo is blurred — please reupload"
+          />
+        </Field>
+        {error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={pending || reason.trim().length === 0}
+            onClick={() => onSubmit(reason.trim())}
+          >
+            Reject
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The tabs that have not moved yet
 // ---------------------------------------------------------------------------
 
 /** What each un-migrated tab is waiting for, in the words of the thing it
  * needs. Vague placeholders ("coming soon") teach nobody anything; naming the
- * dependency tells a reader when to expect it back. */
-const WAITING_ON: Record<Exclude<CaseTab, "overview">, { what: string; why: string }> = {
-  documents: {
-    what: "Document collection and verification",
-    why: "Documents, the requirement engine and verification move to the server together — a requirement list is meaningless without the documents that satisfy it.",
-  },
+ * dependency tells a reader when to expect it back. Documents moved in
+ * Stage 3C — see `DocumentsTab` below — and left this list. */
+const WAITING_ON: Record<"banks" | "timeline", { what: string; why: string }> = {
   banks: {
     what: "Bank submissions and offers",
-    why: "Submissions depend on verified documents, so they follow the Documents slice rather than leading it.",
+    why: "Submissions depend on verified documents, which now exist (Stage 3C) — this is the next slice, not a re-statement of the same gap.",
   },
   timeline: {
     what: "The case timeline",
-    why: "The event log records what every other slice does. It is written for administrative actions already; case and customer events join it when their writes move.",
+    why: "The event log records what every other slice does. It is written for administrative actions, case, customer and document events already; the reading screen is what has not moved.",
   },
 };
 
-function NotYetMigrated({ tab }: { tab: Exclude<CaseTab, "overview"> }): ReactNode {
+function NotYetMigrated({ tab }: { tab: "banks" | "timeline" }): ReactNode {
   const waiting = WAITING_ON[tab];
 
   return (

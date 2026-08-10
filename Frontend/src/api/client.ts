@@ -130,3 +130,77 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
   return payload as T;
 }
+
+/**
+ * Upload a document's bytes — the one request this file sends that is not
+ * JSON. Raw body, never multipart: AOS never sends more than one file at a
+ * time, and the requirement it belongs to is already in the URL. Mirrors the
+ * server's own reading of the request (`Backend/api-server.ts`'s
+ * `readBinaryBody`).
+ */
+export async function apiUpload<T>(path: string, file: File): Promise<T> {
+  const token = storedToken();
+  const headers: Record<string, string> = {
+    "X-File-Name": encodeURIComponent(file.name),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (file.type) headers["Content-Type"] = file.type;
+
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, { method: "POST", headers, body: file });
+  } catch {
+    throw new ApiError(0, "Cannot reach the AOS server. Check that it is running.");
+  }
+
+  if (response.status === 401) {
+    storeToken(null);
+    for (const listener of unauthorizedListeners) listener();
+  }
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const message =
+      payload && typeof payload === "object" && typeof (payload as any).message === "string"
+        ? (payload as any).message
+        : "The document could not be uploaded. Please try again.";
+    throw new ApiError(response.status, message);
+  }
+
+  return (await response.json()) as T;
+}
+
+/** Fetch a document's bytes for download/preview, with the same auth and
+ * error handling as `api()` — just not JSON in or out. */
+export async function apiDownload(
+  path: string,
+): Promise<{ blob: Blob; fileName: string }> {
+  const token = storedToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, { headers });
+  } catch {
+    throw new ApiError(0, "Cannot reach the AOS server. Check that it is running.");
+  }
+
+  if (response.status === 401) {
+    storeToken(null);
+    for (const listener of unauthorizedListeners) listener();
+  }
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const message =
+      payload && typeof payload === "object" && typeof (payload as any).message === "string"
+        ? (payload as any).message
+        : "The document could not be downloaded.";
+    throw new ApiError(response.status, message);
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="([^"]*)"/.exec(disposition);
+  return { blob: await response.blob(), fileName: match?.[1] ?? "document" };
+}

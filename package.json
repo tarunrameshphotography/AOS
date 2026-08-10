@@ -25,7 +25,9 @@
     "storage-server": "node Backend/storage-server.mjs",
     "mail-server": "node Backend/mail-server.mjs",
     "backup": "node Backend/backup.mjs",
+    "backup:verify": "node Backend/backup-verify.mjs",
     "restore": "node Backend/restore.mjs",
+    "restore-drill": "vite-node --config vite.server.config.ts Backend/restore-drill.ts",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"

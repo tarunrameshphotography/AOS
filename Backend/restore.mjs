@@ -14,6 +14,17 @@
  *   - The target database must not already exist unless --drop-existing is
  *     given, so a restore can never silently merge into or replace a live
  *     database by mistake.
+ *   - The target storage root must be empty, or --overwrite-storage must be
+ *     given. Restoring on top of a populated document tree silently mixes two
+ *     generations of files, and the mixture is undetectable afterwards.
+ *
+ * IT VERIFIES BEFORE IT WRITES, AND AGAIN AFTER (Stage 4). Restoring from a
+ * corrupt backup is worse than not restoring: it consumes the outage window
+ * and can leave a half-applied database that looks like a recovery. The
+ * pre-flight check is the same one `backup.mjs` runs
+ * (`Backend/backup-verify.mjs`), and the post-restore check re-hashes what
+ * actually landed on disk, because "pg_restore exited 0" says nothing about
+ * the document bytes.
  *
  * Usage — a restore drill, into an isolated database and folder:
  *   node Backend/restore.mjs --backup C:\AOS\Backups\<run> --db aos_restore_drill --storage-root C:\AOS\RestoreDrill --create-db
@@ -24,12 +35,13 @@
  *   node Backend/restore.mjs --backup <run> --db aos --storage-root C:\AOS\Data --create-db
  */
 
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loadDotEnv } from "./env.mjs";
 import { connectionConfig } from "./migrate.mjs";
+import { requirePgBinDir, run } from "./pg-tools.mjs";
+import { hashFile, printReport, verifyBackup } from "./backup-verify.mjs";
 
 loadDotEnv();
 
@@ -49,24 +61,6 @@ function parseArgs(argv) {
   return args;
 }
 
-function resolvePgBinDir() {
-  if (process.env.AOS_PG_BIN_DIR?.trim()) return process.env.AOS_PG_BIN_DIR.trim();
-  const candidate = "C:\\Program Files\\PostgreSQL\\17\\bin";
-  if (existsSync(path.join(candidate, "pg_dump.exe"))) return candidate;
-  return null;
-}
-
-function run(command, args, env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "inherit", "inherit"] });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited with code ${code}`));
-    });
-  });
-}
-
 function fail(message) {
   console.error(`\n  ${message}\n`);
   process.exit(1);
@@ -79,6 +73,8 @@ async function main() {
   const targetStorageRoot = args["storage-root"];
   const createDb = Boolean(args["create-db"]);
   const dropExisting = Boolean(args["drop-existing"]);
+  const overwriteStorage = Boolean(args["overwrite-storage"]);
+  const skipVerify = Boolean(args["no-verify"]);
 
   if (!backupDir) fail("Missing --backup <folder>.");
   if (!targetDb) fail("Missing --db <target database name>.");
@@ -96,18 +92,52 @@ async function main() {
     );
   }
 
-  const binDir = resolvePgBinDir();
-  if (!binDir) fail("Could not find pg_restore. Set AOS_PG_BIN_DIR to the PostgreSQL 'bin' folder.");
+  // The document tree gets the same protection the database has. Without this,
+  // a drill pointed at C:\AOS\Data by a slip of the finger merges the backup's
+  // files into the live store, and versioned paths mean the mixture is
+  // indistinguishable from a legitimate history afterwards.
+  const targetDocuments = path.join(targetStorageRoot, "Documents");
+  if (existsSync(targetDocuments) && !overwriteStorage) {
+    const existing = await readdir(targetDocuments);
+    if (existing.length > 0) {
+      fail(
+        `"${targetDocuments}" already contains ${existing.length} entr${existing.length === 1 ? "y" : "ies"}.\n` +
+          `  Restoring into a populated document store mixes two generations of files.\n` +
+          `  Pick an empty --storage-root, or pass --overwrite-storage if that is genuinely what you want.`,
+      );
+    }
+  }
+
+  const binDir = requirePgBinDir("pg_restore");
   const psql = path.join(binDir, "psql.exe");
   const pgRestore = path.join(binDir, "pg_restore.exe");
   const pgEnv = { ...process.env, PGPASSWORD: config.password };
 
-  console.log(`AOS restore — from ${backupDir}\n  into database "${targetDb}" on ${config.host}:${config.port}\n`);
-
   const manifest = JSON.parse(await readFile(path.join(backupDir, "manifest.json"), "utf8"));
-  console.log(`  Backup taken ${manifest.takenAt} of "${manifest.database}"\n`);
+  console.log(
+    `AOS restore — from ${backupDir}\n` +
+      `  into database "${targetDb}" on ${config.host}:${config.port}\n` +
+      `  documents into "${targetDocuments}"\n\n` +
+      `  Backup taken ${manifest.takenAt} of "${manifest.database}"\n`,
+  );
 
-  console.log(`  [1/3] Preparing database "${targetDb}"`);
+  // ── 0. Do not spend an outage restoring a corrupt backup ─────────────────
+  if (skipVerify) {
+    console.log(`  [0/4] Pre-flight verification SKIPPED (--no-verify).`);
+  } else {
+    console.log(`  [0/4] Verifying the backup before touching anything`);
+    const report = await verifyBackup(backupDir, { pgBinDir: binDir });
+    printReport(report);
+    if (!report.ok) {
+      fail(
+        "This backup did not verify. NOTHING has been restored.\n" +
+          "  Try an earlier run, or re-run with --no-verify if you have decided to\n" +
+          "  attempt a partial recovery from a damaged backup anyway.",
+      );
+    }
+  }
+
+  console.log(`\n  [1/4] Preparing database "${targetDb}"`);
   if (dropExisting) {
     await run(psql, ["-h", config.host, "-p", String(config.port), "-U", config.user, "-d", "postgres", "-c", `drop database if exists "${targetDb}"`], pgEnv);
   }
@@ -115,7 +145,7 @@ async function main() {
     await run(psql, ["-h", config.host, "-p", String(config.port), "-U", config.user, "-d", "postgres", "-c", `create database "${targetDb}"`], pgEnv);
   }
 
-  console.log(`  [2/3] Restoring aos.dump -> "${targetDb}"`);
+  console.log(`  [2/4] Restoring aos.dump -> "${targetDb}"`);
   await run(
     pgRestore,
     ["-h", config.host, "-p", String(config.port), "-U", config.user, "-d", targetDb, "--no-owner", "--role", config.user, path.join(backupDir, "aos.dump")],
@@ -123,15 +153,50 @@ async function main() {
   );
 
   const sourceDocuments = path.join(backupDir, "Data", "Documents");
-  const targetDocuments = path.join(targetStorageRoot, "Documents");
-  console.log(`  [3/3] Restoring document bytes -> "${targetDocuments}"`);
+  console.log(`  [3/4] Restoring document bytes -> "${targetDocuments}"`);
   await mkdir(targetStorageRoot, { recursive: true });
   if (existsSync(sourceDocuments)) {
-    await cp(sourceDocuments, targetDocuments, { recursive: true });
-    const count = (await readdir(sourceDocuments, { recursive: true })).length;
-    console.log(`        copied ${count} entries`);
+    await cp(sourceDocuments, targetDocuments, { recursive: true, force: true });
+    console.log(`        copied ${manifest.documents?.fileCount ?? "?"} file(s)`);
   } else {
     console.log("        (backup had no documents on disk — nothing to copy)");
+  }
+
+  // ── 4. What actually landed, re-hashed on the restored disk ──────────────
+  //
+  // `pg_restore` exiting 0 says the database arrived. It says nothing about
+  // the file copy, which is the half a disaster recovery is most likely to get
+  // wrong (a network drive that dropped, a disk that filled). This re-reads
+  // every restored file rather than trusting the copy.
+  console.log(`  [4/4] Verifying what was restored`);
+  const expected = manifest.documents?.files ?? [];
+  let missing = 0;
+  let mismatched = 0;
+  for (const entry of expected) {
+    const full = path.join(targetDocuments, ...entry.path.split("/"));
+    if (!existsSync(full)) {
+      missing += 1;
+      if (missing <= 5) console.log(`        ! missing after restore: ${entry.path}`);
+      continue;
+    }
+    const info = await stat(full);
+    if (info.size !== entry.sizeBytes || (await hashFile(full)) !== entry.sha256) {
+      mismatched += 1;
+      if (mismatched <= 5) console.log(`        ! checksum mismatch after restore: ${entry.path}`);
+    }
+  }
+
+  if (expected.length === 0) {
+    console.log(`        no documents in this backup — nothing to check`);
+  } else if (missing === 0 && mismatched === 0) {
+    console.log(`        all ${expected.length} restored document(s) match the backup byte for byte`);
+  } else {
+    console.error(
+      `\n  RESTORE INCOMPLETE: ${missing} missing, ${mismatched} corrupted document file(s).\n` +
+        `  The database was restored; the document store was NOT fully restored.\n`,
+    );
+    process.exitCode = 1;
+    return;
   }
 
   console.log(`\nDone. "${targetDb}" and "${targetStorageRoot}" now hold the ${manifest.takenAt} backup.\n`);

@@ -49,7 +49,7 @@ const EMPLOYEES: readonly { username: string; fullName: string; roles: Role[] }[
   { username: "tarun", fullName: "Tarun Ramesh", roles: ["manager"] },
   { username: "sasirekha", fullName: "C Sasi Rekha", roles: ["managing_partner"] },
   { username: "ismail", fullName: "Mohammed Ismail", roles: ["managing_partner"] },
-  { username: "keerthivasan", fullName: "V Keerthivasan", roles: ["managing_partner"] },
+  { username: "keerthivhasan", fullName: "V Keerthivhasan", roles: ["managing_partner"] },
 ];
 
 /**

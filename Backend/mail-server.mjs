@@ -48,6 +48,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
+import { listenOrExplain } from "./listen.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -533,8 +535,27 @@ const server = createServer((req, res) => {
   json(res, 404, { message: "Not found." });
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`AOS mail backend listening on http://127.0.0.1:${PORT}`);
+/**
+ * LOOPBACK, ALWAYS — the same rule `storage-server.mjs` states, for the same
+ * reason and one worse consequence.
+ *
+ * This process holds the Gmail refresh token for the Amaze Loans mailbox and
+ * has no authentication: anything that can reach `/send` can send email AS
+ * Amaze Loans, to anyone, including the banks. The API server is the only
+ * caller, and it checks `submission.create` first.
+ */
+const requestedMailHost = process.env.AOS_MAIL_HOST?.trim();
+if (requestedMailHost && requestedMailHost !== "127.0.0.1" && requestedMailHost !== "localhost") {
+  console.error(
+    `\n  Refusing to start: AOS_MAIL_HOST is "${requestedMailHost}".\n` +
+      `  The mail backend can send as the Amaze Loans mailbox and has no\n` +
+      `  authentication. It must never listen beyond loopback.\n`,
+  );
+  process.exit(1);
+}
+
+listenOrExplain(server, PORT, "127.0.0.1", "mail backend", () => {
+  console.log(`AOS mail backend listening on http://127.0.0.1:${PORT} (loopback only)`);
   if (PROVIDER === "capture") {
     console.log("");
     console.log("  *** MAIL PROVIDER: capture — NOTHING WILL BE SENT ***");

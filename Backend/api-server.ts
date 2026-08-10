@@ -42,7 +42,7 @@ import type { Role } from "@domain/permissions/index.js";
 
 import { pool, withActor } from "./db.js";
 import { can, canActOnCase, refusal, widestScopeFor, type Actor } from "./authorize.js";
-import { ApiError } from "./http.js";
+import { ApiError, DATABASE_UNAVAILABLE_MESSAGE, isDatabaseUnavailable } from "./http.js";
 import {
   casesForPerson,
   createCase,
@@ -89,6 +89,29 @@ import {
 } from "./submissions.js";
 
 const PORT = Number(process.env.AOS_API_PORT ?? 4321);
+
+/**
+ * Which network interface to accept connections on.
+ *
+ * DEFAULTS TO LOOPBACK, AND THAT DEFAULT IS THE SAFE ONE. A developer's
+ * checkout, a test run and an employee's PC all want 127.0.0.1: nothing
+ * outside the machine should be able to reach an AOS API that is not the
+ * office's.
+ *
+ * THE OFFICE SERVER SETS `AOS_API_HOST=0.0.0.0` (Docs/Installation.md). Until
+ * Stage 4 there was no way to do that at all — this process bound 127.0.0.1
+ * unconditionally, which meant the topology every document described (one
+ * server PC, every other PC pointing a browser at it) was not achievable with
+ * the code as written. Employees could only have used AOS by running the whole
+ * backend on their own machines, which `Docs/Deployment Topology.md` forbids
+ * precisely because it silently creates a second, disconnected document store.
+ *
+ * THE API IS THE ONLY PROCESS THAT MAY LISTEN ON THE LAN. `storage-server.mjs`
+ * and `mail-server.mjs` stay on loopback and refuse to do otherwise: they have
+ * no authentication of their own, so the API — which checks `document.read`
+ * and `submission.create` before a byte moves — is the only safe front door.
+ */
+const HOST = process.env.AOS_API_HOST?.trim() || "127.0.0.1";
 
 /** A workday. Long enough that nobody is re-authenticating mid-case, short
  * enough that a browser left logged in overnight in a shared office does not
@@ -328,6 +351,41 @@ async function describeUser(client: pg.PoolClient, userId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Health probes
+// ---------------------------------------------------------------------------
+
+const STORAGE_URL = (process.env.AOS_STORAGE_SERVER_URL ?? "http://127.0.0.1:4319").replace(/\/$/, "");
+const MAIL_URL = (process.env.AOS_MAIL_SERVER_URL ?? "http://127.0.0.1:4320").replace(/\/$/, "");
+
+/** "up" or "down", with a short timeout. A health check that hangs because
+ * one backend is wedged is worse than one that reports the wedge. */
+async function probe(url: string): Promise<"up" | "down"> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return response.ok ? "up" : "down";
+  } catch {
+    return "down";
+  }
+}
+
+/**
+ * Mail is three states, not two, because "running" and "able to send" are
+ * different questions here and only the second one matters to an employee
+ * about to submit a package. `mail-server.mjs`'s own `/health` already
+ * distinguishes them: an `unconfigured` provider is up and refusing.
+ */
+async function probeMail(): Promise<"up" | "unconfigured" | "down"> {
+  try {
+    const response = await fetch(`${MAIL_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return "down";
+    const body = (await response.json()) as { configured?: boolean };
+    return body.configured === true ? "up" : "unconfigured";
+  } catch {
+    return "down";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -345,6 +403,31 @@ async function route(
   if (method === "GET" && path === "/api/health") {
     await client.query("select 1");
     return { ok: true };
+  }
+
+  /**
+   * The operator's view: is each part of AOS actually working?
+   *
+   * Unauthenticated on purpose — a monitoring check that needs a login is a
+   * monitoring check that stops working the day the password changes, and
+   * `Scripts/aos-status.ps1` runs before anyone has signed in. It therefore
+   * says only whether each component answers, never a version, a path, a
+   * connection string or a count. "Postgres is up" is not information an
+   * attacker on the office LAN gains anything from; the reason it is worth
+   * publishing is that "which of the four processes is down" is the first
+   * question anyone debugging this system asks.
+   *
+   * Reaching the database is already proven by having got this far — every
+   * request runs inside a transaction (`withActor`), so a database that was
+   * down would have failed before routing.
+   */
+  if (method === "GET" && path === "/api/health/detail") {
+    return {
+      ok: true,
+      database: "up",
+      storage: await probe(`${STORAGE_URL}/health`),
+      mail: await probeMail(),
+    };
   }
 
   if (method === "POST" && path === "/api/auth/login") return await login(client, body);
@@ -652,6 +735,18 @@ export function createApiServer() {
           json(res, error.status, { message: error.message });
           return;
         }
+
+        // A stopped or unreachable PostgreSQL is not a bug in AOS, and telling
+        // an employee "something went wrong, please try again" sends them
+        // round a loop that cannot succeed. 503 with an actionable sentence,
+        // and the driver detail stays in the server log where it belongs
+        // (Stage 4 audit, area 6). Still no table names, no connection string.
+        if (isDatabaseUnavailable(error)) {
+          console.error("[api] database unavailable:", error);
+          json(res, 503, { message: DATABASE_UNAVAILABLE_MESSAGE });
+          return;
+        }
+
         // Never return a driver error to the browser: it would carry table and
         // column names straight to anyone probing the API.
         console.error("[api] unhandled:", error);
@@ -678,8 +773,18 @@ async function withActorIdentity<T>(
 
 // Started directly (`npm run api-server`) rather than imported by a test.
 if (process.env.AOS_API_NO_LISTEN !== "1") {
-  createApiServer().listen(PORT, "127.0.0.1", () => {
-    console.log(`AOS API listening on http://127.0.0.1:${PORT}`);
+  createApiServer().listen(PORT, HOST, () => {
+    console.log(`AOS API listening on http://${HOST}:${PORT}`);
+    if (HOST === "127.0.0.1" || HOST === "localhost") {
+      console.log("  Loopback only — no other PC can reach this. Set AOS_API_HOST=0.0.0.0 on the office server.");
+    } else {
+      // Said loudly, because this is the one setting that puts AOS on the
+      // office network. If it is set on a machine that is NOT the designated
+      // server, two backends are now serving two different document stores
+      // and nothing else in the system will notice.
+      console.log(`  *** REACHABLE FROM THE OFFICE NETWORK on port ${PORT} ***`);
+      console.log("  Only the designated AOS server PC should be doing this — see Docs/Deployment Topology.md.");
+    }
   });
 }
 

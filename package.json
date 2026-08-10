@@ -24,6 +24,8 @@
     "migrate:status": "node Backend/migrate.mjs --status",
     "storage-server": "node Backend/storage-server.mjs",
     "mail-server": "node Backend/mail-server.mjs",
+    "web-server": "node Backend/web-server.mjs",
+    "start:production": "node Backend/supervisor.mjs",
     "backup": "node Backend/backup.mjs",
     "backup:verify": "node Backend/backup-verify.mjs",
     "restore": "node Backend/restore.mjs",

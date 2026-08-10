@@ -1,98 +1,150 @@
 # Deployment Topology
 
-Who runs what, on which machine, in the Amaze Loans office. Written because
-nothing else in the repository says this in one place, and three separate
-processes (Postgres, `api-server.ts`, `storage-server.mjs`) silently depend on
-running together on the same PC — see "Why this is one machine" below.
+Who runs what, on which machine, in the Amaze Loans office.
 
 ## The rule
 
-**Exactly one PC in the office is the AOS server.** It is the only machine
-that runs Postgres, `npm run api-server`, and `npm run storage-server` (or the
-bundled `npm run dev`, which starts all of them together). Every other PC in
-the office only opens a browser to that machine's address — it never runs its
-own copy of the backend, and never runs `npm run dev` itself.
+**Exactly one PC in the office is the AOS server.** It runs PostgreSQL and the
+four AOS processes. Every other PC opens a browser to that machine's address
+and runs nothing at all — no Node, no `npm`, no checkout of this repository.
 
 ```
-┌─────────────────────────────┐         ┌──────────────────┐
-│   THE SERVER PC              │         │  Every other PC   │
-│                               │         │                    │
-│   PostgreSQL  (:5432)        │◄────────┤  Browser only,     │
-│   api-server  (:4321)        │  LAN    │  pointed at the    │
-│   storage-server (:4319)     │         │  server's address  │
-│   mail-server (:4320)        │         │                    │
-│   C:\AOS\Data  (documents)   │         │                    │
-│   C:\AOS\Backups             │         │                    │
-└─────────────────────────────┘         └──────────────────┘
+┌──────────────────────────────────────┐         ┌────────────────────┐
+│  THE SERVER PC                       │         │  Every other PC    │
+│                                      │         │                    │
+│  PostgreSQL        127.0.0.1:5432    │         │  A browser,        │
+│  storage-server    127.0.0.1:4319    │   LAN   │  pointed at        │
+│  mail-server       127.0.0.1:4320    │◄────────┤  http://<server    │
+│  api-server        127.0.0.1:4321    │         │   IP>:4300         │
+│  web-server        0.0.0.0:4300  ◄───┼─────────┘                    │
+│                                      │         │  Nothing installed │
+│  C:\AOS\Data      documents          │         │                    │
+│  C:\AOS\Backups   backups            │         └────────────────────┘
+└──────────────────────────────────────┘
 ```
 
-## Why this is one machine, not a choice
+**One port is open to the office: 4300.** Everything else is loopback.
 
-- `AOS_DB_HOST=127.0.0.1` in `.env` — the API only ever talks to Postgres on
-  its own machine.
-- `storage-server.mjs` binds to `127.0.0.1` only (see its file header) — it is
-  not reachable from any other PC on the network. The API server is the only
-  process allowed to read or write document bytes, and it reaches the storage
-  server over loopback, which only works if both run on the same box.
-- Document bytes live at `AOS_STORAGE_ROOT` (default `C:\AOS\Data`) on
-  whichever machine `storage-server.mjs` happens to run on. If a second PC
-  ever ran its own copy — even by accident, via `npm run dev` — its local disk
-  would silently become a second, disconnected document store: uploads made
-  through it would never appear to anyone else, and nothing would warn that
-  this had happened.
+## Why only the web server faces the network
 
-**Employees must not run `npm run dev` (or any of the individual `api-server`
-/ `storage-server` / `mail-server` scripts) on their own PC.** Those commands
-are for the server PC and for development machines working on AOS itself —
-never for a desk that is only meant to be using the finished system.
+Each process below it is reachable only from the machine it runs on, and that
+is the access control:
 
-## What today's configuration says
-
-Read from this checkout's `.env` at the time this was written:
-
-| Setting | Value | Meaning |
+| Process | Binds | Why |
 |---|---|---|
-| `AOS_DB_HOST` | `127.0.0.1` | Postgres is reached over loopback — API and DB are co-located. |
-| `AOS_DB_NAME` | `aos` | The one real database. Never point a second machine's backend at it. |
-| `AOS_API_PORT` | `4321` | Other PCs reach the API at `http://<server-IP>:4321`. |
-| `AOS_STORAGE_PORT` | `4319` | Loopback-only; never reached directly by another PC. |
-| `AOS_STORAGE_ROOT` | `C:\AOS\Data` | Document bytes, on the server PC's own disk. |
-| `AOS_BACKUP_ROOT` | `C:\AOS\Backups` | Backups (see `Backend/backup.mjs`), ideally on a **different** disk than `AOS_STORAGE_ROOT`. |
+| `web-server.mjs` | `AOS_WEB_HOST`, default loopback, **0.0.0.0 on the server** | Serves the built frontend and proxies `/api`. The only front door. |
+| `api-server.ts` | loopback (configurable, but leave it) | Enforces every permission. Reached through the web server's proxy. |
+| `storage-server.mjs` | **loopback, always — refuses otherwise** | No authentication. Anything that reaches it can read or overwrite every customer's documents and relocate the whole store via `PUT /config`. |
+| `mail-server.mjs` | **loopback, always — refuses otherwise** | No authentication, and holds the Gmail refresh token. Anything that reaches it can send email as Amaze Loans, to anyone, including banks. |
+| PostgreSQL | loopback | Only the API talks to it. |
 
-## What is NOT yet filled in — needs an office decision
+The two "refuses otherwise" entries are enforced in code: setting
+`AOS_STORAGE_HOST` or `AOS_MAIL_HOST` to anything but loopback makes that
+process exit with an explanation. If document bytes ever need to leave the
+machine directly, the answer is authentication on that server, not a wider
+bind — and that refusal exists to force the conversation rather than let it
+happen by analogy with the web server's setting.
 
-This machine (the one this audit ran on) is a development checkout, not the
-office server — its hostname and address are not recorded here because
-guessing would put a wrong, confident-looking answer in a document someone
-will trust later. Before go-live, whoever sets up the office PC should record:
+## Why employee PCs must not run the backend
 
-1. **Which physical PC is the server.** Make/model or asset tag, and its
-   location in the office (e.g. "front desk PC" or "the one under Tarun's
-   desk").
-2. **Its LAN IP address**, and whether it is static or DHCP-reserved. A
-   server whose address changes on reboot breaks every other PC's bookmark
-   silently. `ipconfig` on that machine, under the office Wi-Fi/Ethernet
-   adapter, gives the current address — reserve it in the router as static or
-   as a DHCP reservation keyed to that PC's MAC address.
-3. **What URL the other PCs use.** Once the IP is fixed, e.g.
-   `http://192.168.1.50:4321` for the API and the built frontend served from
-   it (or wherever `npm run build && npm run preview` / a static host serves
-   `Frontend/`).
-4. **Where `AOS_BACKUP_ROOT` actually lives.** A folder on the server's C:
-   drive protects against database corruption but not against that PC's disk
-   failing outright. A mapped drive to a second machine, an external drive
-   swapped periodically, or a cloud-synced folder are all better than nothing
-   — pick one and record it here.
-5. **Who has the office database password and the six employees' login
-   slips**, and where those are kept (a locked drawer, not a sticky note on
-   the monitor).
+If a second PC runs `npm run dev` — even once, even by accident — that machine
+gets:
 
-Fill in the table below once those are known; nothing else in this document
-needs to change until the office's physical setup does.
+- its own empty PostgreSQL, so it sees no cases and creates cases nobody else sees;
+- **its own `C:\AOS\Data`**, so documents uploaded through it land on that
+  employee's local disk, are invisible to the rest of the office, are not in
+  any backup, and are lost when that PC is reimaged.
+
+Nothing in the system detects this. The employee's screen looks completely
+normal. This is the single most damaging misconfiguration available, which is
+why the topology is stated as a rule rather than a recommendation.
+
+## What each setting means
+
+| Setting | Server PC | Anywhere else |
+|---|---|---|
+| `AOS_WEB_HOST` | `0.0.0.0` | `127.0.0.1` |
+| `AOS_WEB_PORT` | `4300` | `4300` |
+| `AOS_API_HOST` | `127.0.0.1` | `127.0.0.1` |
+| `AOS_DB_HOST` | `127.0.0.1` | — |
+| `AOS_DB_NAME` | `aos` | never `aos` |
+| `AOS_STORAGE_ROOT` | `C:\AOS\Data` | — |
+| `AOS_BACKUP_ROOT` | a **different disk** from the documents | — |
+| `AOS_MAIL_PROVIDER` | `gmail` | `unconfigured` |
+
+`AOS_MAIL_PROVIDER=capture` is for automated tests only. It reports success
+and sends nothing, so an office install running it would record submissions
+that never left the building. `Scripts/aos-status.ps1` flags it in red.
+
+## Starting, stopping, and surviving a reboot
+
+One process supervises the other four:
+
+```
+npm run start:production          # Backend/supervisor.mjs, foreground
+Scripts/register-aos-services.ps1 # register it to start at boot
+Scripts/aos-status.ps1            # is everything up?
+```
+
+The supervisor:
+
+- **waits up to two minutes for PostgreSQL** before starting the API. On a
+  Windows reboot both start at once and Postgres routinely wins the race by
+  thirty seconds; without the wait, an employee logging in during that window
+  is told AOS is broken.
+- **restarts any process that exits**, backing off 1s → 2s → 4s … → 60s, so a
+  crash-loop leaves a readable log instead of filling the disk.
+- **sweeps its own four ports for orphaned Node processes at startup.** Windows
+  does not tear down a process tree when an ancestor dies, so a force-killed
+  supervisor or a power cut leaves children holding the ports and the next
+  start would otherwise fail with `EADDRINUSE` forever.
+- **refuses to start if another supervisor is already running** (PID file at
+  `Backend/supervisor.pid`). Two supervisors kill each other's children and
+  present as an application that flickers in and out.
+
+PostgreSQL is *not* started by the supervisor — it is its own Windows service
+and already starts automatically.
+
+## What happens when something is unavailable
+
+| Failure | What an employee sees | Where the detail goes |
+|---|---|---|
+| PostgreSQL stopped | `503` "AOS cannot reach its database right now, so nothing was saved… the AOS server PC needs attention." | Driver error in the API log |
+| API process stopped | `503` "AOS is running but its API is not responding. Nothing was saved." | Supervisor log, with restarts |
+| Storage server stopped | Upload fails: "The document could not be stored. Check that the storage backend is running and try again." | API log |
+| Gmail unreachable / not configured | The submission records the email as `failed` with a reason, and **Retry** resends only the failed ones. Nothing is silently marked sent. | `submission_package_email.status` |
+| Whole server PC off | "Cannot reach the AOS server. Check that it is running." | — |
+
+No PostgreSQL error text, table name, column name or connection string ever
+reaches a browser.
+
+## Firewall
+
+On the server PC, allow **inbound TCP 4300** only:
+
+```powershell
+New-NetFirewallRule -DisplayName "AOS web (4300)" -Direction Inbound `
+    -Action Allow -Protocol TCP -LocalPort 4300 -Profile Private
+```
+
+`-Profile Private` matters: the office network must be classified Private, or
+the rule will not apply. Do **not** open 4319, 4320, 4321 or 5432 — nothing
+outside the server PC has any reason to reach them, and three of the four have
+no authentication.
+
+## Still to be recorded by whoever installs the office server
+
+These cannot be guessed from a development checkout, and a wrong confident
+answer in this table is worse than a blank one.
 
 | | |
 |---|---|
-| Server PC (make/asset tag/location) | *(not yet recorded)* |
-| Server LAN IP (static/reserved) | *(not yet recorded)* |
-| Frontend URL for other PCs | *(not yet recorded)* |
+| Server PC (make / asset tag / location) | *(not yet recorded)* |
+| Server LAN IP, static or DHCP-reserved | *(not yet recorded)* |
+| URL employees use | *(not yet recorded — `http://<IP>:4300`)* |
 | Backup destination (physical location) | *(not yet recorded)* |
+| Who holds the database password and the login slips | *(not yet recorded)* |
+
+A server whose IP changes on reboot breaks every bookmark in the office
+silently — reserve it in the router against that PC's MAC address before
+go-live. `Docs/Installation.md` is the step-by-step procedure.

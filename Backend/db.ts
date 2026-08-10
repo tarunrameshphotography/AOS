@@ -91,7 +91,16 @@ export async function withActor<T>(
     await client.query("commit");
     return result;
   } catch (error) {
-    await client.query("rollback");
+    // The rollback must not be able to replace the error that caused it. When
+    // PostgreSQL has gone away mid-request, `rollback` fails too — and the
+    // rollback's failure is the less informative of the two, so letting it
+    // propagate would lose the original cause and, with it, any chance for the
+    // caller to classify what actually happened (`isDatabaseUnavailable`).
+    try {
+      await client.query("rollback");
+    } catch {
+      // Nothing to do: the transaction is already gone with the connection.
+    }
     throw error;
   } finally {
     client.release();

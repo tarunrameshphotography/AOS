@@ -12,10 +12,18 @@
  * This is a startup safety net, not a substitute for clean shutdown: it only
  * ever touches the four ports AOS's own dev stack listens on, and only kills
  * a PID after confirming it's a `node.exe` process — never a blind sweep.
+ *
+ * Stage 4 made `freePorts` exportable, because the office server needs exactly
+ * the same safety net and for exactly the same reason: `Backend/supervisor.mjs`
+ * calls it before starting anything. A Windows PC that lost power, or a
+ * supervisor that was force-killed rather than asked to stop, leaves the same
+ * orphans holding the same ports — and on the office server the symptom is not
+ * a failed `npm run dev`, it is an AOS that never comes back after a reboot.
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,13 +90,30 @@ async function killPid(pid) {
   }
 }
 
-async function freePort(port) {
+async function freePort(port, label) {
   const pids = process.platform === "win32" ? await pidsListeningOnWindows(port) : await pidsListeningOnPosix(port);
   for (const pid of pids) {
     if (!(await isNodeProcess(pid))) continue; // Never touch a non-Node process on our ports.
-    console.log(`[free-dev-ports] Port ${port} held by leftover node.exe (PID ${pid}) — killing it.`);
+    console.log(`[${label}] Port ${port} held by leftover node.exe (PID ${pid}) — killing it.`);
     await killPid(pid);
   }
 }
 
-await Promise.all(AOS_DEV_PORTS.map(freePort));
+/**
+ * Free every port in `ports` that a leftover Node process is holding.
+ *
+ * The netstat table is cached per process, so a caller freeing four ports
+ * shells out once rather than four times — but that also means a long-lived
+ * caller must not reuse this across restarts. Both callers run it exactly once
+ * at startup.
+ */
+export async function freePorts(ports, label = "free-dev-ports") {
+  windowsListenTableCache = null;
+  await Promise.all(ports.map((port) => freePort(port, label)));
+}
+
+// Run as `node Backend/free-dev-ports.mjs` (the `predev` hook); imported by
+// `Backend/supervisor.mjs`, which must not trigger the dev-port sweep.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  await freePorts(AOS_DEV_PORTS);
+}

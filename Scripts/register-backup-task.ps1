@@ -5,8 +5,8 @@
 .DESCRIPTION
     A backup that depends on somebody remembering to type `npm run backup` is not
     a backup strategy. This registers it with the Windows Task Scheduler so it
-    runs unattended, and — because `Backend/backup.mjs` verifies every run before
-    it prunes anything — an unattended run that produces an unreadable dump exits
+    runs unattended, and  -  because `Backend/backup.mjs` verifies every run before
+    it prunes anything  -  an unattended run that produces an unreadable dump exits
     non-zero and leaves the previous backups untouched.
 
     RUN THIS ON THE OFFICE SERVER PC ONLY. It is the machine that has the
@@ -19,7 +19,7 @@
     -RunLevel Highest only if the backup destination requires it.
 
 .PARAMETER Time
-    Local time to run, HH:mm. Default 20:30 — after the office closes, so the
+    Local time to run, HH:mm. Default 20:30  -  after the office closes, so the
     document tree is not being written to mid-copy.
 
 .PARAMETER User
@@ -33,7 +33,7 @@
     Show exactly what would be registered and change nothing. Start here.
 
 .EXAMPLE
-    # See what it would do — always do this first.
+    # See what it would do  -  always do this first.
     .\Scripts\register-backup-task.ps1 -WhatIf
 
 .EXAMPLE
@@ -56,7 +56,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# The repository root is this script's parent — no assumption about where the
+# The repository root is this script's parent  -  no assumption about where the
 # operator's shell happens to be sitting.
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $BackupScript = Join-Path $RepoRoot "Backend\backup.mjs"
@@ -67,7 +67,7 @@ if (-not (Test-Path $BackupScript)) {
 
 $EnvFile = Join-Path $RepoRoot ".env"
 if (-not (Test-Path $EnvFile)) {
-    throw ".env does not exist at $EnvFile. Configure the server first (see Docs/Installation.md) — an unconfigured backup would silently back up the wrong database."
+    throw ".env does not exist at $EnvFile. Configure the server first (see Docs/Installation.md)  -  an unconfigured backup would silently back up the wrong database."
 }
 
 # Read AOS_BACKUP_ROOT out of .env so the log lands beside the backups rather

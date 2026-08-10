@@ -28,6 +28,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
+import { listenOrExplain } from "./listen.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, "storage.config.json");
 const DEFAULT_ROOT = "C:\\AOS\\Data";
@@ -277,7 +279,34 @@ const server = createServer((req, res) => {
 
 await mkdir(documentsRoot(), { recursive: true });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`AOS document storage backend listening on http://127.0.0.1:${PORT}`);
+/**
+ * LOOPBACK, ALWAYS. This is not a configuration choice.
+ *
+ * This server has no authentication of any kind: anyone who can reach it can
+ * read every customer's documents, overwrite them, and relocate the entire
+ * store with `PUT /config`. Loopback binding IS the access control. The API
+ * server (`Backend/api-server.ts`) is the only process that talks to it, and
+ * it checks `document.read` / `document.upload` before a byte moves.
+ *
+ * Stage 4 made the API's bind address configurable so employee PCs could
+ * finally reach AOS. This refusal is the other half of that change: it makes
+ * sure the same reasoning is never applied here by analogy. If document bytes
+ * ever need to leave this machine directly, the answer is authentication on
+ * this server, not a wider bind — and this check should be the thing that
+ * forces that conversation.
+ */
+const requestedHost = process.env.AOS_STORAGE_HOST?.trim();
+if (requestedHost && requestedHost !== "127.0.0.1" && requestedHost !== "localhost") {
+  console.error(
+    `\n  Refusing to start: AOS_STORAGE_HOST is "${requestedHost}".\n` +
+      `  The document storage backend has no authentication and must never listen\n` +
+      `  beyond loopback. Employee PCs reach documents through the API server,\n` +
+      `  which enforces permissions. See Docs/Deployment Topology.md.\n`,
+  );
+  process.exit(1);
+}
+
+listenOrExplain(server, PORT, "127.0.0.1", "document storage backend", () => {
+  console.log(`AOS document storage backend listening on http://127.0.0.1:${PORT} (loopback only)`);
   console.log(`Storage root: ${currentRoot}`);
 });

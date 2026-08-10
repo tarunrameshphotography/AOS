@@ -30,3 +30,4 @@ playwright-report/
 # subdirectory is ignored too.
 Google OAuth Web.txt
 Google Mail Server Details.txt
+Backend/supervisor.pid

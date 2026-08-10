@@ -66,6 +66,7 @@ import {
   Field,
   Input,
   Modal,
+  NotConnectedBanner,
   Select,
   Textarea,
   useToast,
@@ -161,14 +162,13 @@ export function LendingProducts(): ReactNode {
 
   return (
     <div className="space-y-4">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-xl font-semibold tracking-tight">Lending Products</h1>
         <p className="mt-1 text-sm text-ink-500">
-          What Amaze lends against, independent of any bank. A product here is chosen when a case
-          is created — before a bank is picked — which is what lets AOS know from day one which
-          documents the file will need.
+          What Amaze lends against, independent of any bank.
           {!canManage && " This user can view but not edit — hold master_data.manage to change products."}
         </p>
+        <NotConnectedBanner />
       </div>
 
       <Card

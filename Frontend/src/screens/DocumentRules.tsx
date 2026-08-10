@@ -50,6 +50,7 @@ import {
   Field,
   Input,
   Modal,
+  NotConnectedBanner,
   Select,
   Textarea,
   useToast,
@@ -158,9 +159,11 @@ export function DocumentRules(): ReactNode {
 
   return (
     <div className="space-y-6">
+      <NotConnectedBanner />
+
       <Card
         title="Document rules"
-        subtitle={`${active} rules in service. Every document on every case's checklist is generated from one of these — there is no fixed list anywhere in AOS.`}
+        subtitle={`${active} rules in service (in this browser only — see the notice above).`}
       >
         <div className="flex flex-wrap items-center gap-3">
           <input
@@ -180,10 +183,9 @@ export function DocumentRules(): ReactNode {
         </div>
 
         <p className="mt-3 text-xs text-ink-500">
-          Editing a rule does not rewrite every open case. A case picks the change up the next
-          time anything on it changes, or immediately from its own “re-evaluate” action — silently
-          rewriting hundreds of live checklists from an admin screen is how a system loses the
-          trust it needs to be useful.
+          This previews the shape a document-rules screen will have once it reads from the office
+          database. Real case checklists are generated server-side (<code>Backend/requirements.ts</code>)
+          from rules seeded by migration, not from anything edited here.
         </p>
       </Card>
 

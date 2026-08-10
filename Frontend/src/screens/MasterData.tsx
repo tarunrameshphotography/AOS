@@ -71,6 +71,7 @@ import {
   Field,
   Input,
   Modal,
+  NotConnectedBanner,
   Select,
   Textarea,
   cx,
@@ -198,13 +199,13 @@ export function MasterData(): ReactNode {
 
   return (
     <div className="space-y-4">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-xl font-semibold tracking-tight">Master Data</h1>
         <p className="mt-1 text-sm text-ink-500">
-          The operational vocabulary of AOS. Add a value here and it is immediately available
-          everywhere it is used — no deploy, no code change.
+          A preview of AOS's operational vocabulary.
           {!canManage && " This user can view but not edit — hold master_data.manage to change values."}
         </p>
+        <NotConnectedBanner />
       </div>
 
       <div className="flex gap-1 border-b border-ink-200">

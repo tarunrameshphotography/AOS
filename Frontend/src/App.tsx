@@ -103,7 +103,7 @@ function TopBar(): ReactNode {
           >
             All Cases
           </NavLink>
-          {session.can("master_data.read", "all") && (
+          {session.can("master_data.manage", "all") && (
             <NavLink
               to="/admin/lending-products"
               className={({ isActive }) =>
@@ -116,7 +116,7 @@ function TopBar(): ReactNode {
               Products
             </NavLink>
           )}
-          {session.can("master_data.read", "all") && (
+          {session.can("master_data.manage", "all") && (
             <NavLink
               to="/admin/lenders"
               className={({ isActive }) =>
@@ -129,7 +129,7 @@ function TopBar(): ReactNode {
               Lenders
             </NavLink>
           )}
-          {session.can("master_data.read", "all") && (
+          {session.can("master_data.manage", "all") && (
             <NavLink
               to="/admin/document-rules"
               className={({ isActive }) =>
@@ -142,7 +142,7 @@ function TopBar(): ReactNode {
               Document Rules
             </NavLink>
           )}
-          {session.can("master_data.read", "all") && (
+          {session.can("master_data.manage", "all") && (
             <NavLink
               to="/admin/master-data"
               className={({ isActive }) =>
@@ -342,10 +342,11 @@ function WorkspaceTabs(): ReactNode {
  * role(s), with a logout action. There is no other-user list here any more
  * (Employee Authentication milestone): the normal way to become someone else
  * is for that person to sign in themselves, not to pick their name from a
- * menu. "Reset local admin data" stays — it wipes the still-local
+ * menu. "Clear local preview data" stays — it wipes the still-local
  * Products/Lenders/Document Rules/Master Data screens back to their seed, a
- * dev/QA convenience unrelated to identity and, since Stage 3C, worded to
- * say plainly that it does not touch anything on the server.
+ * dev/QA convenience unrelated to identity, gated on master_data.manage
+ * (nobody without a reason to see those screens sees this either), and
+ * worded to say plainly that it does not touch anything on the server.
  */
 function IdentityMenu(): ReactNode {
   const session = useSession();
@@ -397,23 +398,27 @@ function IdentityMenu(): ReactNode {
           >
             Log out
           </button>
-          <button
-            onClick={() => {
-              if (
-                confirm(
-                  "Reset Products, Lenders, Document Rules and Master Data to their seed values? " +
-                    "This only affects those screens, in this browser — it does not touch real " +
-                    "cases, customers or users, which live on the server.",
-                )
-              ) {
-                resetDatabase();
-                setOpen(false);
-              }
-            }}
-            className="w-full rounded px-2 py-1.5 text-left text-sm text-red-700 hover:bg-red-50"
-          >
-            Reset local admin data
-          </button>
+          {session.can("master_data.manage", "all") && (
+            <button
+              onClick={() => {
+                if (
+                  confirm(
+                    "Clear this browser's local copy of Products, Lenders, Document Rules and " +
+                      "Master Data back to their starting values?\n\n" +
+                      "This does NOT reset AOS. It has no effect on real cases, customers, " +
+                      "documents or users — those live on the office server. It only clears the " +
+                      "not-yet-connected preview screens, in this browser only.",
+                  )
+                ) {
+                  resetDatabase();
+                  setOpen(false);
+                }
+              }}
+              className="w-full rounded px-2 py-1.5 text-left text-sm text-red-700 hover:bg-red-50"
+            >
+              Clear local preview data (not AOS data)
+            </button>
+          )}
         </div>
       )}
     </div>

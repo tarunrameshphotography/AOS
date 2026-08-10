@@ -53,6 +53,32 @@ export function Button({
 }
 
 // ---------------------------------------------------------------------------
+// NotConnectedBanner
+// ---------------------------------------------------------------------------
+
+/**
+ * For the handful of admin screens (Products, Lenders, Document Rules,
+ * Master Data) that still read and write `Frontend/src/fake/store.ts` —
+ * per-browser localStorage — rather than the office database. Real cases
+ * pull loan products and document requirements from Postgres
+ * (`Backend/requirements.ts`), which this screen has no path to: an edit
+ * made here is invisible to every other PC and to every real case, forever,
+ * until this screen is migrated. Silence about that is what makes it
+ * dangerous — a manager who edits a document rule here has every reason to
+ * believe it changed something.
+ */
+export function NotConnectedBanner(): ReactNode {
+  return (
+    <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+      <strong className="font-semibold">Not yet connected.</strong> Changes on this screen are
+      saved only in this browser — they do not reach the office database, are not shared with any
+      other PC, and have no effect on real cases or document requirements. Safe to explore; not a
+      way to configure how AOS actually behaves yet.
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Card
 // ---------------------------------------------------------------------------
 

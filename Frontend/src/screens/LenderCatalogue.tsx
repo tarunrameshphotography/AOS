@@ -87,6 +87,7 @@ import {
   Field,
   Input,
   Modal,
+  NotConnectedBanner,
   Select,
   Textarea,
   useToast,
@@ -177,7 +178,7 @@ export function LenderCatalogue(): ReactNode {
 
   return (
     <div className="space-y-4">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-xl font-semibold tracking-tight">Lenders</h1>
         <p className="mt-1 text-sm text-ink-500">
           Every bank, NBFC and housing finance company Amaze works with — their branches, the
@@ -185,6 +186,7 @@ export function LenderCatalogue(): ReactNode {
           with them.
           {!canManage && " This user can view but not edit — hold master_data.manage to make changes."}
         </p>
+        <NotConnectedBanner />
       </div>
 
       <Card

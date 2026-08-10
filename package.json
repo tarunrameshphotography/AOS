@@ -23,6 +23,8 @@
     "migrate:status": "node Backend/migrate.mjs --status",
     "storage-server": "node Backend/storage-server.mjs",
     "mail-server": "node Backend/mail-server.mjs",
+    "backup": "node Backend/backup.mjs",
+    "restore": "node Backend/restore.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck:frontend": "tsc --noEmit -p Frontend/tsconfig.json"

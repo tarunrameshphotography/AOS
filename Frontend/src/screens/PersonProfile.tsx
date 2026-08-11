@@ -352,6 +352,23 @@ const IDENTIFIER_TYPES: readonly IdentifierType[] = ["phone", "pan", "email", "b
  * person who held it at the time. That is why removing a number is safe enough
  * to offer inline.
  */
+/**
+ * `value` on each row is a DISPLAY string — `person.identifiers[].value` is
+ * masked (ADR-026), so an untouched row's `value` is never the real number.
+ * `id` + `edited: false` means "leave this identifier exactly as it is"; the
+ * server resolves it without ever needing the raw value. Typing into a row
+ * flips `edited`, and only then is `value` treated as a real number to save —
+ * see the submit handler below for why an unedited row must never be sent as
+ * a value.
+ */
+interface ContactRow {
+  readonly id?: string;
+  readonly type: IdentifierType;
+  readonly value: string;
+  readonly isPrimary: boolean;
+  readonly edited: boolean;
+}
+
 function EditContactsModal({
   person,
   onClose,
@@ -363,17 +380,17 @@ function EditContactsModal({
 }): ReactNode {
   const mutation = useMutation();
   const toast = useToast();
-  const [rows, setRows] = useState<
-    { type: IdentifierType; value: string; isPrimary: boolean }[]
-  >(() =>
+  const [rows, setRows] = useState<ContactRow[]>(() =>
     person.identifiers.map((i: ApiIdentifier) => ({
+      id: i.id,
       type: i.type,
       value: i.value,
       isPrimary: i.isPrimary,
+      edited: false,
     })),
   );
 
-  const update = (index: number, patch: Partial<(typeof rows)[number]>): void =>
+  const update = (index: number, patch: Partial<ContactRow>): void =>
     setRows((current) =>
       current.map((row, i) => {
         if (i !== index) {
@@ -382,7 +399,10 @@ function EditContactsModal({
             ? { ...row, isPrimary: false }
             : row;
         }
-        return { ...row, ...patch };
+        // Typing a new value replaces this row's identifier outright — the
+        // masked display it started from is never what gets saved.
+        const edited = row.edited || patch.value !== undefined;
+        return { ...row, ...patch, edited };
       }),
     );
 
@@ -432,7 +452,10 @@ function EditContactsModal({
 
         <Button
           onClick={() =>
-            setRows((current) => [...current, { type: "phone", value: "", isPrimary: false }])
+            setRows((current) => [
+              ...current,
+              { type: "phone", value: "", isPrimary: false, edited: true },
+            ])
           }
         >
           Add another
@@ -457,13 +480,23 @@ function EditContactsModal({
             variant="primary"
             disabled={mutation.pending}
             onClick={async () => {
+              // Unedited rows go by `id` alone (ADR-026): `row.value` on those
+              // is the masked display, never the real number, and sending it
+              // back as if it were a fresh value would overwrite the real one
+              // with literal x's. Edited and newly-added rows send a real
+              // value, exactly as before.
               const saved = await mutation.run(() =>
                 api<ApiCustomer>(`/customers/${person.id}/identifiers`, {
                   method: "PUT",
                   body: {
                     identifiers: rows
-                      .filter((row) => row.value.trim().length > 0)
-                      .map((row) => ({ ...row, value: row.value.trim() })),
+                      .filter((row) => row.edited || row.id)
+                      .map((row) =>
+                        row.edited
+                          ? { type: row.type, value: row.value.trim(), isPrimary: row.isPrimary }
+                          : { id: row.id, isPrimary: row.isPrimary },
+                      )
+                      .filter((entry) => "id" in entry || entry.value.length > 0),
                   },
                 }),
               );

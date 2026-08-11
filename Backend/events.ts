@@ -95,8 +95,20 @@ export async function recordUserEvent(client: Queryable, event: UserEvent): Prom
  * "who changed the number we have been calling" are not the same audit
  * question, and the second one is the one that matters when a call went to the
  * wrong person.
+ *
+ * `person.identifier_revealed` and `person.identifier_reveal_denied` have no
+ * prototype precedent — `identifier.view_full` reveal is new in this
+ * migration (ADR-026, Production Readiness Phase 1) — and follow the same
+ * `entity.verb` shape. Written for every attempt, granted or denied, which is
+ * what makes this pair different from the rest of the catalog: nowhere else
+ * in AOS does a denial get its own event.
  */
-export type CustomerEventType = "person.created" | "person.updated" | "person.identifier_updated";
+export type CustomerEventType =
+  | "person.created"
+  | "person.updated"
+  | "person.identifier_updated"
+  | "person.identifier_revealed"
+  | "person.identifier_reveal_denied";
 
 export interface CustomerEvent {
   readonly actorUserId: string;

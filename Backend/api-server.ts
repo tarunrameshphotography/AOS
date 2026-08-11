@@ -59,6 +59,7 @@ import {
   createCustomer,
   getCustomer,
   listCustomers,
+  revealCustomerIdentifier,
   setCustomerIdentifiers,
   updateCustomer,
 } from "./customers.js";
@@ -784,6 +785,18 @@ async function route(
   const identifiersMatch = new RegExp(`^/api/customers/(${UUID})/identifiers$`).exec(path);
   if (identifiersMatch && method === "PUT") {
     return await setCustomerIdentifiers(client, requireActor(actor), identifiersMatch[1]!, body);
+  }
+
+  const identifierRevealMatch = new RegExp(
+    `^/api/customers/(${UUID})/identifiers/(${UUID})/reveal$`,
+  ).exec(path);
+  if (identifierRevealMatch && method === "POST") {
+    return await revealCustomerIdentifier(
+      client,
+      requireActor(actor),
+      identifierRevealMatch[1]!,
+      identifierRevealMatch[2]!,
+    );
   }
 
   const personCasesMatch = new RegExp(`^/api/customers/(${UUID})/cases$`).exec(path);

@@ -136,8 +136,12 @@ describe("customers carry identifiers and aliases", () => {
     expect(created.status).toBe(200);
     const phone = created.body.identifiers.find((i: any) => i.type === "phone");
     expect(phone.isPrimary).toBe(true);
-    // What was typed is kept verbatim; matching uses the normalised form.
-    expect(phone.value).toBe("98430 12345");
+    // The API never returns the raw value (ADR-026, Production Readiness
+    // Phase 1) — what comes back is masked, last four characters visible.
+    // What was typed is still kept verbatim in storage; matching uses the
+    // normalised form. See `column masking` in Backend/security.test.ts for
+    // the assertion against the stored value and the reveal path.
+    expect(phone.value).toBe("xxxxxxx2345");
   });
 
   it("finds a customer by a fragment of their phone number", async () => {
@@ -169,7 +173,15 @@ describe("customers carry identifiers and aliases", () => {
     });
     expect(replaced.status).toBe(200);
     expect(replaced.body.identifiers).toHaveLength(1);
-    expect(replaced.body.identifiers[0].value).toBe("9843022222");
+    // Masked in the response (ADR-026); the raw value is asserted below,
+    // straight off the table, to prove masking is a display concern only.
+    expect(replaced.body.identifiers[0].value).toBe("xxxxxx2222");
+
+    const { rows: current } = await pool.query(
+      `select value_raw from person_identifier where person_id = $1 and value_normalised = '9843022222'`,
+      [created.body.id],
+    );
+    expect(current[0]?.value_raw).toBe("9843022222");
 
     // The old number is still on the record, marked expired — a 2024 call must
     // stay attributable to whoever held the number in 2024 (migration 0002).

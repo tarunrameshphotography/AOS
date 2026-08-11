@@ -23,6 +23,7 @@
 
 import type { Queryable } from "./db.js";
 import type { Actor } from "./authorize.js";
+import { withActor } from "./db.js";
 import { recordCustomerEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
 import { can } from "./authorize.js";
@@ -52,10 +53,10 @@ const COLUMNS = `p.id, p.full_name, p.date_of_birth, p.address_line, p.locality,
 const AGGREGATES = `
   coalesce((
     select json_agg(json_build_object(
-             'id', i.id, 'type', i.identifier_type, 'value', i.value_raw,
+             'id', i.id, 'type', i.identifier_type, 'value', i.value_display,
              'isPrimary', i.is_primary, 'verificationSource', i.verification_source)
              order by i.is_primary desc, i.created_at)
-      from person_identifier i
+      from person_identifier_v i
      where i.person_id = p.id
        and (i.valid_to is null or i.valid_to > current_date)
   ), '[]'::json) as identifiers,
@@ -319,6 +320,18 @@ function sameValue(stored: unknown, submitted: unknown): boolean {
  *
  * Identifiers that are unchanged are left alone entirely, so re-saving the
  * form does not expire and re-create a number that never moved.
+ *
+ * AN ENTRY MAY REFER TO AN EXISTING IDENTIFIER BY `id` INSTEAD OF CARRYING A
+ * VALUE (ADR-026, Production Readiness Phase 1). `getCustomer` now returns
+ * masked values, so the edit form can no longer pre-fill a row with the real
+ * number and resubmit it verbatim — resubmitting the MASKED string as if it
+ * were the raw value would overwrite a real phone number with literal "x"
+ * characters the moment someone opened "Edit contacts" and saved without
+ * retyping every row. An `id`-only entry means "this identifier, unchanged,
+ * possibly a new `isPrimary`" and is resolved against `current` below
+ * without ever touching `value_raw`. An entry with no `id` is a genuinely new
+ * value — a fresh number, or a correction typed over an existing one —
+ * validated exactly as before.
  */
 export async function setCustomerIdentifiers(
   client: Queryable,
@@ -335,8 +348,44 @@ export async function setCustomerIdentifiers(
     throw new ApiError(400, "Identifiers must be a list.");
   }
 
+  const { rows: current } = await client.query(
+    `select id, identifier_type, value_normalised, is_primary, verification_source
+       from person_identifier
+      where person_id = $1 and (valid_to is null or valid_to > current_date)`,
+    [id],
+  );
+  const currentById = new Map(
+    current.map((row: Record<string, unknown>) => [row.id as string, row]),
+  );
+
   const wanted = body.identifiers.map((raw) => {
     const entry = raw as Record<string, unknown>;
+    const refId = typeof entry.id === "string" ? entry.id : null;
+
+    if (refId !== null) {
+      const existing = currentById.get(refId);
+      if (!existing) throw new ApiError(400, `Unknown identifier id: ${refId}.`);
+      const verificationSource =
+        typeof entry.verificationSource === "string"
+          ? entry.verificationSource
+          : (existing.verification_source as string);
+      if (!(VERIFICATION_SOURCES as readonly string[]).includes(verificationSource)) {
+        throw new ApiError(400, `Unknown verification source: ${verificationSource}.`);
+      }
+      return {
+        type: existing.identifier_type as IdentifierType,
+        normalised: existing.value_normalised as string,
+        // No new value was submitted. This entry's (type, normalised) is
+        // taken straight from `current`, so the diff below always finds a
+        // match for it and never reaches the insert branch that would need
+        // this — null makes that guarantee visible in the type instead of
+        // assumed.
+        value: null as string | null,
+        isPrimary: entry.isPrimary === true,
+        verificationSource,
+      };
+    }
+
     const type = String(entry.type ?? "");
     const value = typeof entry.value === "string" ? entry.value.trim() : "";
     const verificationSource = String(entry.verificationSource ?? "self_declared");
@@ -368,14 +417,7 @@ export async function setCustomerIdentifiers(
     }
   }
 
-  const { rows: current } = await client.query(
-    `select id, identifier_type, value_normalised, is_primary, verification_source
-       from person_identifier
-      where person_id = $1 and (valid_to is null or valid_to > current_date)`,
-    [id],
-  );
-
-  const keyOf = (type: string, normalised: string): string => `${type} ${normalised}`;
+  const keyOf = (type: string, normalised: string): string => `${type} ${normalised}`;
   const wantedKeys = new Set(wanted.map((entry) => keyOf(entry.type, entry.normalised)));
 
   // IDs and types, never values — a phone number copied into the log is
@@ -414,6 +456,15 @@ export async function setCustomerIdentifiers(
       }
       continue;
     }
+    if (entry.value === null) {
+      // Unreachable in practice — an id-referenced entry's (type, normalised)
+      // always matches something in `current` (`entry.id` was validated
+      // against it above), so `existing` is always found and this branch is
+      // never taken for it. Guarded rather than asserted with `!`, so a
+      // future change to the matching logic fails loudly instead of
+      // inserting a null value_raw.
+      throw new ApiError(400, "An identifier needs a value.");
+    }
     await client.query(
       `insert into person_identifier
          (person_id, identifier_type, value_raw, value_normalised, is_primary,
@@ -446,4 +497,72 @@ export async function setCustomerIdentifiers(
   }
 
   return await getCustomer(client, actor, id);
+}
+
+// ---------------------------------------------------------------------------
+// Full-value reveal (ADR-026)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reveal one identifier's raw value — the single per-record disclosure path
+ * ADR-026 describes. `identifiers[].value` on every other response is masked
+ * unconditionally (see `AGGREGATES`), including for a caller who holds
+ * `identifier.view_full`: that permission does not widen what a list or
+ * detail response contains, it only gates THIS action, and this action always
+ * writes an event, whether it grants or refuses.
+ *
+ * The decision is `can()` — the same function and the same
+ * `role_permission`/`user_permission_override` data every other permission
+ * check in AOS reads — not a second implementation in SQL. Once granted, the
+ * raw value comes from `app.reveal_identifier_value()`, the one SECURITY
+ * DEFINER function that can still read `person_identifier.value_raw`; nothing
+ * else in the schema can, as of migration 0034.
+ */
+export async function revealCustomerIdentifier(
+  client: Queryable,
+  actor: Actor,
+  id: string,
+  identifierId: string,
+) {
+  const { rows: personRows } = await client.query(`select id from person where id = $1`, [id]);
+  if (!personRows[0]) throw new ApiError(404, "No such customer.");
+
+  const { rows: idRows } = await client.query(
+    `select id from person_identifier where id = $1 and person_id = $2`,
+    [identifierId, id],
+  );
+  if (!idRows[0]) throw new ApiError(404, "No such identifier.");
+
+  if (!can(actor, "identifier.view_full", "all")) {
+    // Written in its OWN transaction, not this request's. `withActor` in
+    // api-server.ts wraps the whole request in one transaction and rolls it
+    // back on any thrown error — including the ApiError this refusal throws
+    // next — so an event recorded on `client` here would vanish along with
+    // it. ADR-026 requires the denial to survive the refusal, which is the
+    // one case in this codebase where an audit write has to outlive the
+    // request that caused it.
+    await withActor(actor.authIdentityId, (auditClient) =>
+      recordCustomerEvent(auditClient, {
+        actorUserId: actor.userId,
+        personId: id,
+        eventType: "person.identifier_reveal_denied",
+        payloadAfter: { identifierId },
+      }),
+    );
+    throw new ApiError(403, refusalMessage("identifier.view_full"));
+  }
+
+  const { rows } = await client.query<{ value: string | null }>(
+    `select app.reveal_identifier_value($1) as value`,
+    [identifierId],
+  );
+
+  await recordCustomerEvent(client, {
+    actorUserId: actor.userId,
+    personId: id,
+    eventType: "person.identifier_revealed",
+    payloadAfter: { identifierId },
+  });
+
+  return { value: rows[0]?.value ?? null };
 }

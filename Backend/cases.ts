@@ -52,8 +52,14 @@ const APPLICANT_JOIN = `
          on pa.case_id = c.id and pa.is_primary and pa.removed_at is null
   left join person ap on ap.id = pa.person_id`;
 
+/**
+ * The applicant's phone rides masked (ADR-026): `person_identifier_v` never
+ * exposes `value_raw`, on a case row any more than on a customer row. A user
+ * who needs the full number opens the applicant's profile and reveals it
+ * there, through `identifier.view_full`, where the disclosure is audited.
+ */
 const APPLICANT_COLUMNS = `pa.person_id as applicant_id, ap.full_name as applicant_name,
-  (select i.value_raw from person_identifier i
+  (select i.value_display from person_identifier_v i
     where i.person_id = pa.person_id and i.identifier_type = 'phone' and i.is_primary
       and (i.valid_to is null or i.valid_to > current_date)
     limit 1) as applicant_phone`;

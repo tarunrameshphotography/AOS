@@ -583,6 +583,245 @@ describe("the full authentication lifecycle, served by an API running as aos_app
 });
 
 // ---------------------------------------------------------------------------
+// Column masking (ADR-026, Production Readiness Phase 1)
+//
+// The audit for this phase found `person_identifier.value_raw` selected
+// straight onto every customer and every case row, gated by nothing narrower
+// than ordinary `person.read`/`case.read` — `identifier.view_full` existed in
+// the permission catalog and was checked by nothing. These assertions run
+// against the aos_app-backed server for the same reason the rest of this file
+// does: a claim about what a normal employee can extract is worth exactly as
+// much as the query that checks it against the role AOS actually runs as.
+// ---------------------------------------------------------------------------
+
+describe("column masking", () => {
+  it("revokes the masked columns from aos_app at the database layer", async () => {
+    const employee = await createEmployee("login_executive");
+    await appRole.query(`select set_config('app.auth_identity_id', $1, false)`, [
+      employee.authIdentityId,
+    ]);
+
+    // Even an identity holding identifier.view_full cannot reach value_raw
+    // directly: the permission gates app.reveal_identifier_value(), not the
+    // column. There is exactly one door, and this is not it.
+    await expect(
+      appRole.query(`select value_raw from person_identifier limit 1`),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      appRole.query(`select commission_terms from referrer_profile limit 1`),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      appRole.query(`select login_fee_amount from submission limit 1`),
+    ).rejects.toThrow(/permission denied/i);
+
+    await appRole.query(`select set_config('app.auth_identity_id', '', false)`);
+  });
+
+  it("masks the identifier value on every customer read, regardless of role", async () => {
+    const employee = await createEmployee("telecaller");
+    const session = await signIn(appApi, employee.username);
+    const phone = "9876543210";
+
+    const created = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Masking Probe ${randomUUID().slice(0, 8)}`, phone },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const identifier = created.body.identifiers.find((i: { type: string }) => i.type === "phone");
+    expect(identifier.value).toBe("xxxxxx3210");
+    expect(identifier.value).not.toBe(phone);
+
+    const fetched = await appApi(`/api/customers/${created.body.id}`, { token: session.token });
+    expect(fetched.body.identifiers[0].value).toBe("xxxxxx3210");
+
+    const listed = await appApi(`/api/customers?q=${encodeURIComponent(phone)}`, {
+      token: session.token,
+    });
+    expect(listed.status).toBe(200);
+    const row = listed.body.find((c: { id: string }) => c.id === created.body.id);
+    expect(row.identifiers[0].value).toBe("xxxxxx3210");
+  });
+
+  it("masks the applicant phone on the case list and detail, not only the customer read", async () => {
+    const employee = await createEmployee("telecaller");
+    const session = await signIn(appApi, employee.username);
+    const phone = "9123456789";
+
+    const customer = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Case Masking ${randomUUID().slice(0, 8)}`, phone },
+    });
+    const { rows } = await pool.query(`select id from loan_product limit 1`);
+    const created = await appApi("/api/cases", {
+      method: "POST",
+      token: session.token,
+      body: { applicantId: customer.body.id, loanProductId: rows[0]!.id },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    expect(created.body.applicantPhone).toBe("xxxxxx6789");
+
+    const detail = await appApi(`/api/cases/${created.body.id}`, { token: session.token });
+    expect(detail.body.applicantPhone).toBe("xxxxxx6789");
+
+    const list = await appApi("/api/cases", { token: session.token });
+    const row = list.body.find((c: { id: string }) => c.id === created.body.id);
+    expect(row.applicantPhone).toBe("xxxxxx6789");
+  });
+
+  it("denies an identifier reveal to a role without identifier.view_full, and records the denial", async () => {
+    const employee = await createEmployee("telecaller");
+    const session = await signIn(appApi, employee.username);
+
+    const customer = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Reveal Denied ${randomUUID().slice(0, 8)}`, phone: "9988776655" },
+    });
+    const identifierId = customer.body.identifiers[0].id;
+
+    const attempt = await appApi(
+      `/api/customers/${customer.body.id}/identifiers/${identifierId}/reveal`,
+      { method: "POST", token: session.token },
+    );
+    expect(attempt.status).toBe(403);
+    expect(attempt.body.message).toContain("identifier.view_full");
+
+    const events = await pool.query(
+      `select payload_after from event
+        where entity_id = $1 and event_type = 'person.identifier_reveal_denied'
+        order by occurred_at desc limit 1`,
+      [customer.body.id],
+    );
+    expect(events.rows[0]?.payload_after?.identifierId).toBe(identifierId);
+  });
+
+  it("reveals the raw value to a role holding identifier.view_full, and records the grant", async () => {
+    const employee = await createEmployee("login_executive");
+    const session = await signIn(appApi, employee.username);
+    const phone = "9012345678";
+
+    const customer = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Reveal Granted ${randomUUID().slice(0, 8)}`, phone },
+    });
+    const identifierId = customer.body.identifiers[0].id;
+    expect(customer.body.identifiers[0].value).not.toBe(phone);
+
+    const revealed = await appApi(
+      `/api/customers/${customer.body.id}/identifiers/${identifierId}/reveal`,
+      { method: "POST", token: session.token },
+    );
+    expect(revealed.status, JSON.stringify(revealed.body)).toBe(200);
+    expect(revealed.body.value).toBe(phone);
+
+    const events = await pool.query(
+      `select payload_after from event
+        where entity_id = $1 and event_type = 'person.identifier_revealed'
+        order by occurred_at desc limit 1`,
+      [customer.body.id],
+    );
+    expect(events.rows[0]?.payload_after?.identifierId).toBe(identifierId);
+
+    // The underlying row is untouched by masking — only what is RETURNED is
+    // masked, never the stored data.
+    const raw = await pool.query(`select value_raw from person_identifier where id = $1`, [
+      identifierId,
+    ]);
+    expect(raw.rows[0].value_raw).toBe(phone);
+
+    // identifier.view_full gates this one action; it does not widen the list
+    // or detail response, which stays masked for the same actor immediately
+    // afterwards.
+    const stillMasked = await appApi(`/api/customers/${customer.body.id}`, {
+      token: session.token,
+    });
+    expect(stillMasked.body.identifiers[0].value).not.toBe(phone);
+  });
+
+  it("refuses to reveal an identifier that does not belong to the named customer", async () => {
+    const employee = await createEmployee("login_executive");
+    const session = await signIn(appApi, employee.username);
+
+    const customerA = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Owner A ${randomUUID().slice(0, 8)}`, phone: "9000000001" },
+    });
+    const customerB = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Owner B ${randomUUID().slice(0, 8)}`, phone: "9000000002" },
+    });
+    const identifierIdOfA = customerA.body.identifiers[0].id;
+
+    const crossed = await appApi(
+      `/api/customers/${customerB.body.id}/identifiers/${identifierIdOfA}/reveal`,
+      { method: "POST", token: session.token },
+    );
+    expect(crossed.status).toBe(404);
+  });
+
+  it("still authenticates, creates and reads normally — masking did not break the write path", async () => {
+    const employee = await createEmployee("manager");
+    const session = await signIn(appApi, employee.username);
+
+    const customer = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Workflow Still Works ${randomUUID().slice(0, 8)}`, phone: "9111111111" },
+    });
+    expect(customer.status, JSON.stringify(customer.body)).toBe(200);
+
+    const updated = await appApi(`/api/customers/${customer.body.id}/identifiers`, {
+      method: "PUT",
+      token: session.token,
+      body: {
+        identifiers: [
+          { type: "phone", value: "9222222222", isPrimary: true, verificationSource: "self_declared" },
+        ],
+      },
+    });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    expect(updated.body.identifiers[0].value).toBe("xxxxxx2222");
+  });
+
+  it("re-saving contacts by id does not overwrite the real value with the masked display", async () => {
+    // The regression this guards: the edit-contacts form can only see the
+    // masked value now, so re-submitting a row unchanged must go by id, not
+    // by resubmitting `value`. Reproduces exactly what
+    // Frontend/src/screens/PersonProfile.tsx's EditContactsModal now sends
+    // for an untouched row.
+    const employee = await createEmployee("manager");
+    const session = await signIn(appApi, employee.username);
+    const phone = "9333333333";
+
+    const customer = await appApi("/api/customers", {
+      method: "POST",
+      token: session.token,
+      body: { fullName: `Untouched Row ${randomUUID().slice(0, 8)}`, phone },
+    });
+    const identifierId = customer.body.identifiers[0].id;
+
+    const resaved = await appApi(`/api/customers/${customer.body.id}/identifiers`, {
+      method: "PUT",
+      token: session.token,
+      body: { identifiers: [{ id: identifierId, isPrimary: true }] },
+    });
+    expect(resaved.status, JSON.stringify(resaved.body)).toBe(200);
+    expect(resaved.body.identifiers).toHaveLength(1);
+    expect(resaved.body.identifiers[0].id).toBe(identifierId);
+
+    const raw = await pool.query(`select value_raw from person_identifier where id = $1`, [
+      identifierId,
+    ]);
+    expect(raw.rows[0].value_raw).toBe(phone);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
 

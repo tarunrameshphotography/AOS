@@ -39,7 +39,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loadDotEnv } from "./env.mjs";
-import { connectionConfig } from "./migrate.mjs";
+import { connectionConfig } from "./db-config.mjs";
 import { requirePgBinDir, run } from "./pg-tools.mjs";
 import { hashFile, printReport, verifyBackup } from "./backup-verify.mjs";
 

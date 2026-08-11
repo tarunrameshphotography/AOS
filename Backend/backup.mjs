@@ -41,7 +41,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadDotEnv } from "./env.mjs";
-import { connectionConfig } from "./migrate.mjs";
+import { connectionConfig } from "./db-config.mjs";
 import { requirePgBinDir, run } from "./pg-tools.mjs";
 import {
   MANIFEST_FORMAT_VERSION,

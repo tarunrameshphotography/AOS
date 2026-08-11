@@ -25,34 +25,27 @@
  * Usage:
  *   node Backend/migrate.mjs            apply every pending migration
  *   node Backend/migrate.mjs --status   list applied/pending, change nothing
+ *
+ * IMPORTING THIS FILE RUNS NOTHING. `main()` only fires when this file is
+ * executed directly (`node Backend/migrate.mjs`), guarded below by comparing
+ * `import.meta.url` against the entry script's path — the standard,
+ * cross-platform way to distinguish "this is the CLI invocation" from "some
+ * other module imported me for a helper". `connectionConfig()` itself lives
+ * in `db-config.mjs` now, for exactly that reason: `backup.mjs` and
+ * `restore.mjs` need the connection settings, not the migration runner.
  */
 
 import { readFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
-import { loadDotEnv } from "./env.mjs";
+import { connectionConfig } from "./db-config.mjs";
 
-loadDotEnv();
+export { connectionConfig };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, "..", "Database", "migrations");
-
-/**
- * Connection settings come from the environment only. No connection string is
- * ever committed (see `.env.example`), and nothing here is prefixed VITE_, so
- * none of it can reach the browser bundle.
- */
-export function connectionConfig() {
-  return {
-    host: process.env.AOS_DB_HOST ?? "127.0.0.1",
-    port: Number(process.env.AOS_DB_PORT ?? 5432),
-    database: process.env.AOS_DB_NAME ?? "aos",
-    user: process.env.AOS_DB_USER ?? "postgres",
-    password: process.env.AOS_DB_PASSWORD ?? "",
-  };
-}
 
 function checksum(sql) {
   return createHash("sha256").update(sql, "utf8").digest("hex");
@@ -182,4 +175,9 @@ async function main() {
   }
 }
 
-await main();
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  await main();
+}

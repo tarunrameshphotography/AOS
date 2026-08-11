@@ -83,7 +83,16 @@ interface ConditionRow {
 async function loadActiveRules(client: Queryable): Promise<RequirementRule[]> {
   const { rows: ruleRows } = await client.query<RuleRow>(
     `select r.id, r.code, r.name, dt.code as document_type_code, r.scope,
-            r.party_roles, r.party_kind, r.property_roles,
+            -- Cast off the custom enum array types (case_party_role[],
+            -- case_property_role[]): node-postgres only auto-parses array
+            -- OIDs it has a registered type parser for, and a custom enum's
+            -- array OID is not one of them — without the cast it hands back
+            -- the wire format as a literal string ("{applicant,co_applicant}"),
+            -- not a JS array, and rules.ts's scope check
+            -- (partyRoles.includes(party.role)) silently becomes a substring
+            -- check instead of array membership (Backend/master-data.ts
+            -- found this first, Stage 4 Item 4).
+            r.party_roles::text[] as party_roles, r.party_kind, r.property_roles::text[] as property_roles,
             a.code as applicability_code, r.applicable_from_stage,
             r.financial_years, r.condition_match, r.is_active, r.display_order
        from document_requirement_rule r

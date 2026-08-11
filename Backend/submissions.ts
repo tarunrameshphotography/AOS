@@ -594,6 +594,73 @@ function fingerprintOf(documents: readonly CandidateDocument[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Concurrency — one submission, one sender at a time (Phase 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialise `sendPackage`/`retryPackage` on this submission at the database
+ * level, so two nearly-simultaneous requests — two employees with the same
+ * case open, or one employee double-clicking Send before the first request
+ * has returned — cannot both pass the eligibility checks before either has
+ * made its outcome visible to the other.
+ *
+ * `pg_advisory_xact_lock` rather than a JavaScript mutex: this process is not
+ * the only one that will ever open this submission (the whole point is the
+ * future two-PC office), so only a lock PostgreSQL itself arbitrates protects
+ * anything. Transaction-scoped (`_xact_`), not session-scoped: it releases
+ * itself on commit or rollback with the transaction `withActor` already
+ * manages, with nothing left to leak if a request throws. Keyed on the
+ * submission id via `hashtextextended` (a `bigint`, the single-key overload's
+ * argument type) rather than the case id: two banks on the same case are
+ * independent sends and must not queue behind each other.
+ */
+async function lockSubmissionForSending(client: Queryable, submissionId: string): Promise<void> {
+  await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [submissionId]);
+}
+
+/**
+ * The most recently fully-sent package on this submission whose exact
+ * document set (id and version, the same fingerprint `fingerprintOf` builds
+ * for the client-supplied one) matches `fingerprint` — or null if none does.
+ *
+ * This is what turns the lock above into a genuine duplicate-send guard
+ * rather than a mere queue. Read AFTER the lock is held, so it reflects
+ * whatever the previous holder committed, not stale state read before
+ * blocking (a second caller must decide from the first caller's outcome, not
+ * from what was true when it started). A match means the identical batch of
+ * documents already went out under this submission — the caller gets that
+ * package's result back, unsent a second time; no new package, no repeated
+ * `provider.send`. A different fingerprint (a document was added, replaced,
+ * or dropped since) is a genuinely new batch and is not blocked by this
+ * check — resending the same bank with an updated document set is legitimate
+ * (`finalizeIfFullySent`'s "a second send is a new package").
+ */
+async function alreadySentPackageId(
+  client: Queryable,
+  submissionId: string,
+  fingerprint: string,
+): Promise<string | null> {
+  const { rows: packageRows } = await client.query<{ id: string }>(
+    `select id from submission_package
+      where submission_id = $1 and status = 'sent'
+      order by initiated_at desc`,
+    [submissionId],
+  );
+  for (const { id } of packageRows) {
+    const { rows: docRows } = await client.query<{ document_id: string; document_version: number }>(
+      `select document_id, document_version from submission_package_document where submission_package_id = $1`,
+      [id],
+    );
+    const sentFingerprint = docRows
+      .map((row) => `${row.document_id}@${row.document_version}`)
+      .sort()
+      .join(",");
+    if (sentFingerprint === fingerprint) return id;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Preparing — pure, writes nothing
 // ---------------------------------------------------------------------------
 
@@ -675,6 +742,11 @@ export async function sendPackage(
   requireCaseAccess(actor, header, "submission.create");
   const submission = await loadSubmission(client, caseId, submissionId);
 
+  // From here on this submission has exactly one sender at a time (Phase 3):
+  // a concurrent call blocks here until the holder's transaction commits or
+  // rolls back, then proceeds against what that call actually left behind.
+  await lockSubmissionForSending(client, submissionId);
+
   const documentIds = documentIdsFromBody(body);
   const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint : "";
 
@@ -686,6 +758,13 @@ export async function sendPackage(
         "Nothing was sent. Close this and review the new list before sending.",
     );
   }
+
+  // Re-read authoritative state now the lock is held: this exact document
+  // set may already have gone out — sent by the request this one raced
+  // against, or by an earlier attempt this same caller is retrying blind to.
+  // Either way, the bank does not need it twice.
+  const alreadySent = await alreadySentPackageId(client, submissionId, fingerprint);
+  if (alreadySent) return await summariseSend(client, alreadySent);
 
   const { to, cc, drafts } = await recipientsFor(client, submissionId);
   const context = await contextFor(client, caseId, submission);
@@ -779,6 +858,11 @@ export async function retryPackage(
   const header = await loadCaseHeader(client, caseId);
   requireCaseAccess(actor, header, "submission.create");
   const submission = await loadSubmission(client, caseId, submissionId);
+
+  // Same lock as `sendPackage`, same submission id: a retry and a fresh send
+  // (or two concurrent retries) on the same submission must not race each
+  // other over which failed emails get dispatched.
+  await lockSubmissionForSending(client, submissionId);
 
   const { rows: packageRows } = await client.query<{ id: string }>(
     `select id from submission_package where id = $1 and submission_id = $2`,

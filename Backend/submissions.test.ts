@@ -432,6 +432,27 @@ function fakeProvider(behavior: (email: OutgoingEmail) => EmailSendResult): Emai
   };
 }
 
+/** Like `fakeProvider`, but holds each send open for `delayMs` before
+ * resolving — long enough that two concurrent `sendPackage` calls are
+ * genuinely both in flight (one blocked on `pg_advisory_xact_lock`, not
+ * merely called one after the other) rather than racing so fast the test
+ * cannot tell the difference from two sequential calls. */
+function delayedProvider(
+  delayMs: number,
+  behavior: (email: OutgoingEmail) => EmailSendResult,
+): EmailProvider & { readonly calls: OutgoingEmail[] } {
+  const calls: OutgoingEmail[] = [];
+  return {
+    name: "fake-delayed",
+    calls,
+    async send(email) {
+      calls.push(email);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return behavior(email);
+    },
+  };
+}
+
 async function setUpReadyCaseWithSubmission(): Promise<{
   actor: Actor;
   caseId: string;
@@ -594,5 +615,157 @@ describe("provider failure and retry — function-level, deterministic providers
       [packageId],
     );
     expect(afterEmailRows).toEqual(beforeEmailRows);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency — Phase 3: two employees cannot duplicate-send one submission
+// ---------------------------------------------------------------------------
+
+describe("concurrency — sendPackage serialises on the submission (Phase 3)", () => {
+  it("two near-simultaneous sends of the same submission dispatch the documents only once", async () => {
+    const { actor, caseId, submissionId, documentIds } = await setUpReadyCaseWithSubmission();
+
+    const fingerprint = await withActor(null, async (client) => {
+      const prepared = await preparePackage(client, actor, caseId, submissionId, { documentIds });
+      return prepared.fingerprint;
+    });
+
+    // One provider shared by both calls: if both actually dispatched, its
+    // `calls` array would hold every email twice.
+    const provider = delayedProvider(150, (email) => ({
+      ok: true,
+      submissionPackageEmailId: email.submissionPackageEmailId,
+      providerMessageId: `msg-${email.submissionPackageEmailId}`,
+      sentAt: new Date().toISOString(),
+    }));
+
+    // Two genuinely concurrent requests: separate connections (separate
+    // `withActor` transactions), fired together with `Promise.all`, exactly
+    // what two office PCs or one double-click produce over HTTP.
+    const [resultA, resultB] = await Promise.all([
+      withActor(null, (client) =>
+        sendPackage(client, actor, caseId, submissionId, { documentIds, fingerprint }, provider),
+      ),
+      withActor(null, (client) =>
+        sendPackage(client, actor, caseId, submissionId, { documentIds, fingerprint }, provider),
+      ),
+    ]);
+
+    // Both callers get a successful, IDENTICAL result — the same package —
+    // proving the second was told about the first's outcome rather than
+    // creating its own.
+    expect(resultA.submissionPackageId).toBe(resultB.submissionPackageId);
+    expect(resultA.failedCount).toBe(0);
+    expect(resultB.failedCount).toBe(0);
+    expect(resultA.sentCount).toBeGreaterThan(0);
+
+    // The provider was asked to send each document batch exactly once.
+    expect(provider.calls.length).toBe(resultA.sentCount);
+
+    const { rows: packageRows } = await pool.query(
+      `select id, status from submission_package where submission_id = $1`,
+      [submissionId],
+    );
+    expect(packageRows).toHaveLength(1);
+    expect(packageRows[0].status).toBe("sent");
+
+    const { rows: emailRows } = await pool.query(
+      `select count(*)::int as n from submission_package_email where submission_package_id = $1`,
+      [packageRows[0].id],
+    );
+    expect(emailRows[0].n).toBe(resultA.sentCount);
+
+    const { rows: submissionRows } = await pool.query(`select status from submission where id = $1`, [
+      submissionId,
+    ]);
+    expect(submissionRows[0].status).toBe("submitted");
+
+    const { rows: caseRows } = await pool.query(`select stage from loan_case where id = $1`, [caseId]);
+    expect(caseRows[0].stage).toBe("submitted");
+  });
+
+  it("does not serialise sends of two different submissions on the same case", async () => {
+    const owner = await signInAs("telecaller");
+    const verifier = await signInAs("login_executive");
+    const loanCase = await aReadyCase(owner, verifier);
+    const [branchA, branchB] = await twoBranchIds(owner.token);
+    const actor = actorFor(verifier, ["login_executive"]);
+
+    const submissionA = await withActor(null, (client) =>
+      createSubmission(client, actor, loanCase.id, {
+        branchOrganisationId: branchA,
+        recipients: [{ email: "bank-a@example.com" }],
+      }),
+    );
+    const submissionB = await withActor(null, (client) =>
+      createSubmission(client, actor, loanCase.id, {
+        branchOrganisationId: branchB,
+        recipients: [{ email: "bank-b@example.com" }],
+      }),
+    );
+
+    const documentIdsA = await withActor(null, async (client) =>
+      (await sendableDocuments(client, actor, loanCase.id, submissionA.id)).map((r) => r.documentId),
+    );
+    const documentIdsB = await withActor(null, async (client) =>
+      (await sendableDocuments(client, actor, loanCase.id, submissionB.id)).map((r) => r.documentId),
+    );
+
+    const fingerprintA = await withActor(null, async (client) =>
+      (await preparePackage(client, actor, loanCase.id, submissionA.id, { documentIds: documentIdsA })).fingerprint,
+    );
+    const fingerprintB = await withActor(null, async (client) =>
+      (await preparePackage(client, actor, loanCase.id, submissionB.id, { documentIds: documentIdsB })).fingerprint,
+    );
+
+    const providerA = delayedProvider(100, (email) => ({
+      ok: true,
+      submissionPackageEmailId: email.submissionPackageEmailId,
+      providerMessageId: "a",
+      sentAt: new Date().toISOString(),
+    }));
+    const providerB = delayedProvider(100, (email) => ({
+      ok: true,
+      submissionPackageEmailId: email.submissionPackageEmailId,
+      providerMessageId: "b",
+      sentAt: new Date().toISOString(),
+    }));
+
+    // Different submissions, different advisory-lock keys: neither should
+    // wait for the other's transaction to commit.
+    const [resultA, resultB] = await Promise.all([
+      withActor(null, (client) =>
+        sendPackage(
+          client,
+          actor,
+          loanCase.id,
+          submissionA.id,
+          { documentIds: documentIdsA, fingerprint: fingerprintA },
+          providerA,
+        ),
+      ),
+      withActor(null, (client) =>
+        sendPackage(
+          client,
+          actor,
+          loanCase.id,
+          submissionB.id,
+          { documentIds: documentIdsB, fingerprint: fingerprintB },
+          providerB,
+        ),
+      ),
+    ]);
+
+    expect(resultA.failedCount).toBe(0);
+    expect(resultB.failedCount).toBe(0);
+    expect(providerA.calls.length).toBe(resultA.sentCount);
+    expect(providerB.calls.length).toBe(resultB.sentCount);
+
+    const { rows } = await pool.query(
+      `select id, status from submission where case_id = $1 order by created_at`,
+      [loanCase.id],
+    );
+    expect(rows.every((r) => r.status === "submitted")).toBe(true);
   });
 });

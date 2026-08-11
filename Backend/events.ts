@@ -350,6 +350,56 @@ export async function recordSubmissionEvent(client: Queryable, event: Submission
 }
 
 // ---------------------------------------------------------------------------
+// Requirements (Phase 3 — concurrency & audit hardening)
+// ---------------------------------------------------------------------------
+
+/**
+ * `requirement.regenerated` — the one event type this module emits for
+ * `document_requirement` mutation. `regenerateRequirements`
+ * (`Backend/requirements.ts`) reconciles a case's requirement rows against
+ * what the rule engine says the case needs right now, and it runs on every
+ * read of a case's requirements (not just on an explicit action), so this is
+ * a `recordSystemCaseEvent`-shaped event, not a user one: nobody clicked
+ * "regenerate", the system did it as a side effect of the facts on file, the
+ * same reasoning that makes `case.stage_changed` a system event when the
+ * transition machine moves a case on its own.
+ */
+export type RequirementEventType = "requirement.regenerated";
+
+export interface RequirementEvent {
+  readonly caseId: string;
+  readonly eventType: RequirementEventType;
+  /** Counts and requirement ids only — never a party's role or a document
+   * type's name where a code will do, and never anything from `person` or
+   * `property`. The same discipline `recordSubmissionEvent`'s payload
+   * comment applies to recipient contact details applies here to the
+   * subjects a requirement is for. */
+  readonly payloadAfter: Record<string, unknown>;
+}
+
+/**
+ * Record one requirement-regeneration operation that actually changed
+ * `document_requirement` rows. Callers only invoke this when at least one row
+ * was inserted, updated or retired (see `regenerateRequirements`'s own
+ * change-tracking) — a call that reconciles to no change writes no event, so
+ * the trail records mutations, not invocations.
+ *
+ * One event per regeneration, not one per row (the batching this file's
+ * header describes for every other entity): a case's checklist can touch a
+ * dozen rows in one reconciliation, and a dozen near-identical events would
+ * bury the one useful signal — that the checklist changed, and by how much —
+ * under noise nobody would read.
+ */
+export async function recordSystemRequirementEvent(client: Queryable, event: RequirementEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('system', null, 'document_requirement', null, $1, $2, $3, 'ui')`,
+    [event.caseId, event.eventType, JSON.stringify(event.payloadAfter)],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Master data (Stage 4 Item 4)
 // ---------------------------------------------------------------------------
 

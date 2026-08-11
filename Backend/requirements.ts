@@ -49,6 +49,7 @@ const COLLECTING_STAGES = new Set<CaseStage>(
 );
 
 import type { Queryable } from "./db.js";
+import { recordSystemRequirementEvent } from "./events.js";
 
 // ---------------------------------------------------------------------------
 // Loading rules
@@ -360,6 +361,9 @@ interface ExistingRequirementRow {
   period_start: string | null;
   status: string;
   is_custom: boolean;
+  applicable_from_stage: string;
+  generated_by_rule_id: string | null;
+  applicability_id: string;
 }
 
 /**
@@ -384,7 +388,8 @@ export async function regenerateRequirements(client: Queryable, caseId: string):
 
   const { rows: existingRows } = await client.query<ExistingRequirementRow>(
     `select r.id, dt.code as document_type_code, r.required_of_case_party_id,
-            r.required_of_case_property_id, r.period_start::text, r.status, r.is_custom
+            r.required_of_case_property_id, r.period_start::text, r.status, r.is_custom,
+            r.applicable_from_stage, r.generated_by_rule_id, r.applicability_id
        from document_requirement r
        join document_type dt on dt.id = r.document_type_id
       where r.case_id = $1`,
@@ -424,6 +429,18 @@ export async function regenerateRequirements(client: Queryable, caseId: string):
   );
   const applicabilityIdByCode = new Map(applicabilityRows.map((row) => [row.code, row.id]));
 
+  // Resolved once, the same way, so a genuine no-op reconciliation can be told
+  // apart from a real one below: rewriting a row with the values it already
+  // has is not a mutation the audit trail should report (Phase 3).
+  const { rows: ruleRows } = await client.query<{ id: string; code: string }>(
+    `select id, code from document_requirement_rule`,
+  );
+  const ruleIdByCode = new Map(ruleRows.map((row) => [row.code, row.id]));
+
+  const insertedIds: string[] = [];
+  const updatedIds: string[] = [];
+  const retiredIds: string[] = [];
+
   for (const row of wanted) {
     const previous = existingByKey.get(subjectKeyOf(row));
     const documentTypeId = typeIdByCode.get(row.documentTypeCode);
@@ -434,23 +451,29 @@ export async function regenerateRequirements(client: Queryable, caseId: string):
     if (!documentTypeId || !applicabilityId) continue;
 
     if (previous) {
+      const ruleId = ruleIdByCode.get(row.generatedByRuleCode) ?? null;
+      const unchanged =
+        previous.applicable_from_stage === row.applicableFromStage &&
+        previous.generated_by_rule_id === ruleId &&
+        previous.applicability_id === applicabilityId;
+      if (unchanged) continue;
+
       await client.query(
         `update document_requirement
-            set applicable_from_stage = $1, generated_by_rule_id =
-                  (select id from document_requirement_rule where code = $2),
-                applicability_id = $3
+            set applicable_from_stage = $1, generated_by_rule_id = $2, applicability_id = $3
           where id = $4`,
-        [row.applicableFromStage, row.generatedByRuleCode, applicabilityId, previous.id],
+        [row.applicableFromStage, ruleId, applicabilityId, previous.id],
       );
+      updatedIds.push(previous.id);
       continue;
     }
 
-    await client.query(
+    const inserted = await client.query<{ id: string }>(
       `insert into document_requirement
          (case_id, document_type_id, required_of_case_party_id, required_of_case_property_id,
           applicable_from_stage, period_start, period_end, generated_by_rule_id, applicability_id)
-       values ($1, $2, $3, $4, $5, $6, $7,
-               (select id from document_requirement_rule where code = $8), $9)`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       returning id`,
       [
         caseId,
         documentTypeId,
@@ -459,10 +482,11 @@ export async function regenerateRequirements(client: Queryable, caseId: string):
         row.applicableFromStage,
         row.periodStart ?? null,
         row.periodEnd ?? null,
-        row.generatedByRuleCode,
+        ruleIdByCode.get(row.generatedByRuleCode) ?? null,
         applicabilityId,
       ],
     );
+    insertedIds.push(inserted.rows[0]!.id);
   }
 
   // No longer wanted: kept, marked not_applicable — excluded from progress
@@ -475,6 +499,25 @@ export async function regenerateRequirements(client: Queryable, caseId: string):
     await client.query(`update document_requirement set status = 'not_applicable' where id = $1`, [
       row.id,
     ]);
+    retiredIds.push(row.id);
+  }
+
+  // BR-050: the mutation and its audit event commit in the same transaction
+  // (every caller already runs one, via `withActor`) — and a reconciliation
+  // that changed nothing writes no event, so `requirement.regenerated` always
+  // means the checklist actually moved, never merely that someone read it.
+  const changedCount = insertedIds.length + updatedIds.length + retiredIds.length;
+  if (changedCount > 0) {
+    await recordSystemRequirementEvent(client, {
+      caseId,
+      eventType: "requirement.regenerated",
+      payloadAfter: {
+        insertedCount: insertedIds.length,
+        updatedCount: updatedIds.length,
+        retiredCount: retiredIds.length,
+        requirementIds: [...insertedIds, ...updatedIds, ...retiredIds],
+      },
+    });
   }
 }
 

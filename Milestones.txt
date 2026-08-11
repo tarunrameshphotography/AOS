@@ -1,6 +1,6 @@
 AOS — MILESTONES (quick-glance progress tracker)
 Last updated: 2026-08-11
-Current commit / checkpoint: 342e649
+Current commit / checkpoint: Phase 3 (Concurrency & audit hardening) complete
 Full detail: see "AOS Production Readiness Master Roadmap.txt"
 
 ============================================================
@@ -41,8 +41,8 @@ Stage 4 — Production Readiness
 
   Phase 1 — Column Masking / ADR-026 ✓
   Phase 2 — Admin-screen honesty ✓
-  Phase 3 — Concurrency & audit hardening → [ ] NEXT
-  Phase 4 — Case completeness ○ [ ]
+  Phase 3 — Concurrency & audit hardening ✓
+  Phase 4 — Case completeness → [ ] NEXT
   Phase 5 — Loan outcome tracking ○ [ ]
 
 Office Server Production Cutover Gate ○ [ ]
@@ -60,8 +60,15 @@ INITIAL PRODUCTION ○ [ ]
 STATE AS OF THIS CHECKPOINT
 ============================================================
 
-HEAD: 342e649
-origin/main: synchronized
-Working tree: clean (repo sync verified)
+HEAD: (this commit — see roadmap for detail)
+origin/main: not pushed by this change
+Working tree: clean except pre-existing untracked scratch files
 
-Current active work: Phase 3 — Concurrency & audit hardening (not yet started)
+Current active work: Phase 3 complete. Phase 4 — Case completeness is next.
+
+Phase 3 in one line: `sendPackage`/`retryPackage` now take a
+transaction-scoped `pg_advisory_xact_lock` on the submission id and skip
+re-dispatching a document set already fully sent; `regenerateRequirements`
+only writes rows that actually change and records one batched
+`requirement.regenerated` event, in the same transaction, when it does.
+No migration. Full integration suite: 159/159 passing.

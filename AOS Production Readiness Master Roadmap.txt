@@ -1,6 +1,6 @@
 AOS — PRODUCTION READINESS MASTER ROADMAP
 Checkpoint: 2026-08-11
-Current commit: 342e649
+Current commit: (Phase 3 — see MASTER MILESTONE below)
 
 PURPOSE
 Keep development aligned to the actual production goal. Do not invent new stages or wander into unrelated enhancements.
@@ -22,11 +22,13 @@ Stage 4 — Production Readiness:
 
 Phase 1 — Column Masking / ADR-026: COMPLETE (4d56eed)
 Phase 2 — Admin-Screen Honesty: COMPLETE (342e649)
+Phase 3 — Concurrency & Audit Hardening: COMPLETE (see PHASE 3 section below)
 
 Current repository:
-  HEAD: 342e649
-  origin/main: synchronized
-  Working tree: clean
+  HEAD: (this commit)
+  origin/main: not pushed by this change — see final report
+  Working tree: clean except pre-existing untracked scratch files
+    ("USER ID.txt", "future unseen potential.txt")
 
 ============================================================
 REMAINING DEVELOPMENT PHASES
@@ -128,34 +130,96 @@ Exit criteria:
 
 ------------------------------------------------------------
 PHASE 3 — CONCURRENCY & AUDIT HARDENING
-STATUS: NOT STARTED
+STATUS: COMPLETE
 PRIORITY: HIGH / PRODUCTION SAFETY
 ------------------------------------------------------------
 
 Goal:
 Make multi-user, multi-PC operation safe.
 
-Known issues:
-  - Duplicate bank submission can occur if two users submit the same
-    case concurrently or double-click.
-  - regenerateRequirements mutates data from a GET path and currently
-    lacks the required audit event.
+Known issues (confirmed in the code, not just the roadmap):
+  - `sendPackage` (Backend/submissions.ts) never checked whether an
+    identical send was already under way or already complete before
+    creating a new `submission_package` and dispatching email. Two
+    near-simultaneous calls (two employees, or one double-click) could
+    both pass the document-set fingerprint check and both reach
+    `provider.send` for the same documents before either transaction's
+    writes were visible to the other. The existing
+    `where status = 'not_submitted'` guard on `submission.status`
+    prevented a second CASE transition, but not a second DISPATCH — the
+    email had already gone to the bank by the time that guard ran.
+  - `regenerateRequirements` (Backend/requirements.ts) ran on every read
+    of a case's requirements (`listCaseRequirements`, called from a GET),
+    inserting/updating/retiring `document_requirement` rows with no
+    audit event at all — and even its own UPDATE was unconditional,
+    rewriting a row to the values it already had on every call.
+
+Resolution:
+  - Backend/submissions.ts: `sendPackage` and `retryPackage` now open
+    their critical section with `pg_advisory_xact_lock(hashtextextended
+    (submissionId, 0))` — transaction-scoped, released automatically on
+    commit/rollback, keyed on the submission id so different submissions
+    (including two submissions on the same case) never block each other.
+    After the lock is held, `sendPackage` re-reads authoritative state
+    and checks for an already-`sent` package whose document set
+    (id@version) matches the one being sent; if one exists, it returns
+    that package's result instead of creating a duplicate and calling
+    the provider again. A different document set (a document added,
+    replaced or removed) is a genuinely new batch and is not blocked —
+    preserving the existing "a second send is a new package" behavior
+    for a deliberate resend. A failed/partially-sent package is
+    untouched by this check, so `retryPackage` continues to work
+    exactly as before, now itself serialized by the same lock.
+  - Backend/requirements.ts: `regenerateRequirements` now compares each
+    row's would-be new values against what is already on file before
+    writing, and only executes the UPDATE when something actually
+    differs. Every insert, real update and retirement (mark
+    `not_applicable`) is tallied; if the tally is non-zero, one batched
+    `requirement.regenerated` event is recorded (Backend/events.ts,
+    `recordSystemRequirementEvent`) in the SAME transaction as the
+    mutations, as a `system`-actor event (nobody clicked "regenerate";
+    the reconciliation is a side effect of reading the case, the same
+    reasoning `case.stage_changed` already uses for the transition
+    machine's own automatic moves). A reconciliation that changes
+    nothing writes no event. The payload carries only counts and
+    requirement ids — no names, no document type labels, no case-party
+    linkage.
+  - No database migration. `pg_advisory_xact_lock` needs no schema
+    change; the audit event reuses the existing `event` table (its
+    `entity_type` column is unconstrained text) and the existing
+    `recordSystem*Event` pattern.
+  - `listCaseRequirements` remains a GET that regenerates on read — this
+    was deliberately NOT changed to a separate mutation endpoint. The
+    existing architecture (Backend/cases.ts's stage-transition guard,
+    the All Cases progress list) depends on regeneration running inline
+    on every read, and BR-050 ("a state change and its event commit
+    together, or the change does not happen") is satisfied by the fix
+    above without moving where regeneration happens. Splitting read from
+    write here would be the broad REST redesign this phase is explicitly
+    scoped to avoid.
 
 Scope:
-  - Make submission idempotent / transactionally safe.
-  - Prevent duplicate lender emails.
-  - Handle concurrent submissions correctly.
+  - Make submission idempotent / transactionally safe. DONE.
+  - Prevent duplicate lender emails. DONE.
+  - Handle concurrent submissions correctly. DONE.
   - Move mutating regeneration behavior behind the appropriate mutation
-    path if required by the existing architecture.
-  - Add the missing audit event.
-  - Preserve existing append-only audit semantics.
+    path if required by the existing architecture. NOT REQUIRED — see
+    resolution above; the existing inline-on-read architecture is kept.
+  - Add the missing audit event. DONE.
+  - Preserve existing append-only audit semantics. DONE — the `event`
+    table's append-only trigger and payload discipline are untouched.
 
 Exit criteria:
-  - Concurrent submission cannot send duplicate packages.
-  - Repeated submission is safely handled.
-  - Mutating operations are represented correctly in the API.
-  - Required audit events exist.
-  - Concurrency tests pass.
+  - Concurrent submission cannot send duplicate packages. PROVEN —
+    Backend/submissions.test.ts, "concurrency — sendPackage serialises
+    on the submission (Phase 3)".
+  - Repeated submission is safely handled. PROVEN — same suite, plus the
+    pre-existing retry regression tests (unmodified, still passing).
+  - Mutating operations are represented correctly in the API. Requirement
+    regeneration's mutation is now audited; see above for why the GET
+    shape itself was kept.
+  - Required audit events exist. PROVEN — Backend/requirements.test.ts.
+  - Concurrency tests pass. PROVEN — full integration suite: 159/159.
 
 ------------------------------------------------------------
 PHASE 4 — CASE COMPLETENESS
@@ -303,11 +367,10 @@ MASTER MILESTONE
 ============================================================
 
 CURRENT:
-  Phase 1 (Column Masking) and Phase 2 (Admin-screen honesty) complete
-  Commit: 342e649
+  Phase 1 (Column Masking), Phase 2 (Admin-screen honesty) and
+  Phase 3 (Concurrency & audit hardening) complete
 
 REMAINING DEVELOPMENT:
-  Phase 3 — Concurrency & audit
   Phase 4 — Case completeness
   Phase 5 — Loan outcome tracking
 

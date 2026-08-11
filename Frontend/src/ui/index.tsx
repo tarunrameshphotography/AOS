@@ -57,23 +57,24 @@ export function Button({
 // ---------------------------------------------------------------------------
 
 /**
- * For the handful of admin screens (Products, Lenders, Document Rules,
- * Master Data) that still read and write `Frontend/src/fake/store.ts` —
- * per-browser localStorage — rather than the office database. Real cases
- * pull loan products and document requirements from Postgres
- * (`Backend/requirements.ts`), which this screen has no path to: an edit
- * made here is invisible to every other PC and to every real case, forever,
- * until this screen is migrated. Silence about that is what makes it
- * dangerous — a manager who edits a document rule here has every reason to
- * believe it changed something.
+ * For the handful of screens (Products, Lenders, and the "simple" Master
+ * Data vocabulary sections) that display `Frontend/src/fake/store.ts` — a
+ * per-browser prototype dataset — rather than the office database. Real
+ * cases pull loan products and document requirements from PostgreSQL
+ * (`Backend/reference.ts`, `Backend/requirements.ts`), which this screen has
+ * no path to. These screens do not offer a way to edit this data (Production
+ * Readiness Phase 2, "Admin-screen honesty") — showing an editable-looking
+ * screen next to data nobody could actually change was itself the trap: a
+ * manager who could "save" a change here had every reason to believe it did
+ * something.
  */
 export function NotConnectedBanner(): ReactNode {
   return (
     <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
-      <strong className="font-semibold">Not yet connected.</strong> Changes on this screen are
-      saved only in this browser — they do not reach the office database, are not shared with any
-      other PC, and have no effect on real cases or document requirements. Safe to explore; not a
-      way to configure how AOS actually behaves yet.
+      <strong className="font-semibold">Not connected to the office database.</strong> What's shown
+      here is a per-browser preview, not production configuration — it is not shared with any
+      other PC and has no effect on real cases or document requirements. Read-only: there is no
+      way to change this data from AOS yet.
     </div>
   );
 }

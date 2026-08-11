@@ -18,17 +18,22 @@
  *  - The list shows what a person actually asks about a product — is it
  *    secured, does it need a property, what tenure, what amount — rather
  *    than every column.
- *  - Editing is one form with the fields grouped the way the questions come.
  *
  * The filtering itself is NOT implemented here: it goes through
  * `filterProducts` from @domain/products, the same code the server will run.
  * A screen that reimplemented "which products match?" would be a second
  * answer to a question the domain layer already answers.
  *
- * Deliberately absent, per the milestone brief: eligibility decisions ("will
- * this customer qualify?"), bank-specific products, product revisions and
- * retirement workflows, document requirement templates. The schema supports
- * every one of them (Database/migrations/0015); none is built here.
+ * READ-ONLY BY DESIGN (Production Readiness Phase 2, "Admin-screen
+ * honesty"). This screen displays `Frontend/src/fake/store.ts` — a
+ * per-browser prototype dataset, not the office database — so editing here
+ * never reached PostgreSQL, any other PC, or a real case. There used to be
+ * an Add/Edit form on this screen; it wrote to localStorage only and has
+ * been removed so the screen cannot be mistaken for a real configuration
+ * tool (see the Master Roadmap, Phase 2). The Master Roadmap explicitly
+ * keeps Products read-only unless a later business decision changes that;
+ * real cases already read the authoritative product catalogue from
+ * PostgreSQL via `Backend/reference.ts`.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -42,40 +47,15 @@ import {
   type ProductFilter,
 } from "@domain/products/index.js";
 
-import {
-  createLendingProduct,
-  lendingProductsAsDomain,
-  setLendingProductAvailability,
-  updateLendingProduct,
-  type LendingProductInput,
-} from "../fake/store.js";
+import { lendingProductsAsDomain } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type {
-  AvailabilityStatus,
-  Database,
-  Id,
-  LoanProduct,
-  MasterDataRecord,
-} from "../fake/types.js";
+import type { Database, Id, LoanProduct, MasterDataRecord } from "../fake/types.js";
 import { useSession } from "../session.js";
-import {
-  Badge,
-  Button,
-  Card,
-  Empty,
-  Field,
-  Input,
-  Modal,
-  NotConnectedBanner,
-  Select,
-  Textarea,
-  useToast,
-} from "../ui/index.js";
+import { Badge, Card, Empty, Input, NotConnectedBanner, Select } from "../ui/index.js";
 
 export function LendingProducts(): ReactNode {
   const db = useDatabase();
   const session = useSession();
-  const toast = useToast();
 
   const [query, setQuery] = useState("");
   const [customerProductId, setCustomerProductId] = useState<Id | "">("");
@@ -85,11 +65,7 @@ export function LendingProducts(): ReactNode {
   const [propertyFilter, setPropertyFilter] = useState<"" | "yes" | "no">("");
   const [showRetired, setShowRetired] = useState(false);
 
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<LoanProduct | null>(null);
   const [expanded, setExpanded] = useState<Id | null>(null);
-
-  const canManage = session.can("master_data.manage", "all");
 
   // Every hook above runs before the permission gate below, because a hook
   // behind a conditional return is the one React rule this screen could
@@ -165,8 +141,8 @@ export function LendingProducts(): ReactNode {
       <div className="space-y-2">
         <h1 className="text-xl font-semibold tracking-tight">Lending Products</h1>
         <p className="mt-1 text-sm text-ink-500">
-          What Amaze lends against, independent of any bank.
-          {!canManage && " This user can view but not edit — hold master_data.manage to change products."}
+          What Amaze lends against, independent of any bank. Read-only reference — see the note
+          below.
         </p>
         <NotConnectedBanner />
       </div>
@@ -174,13 +150,6 @@ export function LendingProducts(): ReactNode {
       <Card
         title={`${visible.length} of ${db.loanProducts.length} products`}
         subtitle="Search by name, code or anything in the description. Words can be in any order."
-        actions={
-          canManage && (
-            <Button variant="primary" onClick={() => setAdding(true)}>
-              Add product
-            </Button>
-          )
-        }
       >
         <div className="space-y-3">
           <Input
@@ -262,58 +231,27 @@ export function LendingProducts(): ReactNode {
                   : "offerable";
                 return (
                   <li key={product.id} className="py-3 first:pt-0 last:pb-0">
-                    <div className="flex items-start gap-3">
-                      <button
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => setExpanded(expanded === product.id ? null : product.id)}
-                      >
-                        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                          {product.name ?? product.variant}
-                          <Badge tone="info">
-                            {nameOf(db.customerProducts, product.customerProductId) ?? product.category}
-                          </Badge>
-                          {availability !== "offerable" && (
-                            <Badge tone="neutral">{AVAILABILITY_LABELS[availability]}</Badge>
-                          )}
-                        </p>
-                        <p className="tnum mt-0.5 text-xs text-ink-500">
-                          {product.code}
-                          {domain && describeTenure(domain) && ` · ${describeTenure(domain)}`}
-                          {domain && describeAmountRange(domain) && ` · ${describeAmountRange(domain)}`}
-                          {product.securityTypeId &&
-                            ` · ${nameOf(db.securityTypes, product.securityTypeId)}`}
-                        </p>
-                      </button>
-                      {canManage && (
-                        <div className="flex shrink-0 items-center gap-2">
-                          <Button onClick={() => setEditing(product)}>Edit</Button>
-                          <label className="text-xs text-ink-700">
-                            <span className="sr-only">Availability</span>
-                            <Select
-                              value={product.availabilityStatus ?? (product.isActive ? "active" : "retired")}
-                              onChange={(event) => {
-                                const status = event.target.value as AvailabilityStatus;
-                                const result = setLendingProductAvailability(
-                                  product.id,
-                                  status,
-                                  session.user.id,
-                                );
-                                toast.show(
-                                  result.ok
-                                    ? `${product.name ?? product.variant} ${AVAILABILITY_ACTION_LABELS[status]}.`
-                                    : (result.message ?? "Could not update."),
-                                  result.ok ? "good" : "bad",
-                                );
-                              }}
-                            >
-                              <option value="active">Active</option>
-                              <option value="temporarily_suspended">Temporarily Suspended</option>
-                              <option value="retired">Retired</option>
-                            </Select>
-                          </label>
-                        </div>
-                      )}
-                    </div>
+                    <button
+                      className="w-full text-left"
+                      onClick={() => setExpanded(expanded === product.id ? null : product.id)}
+                    >
+                      <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                        {product.name ?? product.variant}
+                        <Badge tone="info">
+                          {nameOf(db.customerProducts, product.customerProductId) ?? product.category}
+                        </Badge>
+                        {availability !== "offerable" && (
+                          <Badge tone="neutral">{AVAILABILITY_LABELS[availability]}</Badge>
+                        )}
+                      </p>
+                      <p className="tnum mt-0.5 text-xs text-ink-500">
+                        {product.code}
+                        {domain && describeTenure(domain) && ` · ${describeTenure(domain)}`}
+                        {domain && describeAmountRange(domain) && ` · ${describeAmountRange(domain)}`}
+                        {product.securityTypeId &&
+                          ` · ${nameOf(db.securityTypes, product.securityTypeId)}`}
+                      </p>
+                    </button>
 
                     {expanded === product.id && <ProductDetail db={db} product={product} />}
                   </li>
@@ -344,39 +282,6 @@ export function LendingProducts(): ReactNode {
           </li>
         </ol>
       </Card>
-
-      {adding && (
-        <ProductForm
-          title="Add lending product"
-          db={db}
-          onClose={() => setAdding(false)}
-          onSubmit={(input) => {
-            const result = createLendingProduct(input, session.user.id);
-            if (result.ok) setAdding(false);
-            toast.show(
-              result.ok ? `${input.name} added.` : (result.message ?? "Could not add."),
-              result.ok ? "good" : "bad",
-            );
-          }}
-        />
-      )}
-
-      {editing && (
-        <ProductForm
-          title="Edit lending product"
-          db={db}
-          initial={editing}
-          onClose={() => setEditing(null)}
-          onSubmit={(input) => {
-            const result = updateLendingProduct(editing.id, input, session.user.id);
-            if (result.ok) setEditing(null);
-            toast.show(
-              result.ok ? `${input.name} updated.` : (result.message ?? "Could not update."),
-              result.ok ? "good" : "bad",
-            );
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -387,12 +292,6 @@ const AVAILABILITY_LABELS: Record<string, string> = {
   superseded: "Superseded",
   expired: "No longer offered",
   not_yet_effective: "Not yet effective",
-};
-
-const AVAILABILITY_ACTION_LABELS: Record<AvailabilityStatus, string> = {
-  active: "reactivated",
-  temporarily_suspended: "temporarily suspended",
-  retired: "retired",
 };
 
 function today(): string {
@@ -499,325 +398,6 @@ function Detail({ label, children }: { label: string; children: ReactNode }): Re
     <div>
       <dt className="font-medium text-ink-700">{label}</dt>
       <dd className="text-ink-500">{children}</dd>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// The form.
-//
-// Grouped the way the questions come — what is it, what secures it, who can
-// take it, how big and how long — rather than in schema order. Nothing on it
-// is a free-text vocabulary field: every choice is master data.
-// ---------------------------------------------------------------------------
-
-function ProductForm({
-  title,
-  db,
-  initial,
-  onClose,
-  onSubmit,
-}: {
-  title: string;
-  db: Database;
-  initial?: LoanProduct;
-  onClose: () => void;
-  onSubmit: (input: LendingProductInput) => void;
-}): ReactNode {
-  const [code, setCode] = useState(initial?.code ?? "");
-  const [name, setName] = useState(initial?.name ?? initial?.variant ?? "");
-  const [customerProductId, setCustomerProductId] = useState(initial?.customerProductId ?? "");
-  const [description, setDescription] = useState(initial?.description ?? "");
-  const [securityTypeId, setSecurityTypeId] = useState(initial?.securityTypeId ?? "");
-  const [propertyRequirementId, setPropertyRequirementId] = useState(
-    initial?.propertyRequirementId ?? "",
-  );
-  const [gstRequirementId, setGstRequirementId] = useState(initial?.gstRequirementId ?? "");
-  const [borrowerTypeIds, setBorrowerTypeIds] = useState<Id[]>(initial?.borrowerTypeIds ?? []);
-  const [employmentTypeIds, setEmploymentTypeIds] = useState<Id[]>(
-    initial?.employmentTypeIds ?? [],
-  );
-  const [businessConstitutionIds, setBusinessConstitutionIds] = useState<Id[]>(
-    initial?.businessConstitutionIds ?? [],
-  );
-  const [minTenure, setMinTenure] = useState(String(initial?.minTenureMonths ?? ""));
-  const [maxTenure, setMaxTenure] = useState(String(initial?.maxTenureMonths ?? ""));
-  const [minAmount, setMinAmount] = useState(String(initial?.minAmount ?? ""));
-  const [maxAmount, setMaxAmount] = useState(String(initial?.maxAmount ?? ""));
-  const [typicalCustomerProfile, setTypicalCustomerProfile] = useState(
-    initial?.typicalCustomerProfile ?? "",
-  );
-  const [typicalDocumentsSummary, setTypicalDocumentsSummary] = useState(
-    initial?.typicalDocumentsSummary ?? "",
-  );
-  const [notes, setNotes] = useState(initial?.notes ?? "");
-
-  const ready = code.trim().length > 0 && name.trim().length > 0 && customerProductId !== "";
-  const numeric = (value: string): number | undefined =>
-    value.trim() === "" ? undefined : Number(value);
-
-  return (
-    <Modal open title={title} onClose={onClose}>
-      <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Product name" hint="What office staff call it.">
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Lease Rental Discounting"
-            />
-          </Field>
-          <Field label="Code" hint="Internal, stable, lowercase_with_underscores.">
-            <Input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              disabled={initial !== undefined}
-              placeholder="e.g. lap_lrd"
-            />
-          </Field>
-        </div>
-
-        <Field label="Customer product" hint="What a telecaller thinks of first. Managed under Master Data.">
-          <Select
-            value={customerProductId}
-            onChange={(event) => setCustomerProductId(event.target.value)}
-          >
-            <option value="">— Choose —</option>
-            {activeSorted(db.customerProducts).map((customerProduct) => (
-              <option key={customerProduct.id} value={customerProduct.id}>
-                {customerProduct.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-
-        <Field label="Description" hint="One or two sentences. Explains the product to a new joiner.">
-          <Textarea
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </Field>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="Security">
-            <Select
-              value={securityTypeId}
-              onChange={(event) => setSecurityTypeId(event.target.value)}
-            >
-              <option value="">— None chosen —</option>
-              {activeSorted(db.securityTypes).map((security) => (
-                <option key={security.id} value={security.id}>
-                  {security.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Property required?">
-            <Select
-              value={propertyRequirementId}
-              onChange={(event) => setPropertyRequirementId(event.target.value)}
-            >
-              <option value="">— Not stated —</option>
-              {activeSorted(db.requirementApplicabilities).map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="GST registration?">
-            <Select
-              value={gstRequirementId}
-              onChange={(event) => setGstRequirementId(event.target.value)}
-            >
-              <option value="">— Not stated —</option>
-              {activeSorted(db.requirementApplicabilities).map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-
-        <CheckboxGroup
-          label="Borrower types"
-          hint="Who can take this product."
-          options={activeSorted(db.borrowerTypes)}
-          selected={borrowerTypeIds}
-          onChange={setBorrowerTypeIds}
-        />
-        <CheckboxGroup
-          label="Employment eligibility"
-          hint="Which income profiles this product exists for."
-          options={activeSorted(db.employmentTypes)}
-          selected={employmentTypeIds}
-          onChange={setEmploymentTypeIds}
-        />
-        <CheckboxGroup
-          label="Business eligibility"
-          hint="Which constitutions of firm can borrow. Leave empty for a product no firm takes."
-          options={activeSorted(db.businessConstitutions)}
-          selected={businessConstitutionIds}
-          onChange={setBusinessConstitutionIds}
-        />
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Tenure, months" hint="Typical market range. Guidance, never a rule.">
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                value={minTenure}
-                onChange={(event) => setMinTenure(event.target.value)}
-                placeholder="Min"
-              />
-              <span className="text-xs text-ink-500">to</span>
-              <Input
-                type="number"
-                value={maxTenure}
-                onChange={(event) => setMaxTenure(event.target.value)}
-                placeholder="Max"
-              />
-            </div>
-          </Field>
-          <Field label="Loan amount, rupees" hint="Typical market range across lenders.">
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                value={minAmount}
-                onChange={(event) => setMinAmount(event.target.value)}
-                placeholder="Min"
-              />
-              <span className="text-xs text-ink-500">to</span>
-              <Input
-                type="number"
-                value={maxAmount}
-                onChange={(event) => setMaxAmount(event.target.value)}
-                placeholder="Max"
-              />
-            </div>
-          </Field>
-        </div>
-
-        <Field
-          label="Typical customer profile"
-          hint="Who normally takes this — Salaried Employee, Textile Unit, NRI. Informational only, not an eligibility rule."
-        >
-          <Input
-            value={typicalCustomerProfile}
-            onChange={(event) => setTypicalCustomerProfile(event.target.value)}
-            placeholder="e.g. MSME Manufacturer, Textile Unit"
-          />
-        </Field>
-
-        <Field
-          label="Usually requested"
-          hint="A concise, human-readable summary. Guidance for office staff, not a requirement template."
-        >
-          <Textarea
-            value={typicalDocumentsSummary}
-            onChange={(event) => setTypicalDocumentsSummary(event.target.value)}
-            placeholder="e.g. PAN, Aadhaar, GST, ITR (2 FY), Bank Statement (12 Months)"
-          />
-        </Field>
-
-        <Field label="Notes" hint="Free text for office staff. Not read by any business rule.">
-          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
-        </Field>
-
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!ready}
-            onClick={() =>
-              onSubmit({
-                code,
-                name,
-                customerProductId,
-                ...(description ? { description } : {}),
-                ...(securityTypeId ? { securityTypeId } : {}),
-                ...(propertyRequirementId ? { propertyRequirementId } : {}),
-                ...(gstRequirementId ? { gstRequirementId } : {}),
-                borrowerTypeIds,
-                employmentTypeIds,
-                businessConstitutionIds,
-                ...(numeric(minTenure) !== undefined
-                  ? { minTenureMonths: numeric(minTenure) as number }
-                  : {}),
-                ...(numeric(maxTenure) !== undefined
-                  ? { maxTenureMonths: numeric(maxTenure) as number }
-                  : {}),
-                ...(numeric(minAmount) !== undefined
-                  ? { minAmount: numeric(minAmount) as number }
-                  : {}),
-                ...(numeric(maxAmount) !== undefined
-                  ? { maxAmount: numeric(maxAmount) as number }
-                  : {}),
-                ...(typicalCustomerProfile ? { typicalCustomerProfile } : {}),
-                ...(typicalDocumentsSummary ? { typicalDocumentsSummary } : {}),
-                ...(notes ? { notes } : {}),
-              })
-            }
-          >
-            Save
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function activeSorted(list: readonly MasterDataRecord[]): MasterDataRecord[] {
-  return list
-    .filter((record) => record.isActive)
-    .slice()
-    .sort((a, b) => a.displayOrder - b.displayOrder);
-}
-
-/**
- * Tick boxes rather than a multi-select list box: a multi-select needs a
- * modifier key nobody teaches, and eligibility is exactly the field an
- * office user gets half-right and then cannot see what they picked.
- */
-function CheckboxGroup({
-  label,
-  hint,
-  options,
-  selected,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  options: readonly MasterDataRecord[];
-  selected: readonly Id[];
-  onChange: (value: Id[]) => void;
-}): ReactNode {
-  return (
-    <div>
-      <p className="text-xs font-medium text-ink-700">{label}</p>
-      <p className="text-xs text-ink-500">{hint}</p>
-      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
-        {options.map((option) => {
-          const checked = selected.includes(option.id);
-          return (
-            <label key={option.id} className="flex items-center gap-1.5 text-sm text-ink-700">
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() =>
-                  onChange(
-                    checked
-                      ? selected.filter((id) => id !== option.id)
-                      : [...selected, option.id],
-                  )
-                }
-              />
-              {option.name}
-            </label>
-          );
-        })}
-      </div>
     </div>
   );
 }

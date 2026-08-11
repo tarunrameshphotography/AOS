@@ -52,16 +52,9 @@ import { api } from "../api/client.js";
 import { useMutation } from "../api/hooks.js";
 import { useDocumentTypes, useRejectionReasons, useThresholds } from "../api/master-data.js";
 import type { ApiDocumentType, ApiRejectionReason, ApiThreshold } from "../api/types.js";
-import {
-  createMasterDataRecord,
-  MASTER_DATA_LABELS,
-  setMasterDataActive,
-  updateMasterDataRecord,
-  type MasterDataInput,
-  type MasterDataKind,
-} from "../fake/store.js";
+import { MASTER_DATA_LABELS, type MasterDataKind } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { Id, MasterDataRecord } from "../fake/types.js";
+import type { MasterDataRecord } from "../fake/types.js";
 import { useSession } from "../session.js";
 import {
   Badge,
@@ -211,7 +204,9 @@ export function MasterData(): ReactNode {
         <h1 className="text-xl font-semibold tracking-tight">Master Data</h1>
         <p className="mt-1 text-sm text-ink-500">
           AOS's operational vocabulary.
-          {!canManage && " This user can view but not edit — hold master_data.manage to change values."}
+          {section?.kind === "simple"
+            ? " Read-only reference — see the note below."
+            : !canManage && " This user can view but not edit — hold master_data.manage to change values."}
         </p>
         {section?.kind === "simple" && <NotConnectedBanner />}
       </div>
@@ -275,9 +270,7 @@ export function MasterData(): ReactNode {
           )}
         </nav>
 
-        {section?.kind === "simple" && (
-          <SimpleMasterDataSection section={section} db={db} canManage={canManage} />
-        )}
+        {section?.kind === "simple" && <SimpleMasterDataSection section={section} db={db} />}
         {section?.kind === "documentType" && (
           <DocumentTypeSectionView section={section} canManage={canManage} />
         )}
@@ -325,34 +318,29 @@ function useSearch<T extends { code: string; name: string; description?: string 
 // The generic section — everything sharing MasterDataRecord's shape
 // ---------------------------------------------------------------------------
 
+/**
+ * Read-only reference browsing (Production Readiness Phase 2, "Admin-screen
+ * honesty"). This section still reads `Frontend/src/fake/store.ts` — a
+ * per-browser prototype dataset, not the office database — so it no longer
+ * offers Add/Edit/Deactivate: those wrote to localStorage only, invisible to
+ * every other PC and to real cases. See the banner above.
+ */
 function SimpleMasterDataSection({
   section,
   db,
-  canManage,
 }: {
   section: SimpleSection;
   db: ReturnType<typeof useDatabase>;
-  canManage: boolean;
 }): ReactNode {
-  const session = useSession();
-  const toast = useToast();
-  const [addOpen, setAddOpen] = useState(false);
-  const [editing, setEditing] = useState<MasterDataRecord | null>(null);
-
   const records = (db[section.key] as readonly MasterDataRecord[])
     .slice()
     .sort((a, b) => a.displayOrder - b.displayOrder);
   const [query, setQuery, filtered] = useSearch(records);
 
-  const districtOptions = section.key === "cities" ? db.districts : undefined;
   const showState = section.key === "districts";
 
   return (
-    <Card
-      title={MASTER_DATA_LABELS[section.key] + "s"}
-      subtitle={section.hint}
-      actions={canManage && <Button variant="primary" onClick={() => setAddOpen(true)}>Add</Button>}
-    >
+    <Card title={MASTER_DATA_LABELS[section.key] + "s"} subtitle={section.hint}>
       <div className="space-y-3">
         <Input
           value={query}
@@ -384,186 +372,12 @@ function SimpleMasterDataSection({
                     {record.description && ` · ${record.description}`}
                   </p>
                 </div>
-                {canManage && (
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button onClick={() => setEditing(record)}>Edit</Button>
-                    <Button
-                      variant={record.isActive ? "secondary" : "primary"}
-                      onClick={() => {
-                        const result = setMasterDataActive(
-                          section.key,
-                          record.id,
-                          !record.isActive,
-                          session.user.id,
-                        );
-                        toast.show(
-                          result.ok
-                            ? `${record.name} ${record.isActive ? "deactivated" : "reactivated"}.`
-                            : (result.message ?? "Could not update."),
-                          result.ok ? "good" : "bad",
-                        );
-                      }}
-                    >
-                      {record.isActive ? "Deactivate" : "Reactivate"}
-                    </Button>
-                  </div>
-                )}
               </li>
             ))}
           </ul>
         )}
       </div>
-
-      {addOpen && (
-        <MasterDataForm
-          title={`Add ${MASTER_DATA_LABELS[section.key]}`}
-          districtOptions={districtOptions}
-          showState={showState}
-          onClose={() => setAddOpen(false)}
-          onSubmit={(input) => {
-            const result = createMasterDataRecord(section.key, input, session.user.id);
-            if (result.ok) setAddOpen(false);
-            toast.show(
-              result.ok ? `${input.name} added.` : (result.message ?? "Could not add."),
-              result.ok ? "good" : "bad",
-            );
-          }}
-        />
-      )}
-
-      {editing && (
-        <MasterDataForm
-          title={`Edit ${MASTER_DATA_LABELS[section.key]}`}
-          initial={editing}
-          districtOptions={districtOptions}
-          showState={showState}
-          onClose={() => setEditing(null)}
-          onSubmit={(input) => {
-            const result = updateMasterDataRecord(section.key, editing.id, input, session.user.id);
-            if (result.ok) setEditing(null);
-            toast.show(
-              result.ok ? `${input.name} updated.` : (result.message ?? "Could not update."),
-              result.ok ? "good" : "bad",
-            );
-          }}
-        />
-      )}
     </Card>
-  );
-}
-
-function MasterDataForm({
-  title,
-  initial,
-  districtOptions,
-  showState = false,
-  onClose,
-  onSubmit,
-}: {
-  title: string;
-  initial?: MasterDataRecord;
-  districtOptions?: readonly MasterDataRecord[] | undefined;
-  showState?: boolean;
-  onClose: () => void;
-  onSubmit: (input: MasterDataInput) => void;
-}): ReactNode {
-  const [code, setCode] = useState(initial?.code ?? "");
-  const [name, setName] = useState(initial?.name ?? "");
-  const [description, setDescription] = useState(initial?.description ?? "");
-  const [notes, setNotes] = useState(initial?.notes ?? "");
-  const [effectiveFrom, setEffectiveFrom] = useState(initial?.effectiveFrom ?? "");
-  const [displayOrder, setDisplayOrder] = useState(String(initial?.displayOrder ?? ""));
-  const [districtId, setDistrictId] = useState(initial?.districtId ?? "");
-  const [state, setState] = useState(initial?.state ?? "");
-
-  const ready = code.trim().length > 0 && name.trim().length > 0;
-
-  return (
-    <Modal open title={title} onClose={onClose}>
-      <div className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Code" hint="Internal, stable, lowercase_with_underscores.">
-            <Input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              disabled={initial !== undefined}
-              placeholder="e.g. leasehold"
-            />
-          </Field>
-          <Field label="Display name">
-            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Leasehold" />
-          </Field>
-        </div>
-
-        {districtOptions && (
-          <Field label="District">
-            <Select value={districtId} onChange={(event) => setDistrictId(event.target.value)}>
-              <option value="">— None —</option>
-              {districtOptions
-                .filter((d) => d.isActive)
-                .map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-            </Select>
-          </Field>
-        )}
-
-        {showState && (
-          <Field label="State" hint="Optional. Lets AOS group districts by state as coverage expands.">
-            <Input value={state} onChange={(event) => setState(event.target.value)} placeholder="e.g. Tamil Nadu" />
-          </Field>
-        )}
-
-        <Field label="Description" hint="Explains the value to office staff. Optional.">
-          <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-        </Field>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Display order" hint="Lower numbers appear first in lists and dropdowns.">
-            <Input
-              type="number"
-              value={displayOrder}
-              onChange={(event) => setDisplayOrder(event.target.value)}
-            />
-          </Field>
-          <Field label="Effective from" hint="Optional.">
-            <Input
-              type="date"
-              value={effectiveFrom}
-              onChange={(event) => setEffectiveFrom(event.target.value)}
-            />
-          </Field>
-        </div>
-
-        <Field label="Notes" hint="Free text for office staff. Not read by any business rule.">
-          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
-        </Field>
-
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!ready}
-            onClick={() =>
-              onSubmit({
-                code,
-                name,
-                ...(description ? { description } : {}),
-                ...(notes ? { notes } : {}),
-                ...(effectiveFrom ? { effectiveFrom } : {}),
-                ...(displayOrder ? { displayOrder: Number(displayOrder) } : {}),
-                ...(districtId ? { districtId: districtId as Id } : {}),
-                ...(state ? { state } : {}),
-              })
-            }
-          >
-            Save
-          </Button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

@@ -1,6 +1,6 @@
 AOS — MILESTONES (quick-glance progress tracker)
 Last updated: 2026-08-11
-Current commit / checkpoint: 4e80a83
+Current commit / checkpoint: 4d56eed
 Full detail: see "AOS Production Readiness Master Roadmap.txt"
 
 ============================================================
@@ -39,8 +39,8 @@ Stage 4 — Production Readiness
   Item 4 — Master Data & Configuration ✓
   Follow-up — PostgreSQL enum-array parsing fix ✓
 
-  Phase 1 — Column Masking / ADR-026 → [IN PROGRESS] CURRENT
-  Phase 2 — Admin-screen honesty ○ [ ]
+  Phase 1 — Column Masking / ADR-026 ✓
+  Phase 2 — Admin-screen honesty → [ ] NEXT
   Phase 3 — Concurrency & audit hardening ○ [ ]
   Phase 4 — Case completeness ○ [ ]
   Phase 5 — Loan outcome tracking ○ [ ]
@@ -60,8 +60,8 @@ INITIAL PRODUCTION ○ [ ]
 STATE AS OF THIS CHECKPOINT
 ============================================================
 
-HEAD: 4e80a83
+HEAD: 4d56eed
 origin/main: synchronized
 Working tree: clean (repo sync verified)
 
-Current active work: Phase 1 — Column Masking / ADR-026 (not yet started)
+Current active work: Phase 2 — Admin-screen honesty (not yet started)

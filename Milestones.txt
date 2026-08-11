@@ -1,6 +1,6 @@
 AOS — MILESTONES (quick-glance progress tracker)
 Last updated: 2026-08-11
-Current commit / checkpoint: Phase 5 (Loan outcome tracking) complete — see git log for the commit hash
+Current commit / checkpoint: Phase 6 (Case intake & document workflow) complete — see git log for the commit hash
 Full detail: see "AOS Production Readiness Master Roadmap.txt"
 
 ============================================================
@@ -44,6 +44,7 @@ Stage 4 — Production Readiness
   Phase 3 — Concurrency & audit hardening ✓
   Phase 4 — Case completeness ✓
   Phase 5 — Loan outcome tracking ✓
+  Phase 6 — Case intake & document workflow ✓
 
 Office Server Production Cutover Gate ○ [ ]
   (separate from development phases — backup, migrations, aos_app
@@ -60,14 +61,35 @@ INITIAL PRODUCTION ○ [ ]
 STATE AS OF THIS CHECKPOINT
 ============================================================
 
-HEAD: see git log (Phase 5 commit, this checkpoint)
+HEAD: see git log (Phase 6 commit, this checkpoint)
 origin/main: pushed by this change
 Working tree: clean except pre-existing untracked scratch files
 
-Current active work: Phase 5 complete. No development phase is currently
+Current active work: Phase 6 complete. No development phase is currently
 queued — next is the Office Server Production Cutover Gate, whenever the
 business is ready for it. Inbound bank-email ingestion remains explicitly
 deferred.
+
+Phase 6 in one line: the document checklist finally reflects the customer,
+because New Case now RECORDS what the rule engine has always been able to
+read — the applicant's employment type, entity type, borrower type, GST and
+ITR answers and existing obligations, asked by progressive disclosure driven
+by what the chosen product declares (ADR-032), never by product codes in the
+browser. That one gap made every income-conditioned rule match nothing since
+migration 0021, so a real LAP file arrived at the login desk with KYC and
+little else; no new rule was needed to fix it. Alongside: the bank login
+form, NACH mandate and Amaze's own application form stop being customer
+requirements (retired as rules, kept readable, classified by the new
+`document_type.artifact_kind`) so waivers go back to meaning what BR-035 says
+they mean; requirement subjects are returned structurally so "Applicant — PAN
+Card" and "Co-applicant — PAN Card" are two visibly different rows; Required
+and Additional Documents become distinct sections with a controlled-catalogue
+"+ Add document"; and sessions gain a server-side inactivity timeout with the
+browser token moved to sessionStorage, so closing the browser no longer
+resumes somebody else's session. One additive migration (0035), applied only
+to aos_test/aos_e2e. Found and fixed en route: creating a borrowing firm
+inline had always 500'd on `organisation_roles_not_empty`. 642 unit and 202
+integration tests green; three pre-existing Playwright failures unchanged.
 
 Phase 5 in one line: bank submissions now carry their real lifecycle
 end to end — under process, bank queries raised and answered, eligibility,

@@ -21,20 +21,48 @@
 const TOKEN_KEY = "aos.token";
 
 /**
- * The token, kept in localStorage rather than memory, because "refresh
- * preserves the session" is a requirement — an employee who reloads a case
- * screen must not land back on the login form.
+ * The token lives in sessionStorage, NOT localStorage.
  *
- * localStorage is readable by any script on this origin, which is worth being
- * plain about: it is the same exposure the prototype's entire database already
- * had, the app ships no third-party scripts, and the alternative (an
- * HttpOnly cookie) needs the API and the app served from one origin in
- * production — a deployment change, recorded as the next step rather than
- * pretended away. The token is short-lived (12 hours) and revocable server-side.
+ * WHAT CHANGED AND WHY. It used to be localStorage, which persists until
+ * something deletes it — so closing the browser and reopening it hours later
+ * resumed the session, and on a shared office PC the next person to open
+ * Chrome was signed in as whoever used it last. "Log out" was the only thing
+ * that ended a session, and it is the one thing people forget.
+ *
+ * sessionStorage keeps the property that made localStorage the choice
+ * originally — a refresh does NOT return an employee to the login form, which
+ * is what makes AOS usable — and drops the one that was never wanted: it is
+ * cleared when the browsing context ends. Closing the browser now ends the
+ * session in the browser, and the server-side inactivity timeout
+ * (`AOS_SESSION_IDLE_MS`, Backend/api-server.ts) ends it on the server whether
+ * or not the browser cooperates. Neither control depends on the other, and
+ * neither depends on `beforeunload`, which fires unreliably and is not a
+ * security mechanism.
+ *
+ * THE TRADE-OFF, stated rather than hidden: sessionStorage is per-tab, so
+ * opening AOS in a second tab asks for a sign-in. That is the correct default
+ * for a shared machine holding customer records, and the alternative — a token
+ * that outlives the browser — is what this replaces.
+ *
+ * STILL NOT AN HttpOnly COOKIE. That remains the stronger answer and still
+ * needs the API and the app served from one origin in production; it is a
+ * deployment change, recorded as the next step rather than pretended away.
+ * What has changed is that the token's lifetime no longer depends on it.
  */
+function tokenStore(): Storage | null {
+  try {
+    return sessionStorage;
+  } catch {
+    // Private browsing, or storage disabled by policy. The session will not
+    // survive a refresh, which is a worse experience than a crash rather than
+    // a wrong one — and never a silently longer-lived session.
+    return null;
+  }
+}
+
 export function storedToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return tokenStore()?.getItem(TOKEN_KEY) ?? null;
   } catch {
     return null;
   }
@@ -42,11 +70,16 @@ export function storedToken(): string | null {
 
 export function storeToken(token: string | null): void {
   try {
-    if (token === null) localStorage.removeItem(TOKEN_KEY);
-    else localStorage.setItem(TOKEN_KEY, token);
+    const store = tokenStore();
+    if (!store) return;
+    if (token === null) store.removeItem(TOKEN_KEY);
+    else store.setItem(TOKEN_KEY, token);
+    // A token left in localStorage by a build before this change would
+    // otherwise sit there forever, unread but not gone. Clearing it here means
+    // the first sign-in or sign-out on the new build removes it.
+    localStorage.removeItem(TOKEN_KEY);
   } catch {
-    // Private browsing or over quota. The session will not survive a refresh,
-    // which is a worse experience than a crash rather than a wrong one.
+    // As above.
   }
 }
 

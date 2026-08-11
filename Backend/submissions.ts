@@ -564,6 +564,19 @@ export interface SendableDocumentView {
   readonly financialYearLabel?: string;
   readonly version: number;
   readonly blockedBecause?: string;
+  /**
+   * Added by hand for this case (`document_requirement.is_custom`), not asked
+   * for by a rule.
+   *
+   * Carried so the Banks tab can SAY so beside the tick box. It deliberately
+   * changes no selection behaviour: package contents are whatever the operator
+   * ticked (`preparePackage` takes explicit `documentIds`), and an additional
+   * document is neither auto-attached to every lender nor withheld from one.
+   * Whether a lender wants it is a judgement about that lender, and the person
+   * choosing needs to know which documents are the standard set and which are
+   * this case's own.
+   */
+  readonly isCustom: boolean;
 }
 
 interface RequirementDocumentRow {
@@ -577,13 +590,15 @@ interface RequirementDocumentRow {
   file_name: string;
   file_size_bytes: string;
   version: number;
+  is_custom: boolean;
 }
 
 async function verifiedDocumentRows(client: Queryable, caseId: string): Promise<RequirementDocumentRow[]> {
   const { rows } = await client.query<RequirementDocumentRow>(
     `select r.id as requirement_id, d.id as document_id, dt.code as document_type_code,
             dt.category, dt.name as type_name, dt.period_kind::text as period_kind,
-            r.period_start::text, d.file_name, d.file_size_bytes::text, d.version
+            r.period_start::text, d.file_name, d.file_size_bytes::text, d.version,
+            r.is_custom
        from document_requirement r
        join document_type dt on dt.id = r.document_type_id
        join document d on d.id = r.satisfied_by_document_id
@@ -641,6 +656,7 @@ export async function sendableDocuments(
       fileSizeBytes: candidate.fileSizeBytes,
       ...(candidate.financialYearLabel ? { financialYearLabel: candidate.financialYearLabel } : {}),
       version: candidate.version,
+      isCustom: row.is_custom === true,
       ...(reason ? { blockedBecause: describePackageProblem({ kind: "document_not_sendable", document: candidate, reason }) } : {}),
     };
   });

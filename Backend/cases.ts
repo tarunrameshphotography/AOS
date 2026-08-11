@@ -26,6 +26,7 @@
  */
 
 import { CASE_STAGES, LOST_REASONS, type CaseStage, type LostReason } from "@domain/case/stages.js";
+import { CONSTRUCTION_STAGES } from "@domain/requirements/index.js";
 import { evaluateTransition, type CaseSnapshot } from "@domain/case/transitions.js";
 
 import type { Queryable } from "./db.js";
@@ -249,6 +250,69 @@ export async function casesForPerson(client: Queryable, actor: Actor, personId: 
 // Creating
 // ---------------------------------------------------------------------------
 
+/**
+ * The intake facts, and why each one is here.
+ *
+ * THE DEFECT THESE FIX. The requirement engine has been able to ask about a
+ * party's employment type since migration 0021, and the rule pack has read it
+ * properly since 0026 — salaried gets payslips and Form 16, self-employed gets
+ * ITR, Form 26AS, CA-certified accounts and GST returns. But nothing ever
+ * WROTE it: `createCase` took an applicant, a product, an amount and a source,
+ * so `party.employment_type` resolved to unknown on every real case and every
+ * income rule matched nothing. The login desk received KYC and whatever the
+ * product code alone could justify. The engine was not wrong; it was never
+ * told anything.
+ *
+ * WHAT EARNS A PLACE HERE. Each of these is (a) a question the telecaller is
+ * already asking on the call and (b) read by at least one rule in the active
+ * pack. Nothing speculative: a fact that no rule reads and no workflow uses is
+ * a field somebody has to fill in for nothing, and the New Case screen is
+ * filled DURING a phone call.
+ *
+ *   employmentTypeId        party.employment_type — the three-way split the
+ *                           whole income section of the pack turns on.
+ *   businessConstitutionId  party.business_constitution — drives the
+ *                           partnership deed / LLP agreement / MOA-AOA /
+ *                           board resolution rules.
+ *   borrowerTypeId          party.borrower_type — NRI files need passport,
+ *                           visa, overseas income proof and a POA.
+ *   itrFiled                party.itr_filed (0035) — an explicit no stands the
+ *                           ITR rules down; unknown does not.
+ *   isGstRegistered         case.is_gst_registered — the GST certificate and
+ *                           returns rules for a business in the customer's own
+ *                           name.
+ *   hasExistingObligations  party.has_existing_obligations — the existing-loan
+ *                           statement, the obligations half of FOIR.
+ *   constructionStage       case.construction_stage — the staged construction
+ *                           documents, on construction products only.
+ *
+ * ALL OF THEM ARE OPTIONAL, and stay three-valued where the column is boolean.
+ * A telecaller who does not yet know is not blocked from opening a case: null
+ * means "nobody has asked", the rules already distinguish that from "no", and
+ * every one of these is editable afterwards on the case screen. Requiring them
+ * would trade a wrong checklist for an unopenable case.
+ */
+const CASE_LEVEL_FACTS: Record<string, string> = {
+  isGstRegistered: "is_gst_registered",
+  hasExistingObligations: "has_existing_obligations",
+  constructionStage: "construction_stage",
+};
+
+/** The `case_party` overrides recorded for the applicant at intake. Each names
+ * the master-data table its id must exist in — a bad id is a 400, never a
+ * silently-null fact that makes a rule stand down. */
+const PARTY_FACT_TABLES: Record<string, string> = {
+  employmentTypeId: "employment_type",
+  borrowerTypeId: "borrower_type",
+  businessConstitutionId: "business_constitution",
+};
+
+function optionalBoolean(value: unknown, field: string): boolean | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "boolean") return value;
+  throw new ApiError(400, `${field} must be true, false, or left unanswered.`);
+}
+
 export async function createCase(client: Queryable, actor: Actor, body: Record<string, unknown>) {
   if (!can(actor, "case.create", "all")) {
     throw new ApiError(403, refusalMessage("case.create"));
@@ -276,6 +340,33 @@ export async function createCase(client: Queryable, actor: Actor, body: Record<s
     if (!source.rows[0]) throw new ApiError(400, "No such referral source.");
   }
 
+  // Every intake fact is validated BEFORE the case number is allocated. A bad
+  // master-data id must not consume a number from the sequence — the gap would
+  // be permanent and unexplainable (ADR-024).
+  const partyFacts: Record<string, string | null> = {};
+  for (const [field, table] of Object.entries(PARTY_FACT_TABLES)) {
+    const raw = body[field];
+    if (raw === undefined || raw === null || raw === "") continue;
+    const id = String(raw);
+    const exists = await client.query(`select id from ${table} where id = $1`, [id]);
+    if (!exists.rows[0]) throw new ApiError(400, `No such ${table.replace(/_/g, " ")}.`);
+    partyFacts[field] = id;
+  }
+
+  const isGstRegistered = optionalBoolean(body.isGstRegistered, "isGstRegistered");
+  const hasExistingObligations = optionalBoolean(
+    body.hasExistingObligations,
+    "hasExistingObligations",
+  );
+  const itrFiled = optionalBoolean(body.itrFiled, "itrFiled");
+  const constructionStage =
+    typeof body.constructionStage === "string" && body.constructionStage.length > 0
+      ? body.constructionStage
+      : null;
+  if (constructionStage !== null && !(CONSTRUCTION_STAGES as readonly string[]).includes(constructionStage)) {
+    throw new ApiError(400, `Unknown construction stage: ${constructionStage}.`);
+  }
+
   // ADR-024: the number comes from the sequence function, never from the
   // application. Two PCs creating a case at the same moment is exactly the
   // case the row lock in there exists for.
@@ -286,8 +377,9 @@ export async function createCase(client: Queryable, actor: Actor, body: Record<s
   // A case is owned by whoever created it. Reassignment is `case.assign`.
   const inserted = await client.query(
     `insert into loan_case (case_number, loan_product_id, requested_amount, stage,
-                            owner_user_id, source, referral_source_id, created_by)
-     values ($1, $2, $3, 'new', $4, $5, $6, $4)
+                            owner_user_id, source, referral_source_id, created_by,
+                            is_gst_registered, has_existing_obligations, construction_stage)
+     values ($1, $2, $3, 'new', $4, $5, $6, $4, $7, $8, $9)
      returning id`,
     [
       numbered.rows[0]!.case_number,
@@ -296,17 +388,40 @@ export async function createCase(client: Queryable, actor: Actor, body: Record<s
       actor.userId,
       typeof body.source === "string" ? body.source : null,
       referralSourceId,
+      isGstRegistered,
+      hasExistingObligations,
+      constructionStage,
     ],
   );
   const caseId = inserted.rows[0]!.id;
 
+  // The applicant carries the party-level facts. They are `case_party`
+  // overrides, never a rewrite of the shared person record (0021's own comment
+  // on `employment_type_id`): the same person may be salaried on one file and
+  // running a business on the next, and a case screen must not edit a record
+  // other cases read.
   await client.query(
-    `insert into case_party (case_id, person_id, role, is_primary, created_by)
-     values ($1, $2, 'applicant', true, $3)`,
-    [caseId, applicantId, actor.userId],
+    `insert into case_party (case_id, person_id, role, is_primary, created_by,
+                             employment_type_id, borrower_type_id, business_constitution_id,
+                             itr_filed)
+     values ($1, $2, 'applicant', true, $3, $4, $5, $6, $7)`,
+    [
+      caseId,
+      applicantId,
+      actor.userId,
+      partyFacts.employmentTypeId ?? null,
+      partyFacts.borrowerTypeId ?? null,
+      partyFacts.businessConstitutionId ?? null,
+      itrFiled,
+    ],
   );
 
-  // IDs and case facts only. The applicant is referenced, never named.
+  // IDs and case facts only. The applicant is referenced, never named. The
+  // intake facts are ids and booleans — master-data references and yes/no
+  // answers about the case, not free text about a person — so they belong on
+  // the event for the same reason the product id does: "why does this case ask
+  // for GST returns?" has to be answerable months later, and the answer is
+  // what was recorded at intake.
   await recordCaseEvent(client, {
     actorUserId: actor.userId,
     caseId,
@@ -318,6 +433,13 @@ export async function createCase(client: Queryable, actor: Actor, body: Record<s
       referralSourceId,
       ownerUserId: actor.userId,
       applicantId,
+      employmentTypeId: partyFacts.employmentTypeId ?? null,
+      borrowerTypeId: partyFacts.borrowerTypeId ?? null,
+      businessConstitutionId: partyFacts.businessConstitutionId ?? null,
+      itrFiled,
+      isGstRegistered,
+      hasExistingObligations,
+      constructionStage,
     },
   });
 
@@ -332,6 +454,12 @@ const WRITABLE: Record<string, string> = {
   requestedAmount: "requested_amount",
   source: "source",
   referralSourceId: "referral_source_id",
+  // The case-level intake facts, correctable after the call. A telecaller who
+  // did not know whether the business was GST-registered at 11am must be able
+  // to answer it at 3pm and have the checklist follow — which it does, because
+  // `regenerateRequirements` reconciles on the next read of the case's
+  // requirements rather than only at creation.
+  ...CASE_LEVEL_FACTS,
 };
 
 /**

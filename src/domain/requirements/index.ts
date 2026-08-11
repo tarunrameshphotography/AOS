@@ -36,10 +36,15 @@ export {
   type RuleScope,
 } from "./rules.js";
 
-export { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
+export {
+  DEFAULT_REQUIREMENT_RULES,
+  activeRulesAskingForNonCustomerDocuments,
+  defaultRuleDocumentTypeCodes,
+} from "./default-rules.js";
 
 export {
   CUSTOM_DOCUMENT_TYPE_CODE,
+  DOCUMENT_ARTIFACT_KINDS,
   DOCUMENT_CATALOGUE,
   DOCUMENT_CATEGORIES,
   DOCUMENT_CATEGORY_HINTS,
@@ -48,10 +53,13 @@ export {
   DOCUMENT_TYPES_BY_CODE,
   FINANCIAL_YEAR_DOCUMENT_TYPES,
   allDocumentTypeCodes,
+  artifactKindOf,
   assessmentYearLabel,
   documentRowLabel,
   documentTypeByCode,
+  isCustomerDocument,
   isFinancialYearScoped,
+  type DocumentArtifactKind,
   type DocumentCategory,
   type DocumentOwnerKind,
   type DocumentTypeDefinition,

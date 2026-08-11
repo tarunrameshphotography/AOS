@@ -136,7 +136,7 @@ test.describe("access to User Management", () => {
     // same session's token on the write that matters.
     const refused = await page.request.post("/api/users", {
       headers: {
-        Authorization: `Bearer ${await page.evaluate(() => localStorage.getItem("aos.token"))}`,
+        Authorization: `Bearer ${await page.evaluate(() => sessionStorage.getItem("aos.token"))}`,
       },
       data: {
         fullName: "Should Not Exist",
@@ -342,7 +342,7 @@ test.describe("permission overrides", () => {
       const me = await theirPage.request.get("/api/auth/me", {
         headers: {
           Authorization: `Bearer ${await theirPage.evaluate(() =>
-            localStorage.getItem("aos.token"),
+            sessionStorage.getItem("aos.token"),
           )}`,
         },
       });

@@ -25,9 +25,10 @@ Phase 2 — Admin-Screen Honesty: COMPLETE (342e649)
 Phase 3 — Concurrency & Audit Hardening: COMPLETE (see PHASE 3 section below)
 Phase 4 — Case Completeness: COMPLETE (see PHASE 4 section below)
 Phase 5 — Loan Outcome Tracking: COMPLETE (see PHASE 5 section below)
+Phase 6 — Case Intake & Document Workflow: COMPLETE (see PHASE 6 section below)
 
 Current repository:
-  HEAD: see git log (Phase 5 commit, this checkpoint)
+  HEAD: see git log (Phase 6 commit, this checkpoint)
   origin/main: pushed by this change — see final report
   Working tree: clean except pre-existing untracked scratch files
     ("USER ID.txt", "future unseen potential.txt")
@@ -535,21 +536,107 @@ changes scope:
   - Every possible post-submission outcome feature
 
 ============================================================
+PHASE 6 — CASE INTAKE & DOCUMENT WORKFLOW: COMPLETE
+============================================================
+
+THE DEFECT. The requirement engine could tell salaried from self-employed
+from migration 0021, and the rule pack has read that distinction properly
+since 0026 — payslips and Form 16 on one side, ITR, Form 26AS, CA-certified
+accounts and GST returns on the other. Nothing ever WROTE the fact.
+`createCase` took an applicant, a product, an amount and a source, so
+`party.employment_type` resolved to unknown on every real case, every
+income-conditioned rule matched nothing, and the login desk received KYC plus
+whatever the product code alone could justify. The engine was not wrong; it
+was never told anything. The fix is overwhelmingly in the INTAKE, not in the
+rules: no new rule was written for it.
+
+WHAT CHANGED
+
+1. NEW CASE captures the facts the engine needs, by progressive disclosure.
+   Pick the loan type; only the questions that loan type can answer appear.
+   WHICH questions appear comes from what the product DECLARES
+   (employmentTypeIds, businessConstitutionIds, propertyRequirement,
+   gstRequirement — ADR-032, migrations 0015/0016), never from a list of
+   product codes in the browser: a product added in Master Data next year
+   asks the right questions with no frontend change. Every question is
+   optional — unanswered means "nobody has asked", which the rules already
+   distinguish from "no", and all of it is correctable on the case afterwards.
+
+2. MIGRATION 0035 (additive). `case_party.itr_filed` and
+   `case_party.is_gst_registered` — two facts that had nowhere to live, both
+   deliberately three-valued. `document_type.artifact_kind` — who PRODUCES a
+   document (customer / bank_submission / internal).
+
+3. CUSTOMER DOCUMENTS ONLY. Three rules asked for documents the customer does
+   not produce: the bank login form, the NACH mandate (both the lender's, and
+   non-existent until a lender is chosen) and Amaze's own application form.
+   They were on every case, and live use answered them by waiving them —
+   which spends a decision that is supposed to mean "this file goes to the
+   bank with a known gap, and my name is on it" (BR-035). All three are now
+   is_active = false with the reason on the row; nothing deleted, nothing
+   rewritten, and existing requirements retire to not_applicable through the
+   ordinary regeneration path (BR-034).
+
+4. ITR CONDITIONALITY. `party.itr_filed not_equals "false"` — fires on YES
+   and on UNKNOWN, stands down only on an explicit NO. Deliberately not
+   `is_true`, which would have asked nothing until somebody ticked a box: the
+   exact bug the 9.1 audit found on the GST rules.
+
+5. SUBJECTS ARE STRUCTURAL. The API returns `requirement.subject`
+   ({kind, role, name}) resolved from `required_of_case_party_id` /
+   `required_of_case_property_id`. "Applicant — PAN Card" and "Co-applicant —
+   PAN Card" are two visibly different rows, from association data, not from
+   string concatenation in the frontend.
+
+6. ADDITIONAL DOCUMENTS. `POST /api/cases/:id/requirements` (case.update)
+   adds one hand-picked requirement to one case, from the CONTROLLED document
+   type catalogue — never free text. Required and Additional are separate
+   sections. Regeneration passes custom rows through untouched. In a
+   submission they are candidates like any other, carrying `isCustom` so the
+   Banks tab can say which are this case's own; package contents remain
+   exactly what the operator ticked, so nothing is auto-attached.
+
+7. SESSION LIFECYCLE. An inactivity timeout (AOS_SESSION_IDLE_MS, default 2h)
+   alongside the existing absolute lifetime (AOS_SESSION_TTL_MS, 12h), both
+   checked server-side on every request; a lapsed session is REVOKED, on its
+   own connection so the 401's transaction rollback cannot discard it. The
+   browser token moved from localStorage to sessionStorage, so closing the
+   browser ends the session there too — a convenience, not the control.
+   Deactivation and password reset already revoked sessions and still do.
+   No beforeunload/unload anywhere.
+
+BUG FOUND AND FIXED EN ROUTE. Creating a borrowing firm inline
+(`addCaseParty`, Phase 4) inserted an `organisation` with no `roles`,
+violating `organisation_roles_not_empty` — a 500 on every attempt. Never
+exercised by a test until Phase 6's suite reached the non-individual path.
+
+ZERO changes to: the evaluator's algorithm, the waive path, the inline View
+or the explicit Verify confirmation (4008989), package selection semantics,
+the permission catalogue.
+
+TESTS: +7 unit (642 total), +22 integration (202 total), all green.
+Baseline was green on all four; the three pre-existing Playwright failures
+in customer-case.spec.ts are unchanged and documented in the final report.
+
+============================================================
 MASTER MILESTONE
 ============================================================
 
 CURRENT:
   Phase 1 (Column Masking), Phase 2 (Admin-screen honesty),
-  Phase 3 (Concurrency & audit hardening), Phase 4 (Case completeness) and
-  Phase 5 (Loan outcome tracking) complete
+  Phase 3 (Concurrency & audit hardening), Phase 4 (Case completeness),
+  Phase 5 (Loan outcome tracking) and Phase 6 (Case intake & document
+  workflow) complete
 
 REMAINING DEVELOPMENT:
-  None currently defined. The five-phase list that began this checkpoint
-  is now complete.
+  None currently defined.
 
 THEN:
   Office Server Production Cutover Gate (unstarted — see the 21-step
-  checklist above; nothing in Phase 5 advances or substitutes for it)
+  checklist above; nothing in Phase 6 advances or substitutes for it.
+  Migration 0035 has been applied ONLY to the throwaway aos_test and
+  aos_e2e databases; applying it to the office database is a cutover-gate
+  step and was not authorized here)
 
 THEN:
   INITIAL PRODUCTION
@@ -557,7 +644,7 @@ THEN:
 AFTER INITIAL PRODUCTION:
   Inbound bank-email ingestion (Gmail polling, AI classification, OCR) and
   any later roadmap items, based on actual business priorities. Explicitly
-  NOT started as part of Phase 5.
+  NOT started as part of Phase 5 or Phase 6.
 
 ============================================================
 ANTI-SCOPE-CREEP RULE

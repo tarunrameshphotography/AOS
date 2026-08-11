@@ -1255,6 +1255,48 @@ function periodLabelFor(requirement: ApiRequirement): string | undefined {
   return financialYearOf(new Date(requirement.periodStart)).label;
 }
 
+/**
+ * Whose document this row is — "Applicant", "Co-applicant — Ravi Kumar",
+ * "Property — Saibaba Colony".
+ *
+ * THE PROBLEM THIS SOLVES. A case with a co-applicant showed two rows called
+ * "PAN Card", two called "Aadhaar Card" and two called "Bank Statement", with
+ * nothing to tell them apart. They were never ambiguous underneath — the
+ * requirement has pointed at the right `case_party` since the table was
+ * created — but the screen printed only the document type, so the login desk
+ * had to guess which upload belonged to whom, and a list that looks duplicated
+ * is a list people stop trusting.
+ *
+ * Built from `requirement.subject`, which the API resolves from the
+ * requirement's structural association. NOT from a string the server
+ * concatenated, and emphatically not by this file inferring a subject from the
+ * document type's name — the association is data, and rendering it is the only
+ * part that belongs here.
+ *
+ * The name is included only when it adds something. On a single-applicant case
+ * "Applicant" is unambiguous, and repeating the customer's name on all fourteen
+ * rows is noise; with a co-applicant, the role alone already separates them.
+ * The name earns its place on a property, where "Property" alone says nothing
+ * about which one, and on a borrowing firm.
+ */
+function subjectLabel(requirement: ApiRequirement, showNames: boolean): string | null {
+  const { kind, role, name } = requirement.subject;
+  if (kind === "case") return null;
+
+  if (kind === "property") {
+    return name ? `Property — ${name}` : "Property";
+  }
+
+  const roleName = role
+    ? (PARTY_ROLE_LABELS[role as CasePartyRole] ?? role.replace(/_/g, " "))
+    : "Party";
+  // A borrowing firm is always named: "Borrowing firm" is a role a case can
+  // hold more than one of in principle, and the firm's name is what the
+  // document is filed under.
+  const alwaysName = role === "borrower_firm";
+  return showNames || alwaysName ? (name ? `${roleName} — ${name}` : roleName) : roleName;
+}
+
 function DocumentsTab({
   loanCase,
   onCaseChanged,
@@ -1264,6 +1306,7 @@ function DocumentsTab({
 }): ReactNode {
   const query = useApiQuery<ApiCaseRequirements>(`/cases/${loanCase.id}/requirements`);
   const session = useSession();
+  const [adding, setAdding] = useState(false);
 
   if (query.loading) return <Empty>Loading requirements…</Empty>;
   if (query.error || !query.data) {
@@ -1281,6 +1324,10 @@ function DocumentsTab({
   const mayUpload = session.canActOnCase(loanCase.ownerUserId, "document.upload");
   const mayVerify = session.canActOnCase(loanCase.ownerUserId, "document.verify");
   const mayWaive = session.canActOnCase(loanCase.ownerUserId, "requirement.waive");
+  // The permission that already governs inserting into `document_requirement`
+  // (src/domain/permissions/tables.ts). Adding an ask is an ordinary act of
+  // running the case; excusing one is `requirement.waive`, which is different.
+  const mayAdd = session.canActOnCase(loanCase.ownerUserId, "case.update");
 
   const refetchAll = (): void => {
     query.refetch();
@@ -1290,20 +1337,34 @@ function DocumentsTab({
     onCaseChanged();
   };
 
-  if (requirements.length === 0) {
-    return (
-      <Card title="Documents">
-        <Empty>
-          {loanCase.stage === "new" || loanCase.stage === "contacted" || loanCase.stage === "appointment_fixed"
-            ? "Nothing is due yet at this stage. Requirements appear once the case reaches Documents Pending."
-            : "This case does not require any documents."}
-        </Empty>
-      </Card>
-    );
-  }
+  /**
+   * Required and Additional are two different questions, so they are two
+   * different sections.
+   *
+   * REQUIRED is what the rule engine says this case needs, given its facts. It
+   * is the checklist, and it is not editable by hand — a row appears because a
+   * rule fired, and disappears when the facts change.
+   *
+   * ADDITIONAL is what somebody asked for on this case alone
+   * (`document_requirement.is_custom`): a lender's one-off ask, a letter
+   * explaining a gap. Mixing the two would make the checklist look editable,
+   * which is the misunderstanding that ends with people adding rows instead of
+   * fixing the rule that is wrong.
+   */
+  const required = requirements.filter((requirement) => !requirement.isCustom);
+  const additional = requirements.filter((requirement) => requirement.isCustom);
+
+  // Only show a party's NAME beside their role where the case has more than
+  // one person on it — see `subjectLabel`.
+  const partySubjects = new Set(
+    requirements
+      .filter((requirement) => requirement.subject.kind === "party")
+      .map((requirement) => requirement.requiredOfCasePartyId),
+  );
+  const showNames = partySubjects.size > 1;
 
   const byCategory = new Map<DocumentCategory, ApiRequirement[]>();
-  for (const requirement of requirements) {
+  for (const requirement of required) {
     const definition = DOCUMENT_CATALOGUE.find((type) => type.code === requirement.documentTypeCode);
     const category = definition?.category ?? "additional";
     const list = byCategory.get(category) ?? [];
@@ -1311,50 +1372,231 @@ function DocumentsTab({
     byCategory.set(category, list);
   }
 
+  const nothingYet =
+    loanCase.stage === "new" ||
+    loanCase.stage === "contacted" ||
+    loanCase.stage === "appointment_fixed";
+
+  const row = (requirement: ApiRequirement): ReactNode => (
+    <RequirementRow
+      key={requirement.id}
+      caseId={loanCase.id}
+      requirement={requirement}
+      showNames={showNames}
+      mayUpload={mayUpload}
+      mayVerify={mayVerify}
+      mayWaive={mayWaive}
+      onChanged={refetchAll}
+    />
+  );
+
   return (
     <div className="space-y-4">
-      <Card title="Progress">
-        <div className="space-y-2">
-          <ProgressBar percent={progress.percentComplete} applicable={progress.applicableCount} />
-          <p className="text-xs text-ink-500">
-            {progress.verifiedCount} verified · {progress.outstandingCount} outstanding
-            {progress.rejectedCount > 0 && ` (${progress.rejectedCount} rejected)`}
-            {progress.optionalCount > 0 && ` · ${progress.optionalCount} optional`}
-            {progress.upcomingCount > 0 && ` · ${progress.upcomingCount} not due yet`}
-          </p>
-          {progress.isReadyForSubmission && loanCase.stage === "documents_pending" && (
+      {requirements.length > 0 && (
+        <Card title="Progress">
+          <div className="space-y-2">
+            <ProgressBar percent={progress.percentComplete} applicable={progress.applicableCount} />
             <p className="text-xs text-ink-500">
-              Everything required is verified — this case moves to Ready for Submission on its
-              own.
+              {progress.verifiedCount} verified · {progress.outstandingCount} outstanding
+              {progress.rejectedCount > 0 && ` (${progress.rejectedCount} rejected)`}
+              {progress.optionalCount > 0 && ` · ${progress.optionalCount} optional`}
+              {progress.upcomingCount > 0 && ` · ${progress.upcomingCount} not due yet`}
             </p>
+            {progress.isReadyForSubmission && loanCase.stage === "documents_pending" && (
+              <p className="text-xs text-ink-500">
+                Everything required is verified — this case moves to Ready for Submission on its
+                own.
+              </p>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {required.length === 0 && (
+        <Card title="Required documents">
+          <Empty>
+            {nothingYet
+              ? "Nothing is due yet at this stage. Requirements appear once the case reaches Documents Pending."
+              : "This case does not require any documents."}
+          </Empty>
+        </Card>
+      )}
+
+      {DOCUMENT_CATEGORIES.filter((category) => byCategory.has(category)).map((category) => (
+        <Card key={category} title={DOCUMENT_CATEGORY_LABELS[category]} subtitle={DOCUMENT_CATEGORY_HINTS[category]}>
+          <div className="divide-y divide-ink-100">{byCategory.get(category)!.map(row)}</div>
+        </Card>
+      ))}
+
+      <Card
+        title="Additional documents"
+        subtitle="Asked for on this case only, by a person rather than by a rule."
+      >
+        <div className="space-y-3">
+          {additional.length > 0 ? (
+            <div className="divide-y divide-ink-100">{additional.map(row)}</div>
+          ) : (
+            <Empty>Nothing extra has been asked for on this case.</Empty>
+          )}
+
+          {mayAdd ? (
+            <div className="pt-1">
+              <Button onClick={() => setAdding(true)}>+ Add document</Button>
+              <p className="mt-2 text-xs text-ink-500">
+                For something the standard list does not cover — a lender's one-off ask, a letter
+                explaining a gap. It adds a row; it cannot remove one the rules asked for. If the
+                required list is wrong, the rule is what needs fixing.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs text-ink-500">
+                You can see this case's documents but not add to its list.
+              </p>
+              <PermissionCode code="case.update" />
+            </div>
           )}
         </div>
       </Card>
 
-      {DOCUMENT_CATEGORIES.filter((category) => byCategory.has(category)).map((category) => (
-        <Card key={category} title={DOCUMENT_CATEGORY_LABELS[category]} subtitle={DOCUMENT_CATEGORY_HINTS[category]}>
-          <div className="divide-y divide-ink-100">
-            {byCategory.get(category)!.map((requirement) => (
-              <RequirementRow
-                key={requirement.id}
-                caseId={loanCase.id}
-                requirement={requirement}
-                mayUpload={mayUpload}
-                mayVerify={mayVerify}
-                mayWaive={mayWaive}
-                onChanged={refetchAll}
-              />
-            ))}
-          </div>
-        </Card>
-      ))}
+      {adding && (
+        <AddDocumentModal
+          caseId={loanCase.id}
+          onClose={() => setAdding(false)}
+          onAdded={() => {
+            setAdding(false);
+            refetchAll();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Ask this case for one more document.
+ *
+ * THE DOCUMENT TYPE COMES FROM THE CATALOGUE, never from a text box. A
+ * free-text name would make the row unverifiable in any consistent way,
+ * unfileable under a storage path, and — worst — would make "how often do we
+ * end up asking for X?" unanswerable, which is exactly the question that tells
+ * the business a rule is missing from the engine.
+ */
+function AddDocumentModal({
+  caseId,
+  onClose,
+  onAdded,
+}: {
+  caseId: string;
+  onClose: () => void;
+  onAdded: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const parties = useApiQuery<ApiCaseParty[]>(`/cases/${caseId}/parties`);
+  const properties = useApiQuery<ApiCaseProperty[]>(`/cases/${caseId}/properties`);
+
+  const [documentTypeCode, setDocumentTypeCode] = useState("");
+  const [subject, setSubject] = useState("case");
+  const [note, setNote] = useState("");
+
+  const livingParties = (parties.data ?? []).filter((party) => !party.removedAt);
+  const livingProperties = (properties.data ?? []).filter((property) => !property.removedAt);
+
+  return (
+    <Modal open title="Add a document to this case" onClose={onClose}>
+      <div className="space-y-3">
+        <Field
+          label="Document type"
+          hint="From the standard catalogue, so this row uploads, verifies and files exactly like any other."
+        >
+          <Select value={documentTypeCode} onChange={(event) => setDocumentTypeCode(event.target.value)}>
+            <option value="">Choose a document…</option>
+            {DOCUMENT_CATEGORIES.map((category) => (
+              <optgroup key={category} label={DOCUMENT_CATEGORY_LABELS[category]}>
+                {DOCUMENT_CATALOGUE.filter((type) => type.category === category).map((type) => (
+                  <option key={type.code} value={type.code}>
+                    {type.name}
+                    {type.localName ? ` (${type.localName})` : ""}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label="Who it belongs to"
+          hint="A document belongs to a person or a property, never to both (ADR-007). Leave it on the case where neither is right."
+        >
+          <Select value={subject} onChange={(event) => setSubject(event.target.value)}>
+            <option value="case">This case</option>
+            {livingParties.map((party) => (
+              <option key={party.id} value={`party:${party.id}`}>
+                {PARTY_ROLE_LABELS[party.role]}
+                {party.name ? ` — ${party.name}` : ""}
+              </option>
+            ))}
+            {livingProperties.map((property) => (
+              <option key={property.id} value={`property:${property.id}`}>
+                Property — {property.buildingName ?? property.locality ?? property.city ?? "Unnamed"}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="Why (optional)" hint="One line. Whoever collects this will read it.">
+          <Input
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="HDFC asked for this specifically"
+          />
+        </Field>
+
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={documentTypeCode === "" || mutation.pending}
+            onClick={async () => {
+              const [kind, id] = subject.split(":");
+              const result = await mutation.run(() =>
+                api<ApiRequirement>(`/cases/${caseId}/requirements`, {
+                  method: "POST",
+                  body: {
+                    documentTypeCode,
+                    ...(kind === "party" ? { casePartyId: id } : {}),
+                    ...(kind === "property" ? { casePropertyId: id } : {}),
+                    ...(note.trim() ? { note: note.trim() } : {}),
+                  },
+                }),
+              );
+              if (result) {
+                toast.show("Added to this case's documents.");
+                onAdded();
+              }
+            }}
+          >
+            {mutation.pending ? "Adding…" : "Add document"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
 function RequirementRow({
   caseId,
   requirement,
+  showNames,
   mayUpload,
   mayVerify,
   mayWaive,
@@ -1362,6 +1604,7 @@ function RequirementRow({
 }: {
   caseId: string;
   requirement: ApiRequirement;
+  showNames: boolean;
   mayUpload: boolean;
   mayVerify: boolean;
   mayWaive: boolean;
@@ -1389,20 +1632,43 @@ function RequirementRow({
    * thing the row does. */
   const typeName = definition?.name ?? requirement.documentTypeCode;
 
+  const subjectLine = subjectLabel(requirement, showNames);
+
+  /** The rule's name, and its note where the note says something the name does
+   * not. Both are prose a business user wrote in the Document Rules screen. */
+  const explanation = requirement.isCustom
+    ? (requirement.customName ? "added for this case" : null)
+    : requirement.generatedByRuleName;
+
   const canReupload = requirement.status === "pending" || requirement.status === "rejected";
 
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 py-3">
       <div className="min-w-0">
+        {/* WHOSE document, above the document's own name. On a case with a
+            co-applicant this is the difference between two identical-looking
+            "PAN Card" rows and two rows a person can act on. */}
+        {subjectLine && (
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-400">{subjectLine}</p>
+        )}
         <p className="text-sm font-medium text-ink-900">
           {label}
           {requirement.applicability === "optional" && (
             <span className="ml-2 text-xs font-normal text-ink-400">Optional</span>
           )}
+          {requirement.isCustom && (
+            <span className="ml-2 text-xs font-normal text-ink-400">Added for this case</span>
+          )}
         </p>
         {definition?.description && (
           <p className="mt-0.5 text-xs text-ink-500">{definition.description}</p>
         )}
+        {/* WHY it is being asked for (Part 14 of the intake milestone). The
+            rule's own name and note, which are written in a telecaller's
+            words — never the rule code, the condition list or anything else
+            an employee would have to be a developer to read. A hand-added row
+            has no rule and says so instead. */}
+        {explanation && <p className="mt-0.5 text-xs text-ink-400">Asked for: {explanation}</p>}
         {requirement.status === "rejected" && requirement.reason && (
           <p className="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-900">
             {requirement.reason}

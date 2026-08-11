@@ -28,11 +28,25 @@ export function useReference() {
     const productById = new Map(products.map((p) => [p.id, p]));
     const sourceById = new Map(sources.map((s) => [s.id, s]));
 
+    // The intake dropdowns. A deactivated master-data row still labels the
+    // cases that already reference it, so both lists travel: `selectable*` is
+    // what a new case may choose, the full list is what an old one is named
+    // by — the same distinction `selectableProducts` already draws.
+    const employmentTypes = query.data?.employmentTypes ?? [];
+    const borrowerTypes = query.data?.borrowerTypes ?? [];
+    const businessConstitutions = query.data?.businessConstitutions ?? [];
+    const propertyTypes = query.data?.propertyTypes ?? [];
+
     return {
       loading: query.loading,
       error: query.error,
       loanProducts: products,
       referralSources: sources,
+      employmentTypes,
+      borrowerTypes,
+      businessConstitutions,
+      propertyTypes,
+      productById: (id: string | null | undefined) => (id ? productById.get(id) : undefined),
       /** Products a new case may be opened against. Deactivated ones still
        * label existing cases; they are just not offered again. */
       selectableProducts: products.filter((p) => p.isActive),

@@ -9,7 +9,11 @@
 import { describe, expect, it } from "vitest";
 
 import { allDocumentTypeCodes, isFinancialYearScoped } from "./document-catalogue.js";
-import { DEFAULT_REQUIREMENT_RULES, defaultRuleDocumentTypeCodes } from "./default-rules.js";
+import {
+  DEFAULT_REQUIREMENT_RULES,
+  activeRulesAskingForNonCustomerDocuments,
+  defaultRuleDocumentTypeCodes,
+} from "./default-rules.js";
 import { evaluateRules, type CaseFacts, type PartyFacts } from "./rules.js";
 
 function individual(overrides: Partial<PartyFacts> = {}): PartyFacts {
@@ -816,5 +820,83 @@ describe("the checklist a telecaller actually reads out", () => {
     ).map((rule) => rule.code);
 
     expect(offenders).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Customer documents only (case intake milestone, Part 10)
+// ---------------------------------------------------------------------------
+
+describe("the default pack asks a customer only for customer documents", () => {
+  /**
+   * THE INVARIANT. A requirement rule puts a row on a telecaller's collection
+   * list. A row for the lender's own login form, its NACH mandate or Amaze's
+   * internal application form can never be satisfied by a collection call —
+   * and live use answered them the only way it could, by waiving them, which
+   * spends a decision that is supposed to mean "this file goes to the bank
+   * with a known gap, and my name is on it" (BR-035).
+   */
+  it("has no active rule asking for a bank or internal artifact", () => {
+    expect(activeRulesAskingForNonCustomerDocuments().map((rule) => rule.code)).toEqual([]);
+  });
+
+  it("keeps the three retired rules readable rather than deleting them", () => {
+    // Deleting a rule takes its history with it, and leaves the next person to
+    // wonder whether asking for a login form was ever considered.
+    for (const code of ["case_login_form", "case_nach_mandate", "case_application_form"]) {
+      const rule = DEFAULT_REQUIREMENT_RULES.find((r) => r.code === code);
+      expect(rule, code).toBeDefined();
+      expect(rule!.isActive, code).toBe(false);
+      expect(rule!.notes, code).toMatch(/RETIRED/);
+    }
+  });
+
+  it("generates none of them for an ordinary case", () => {
+    const asked = evaluate({ productCode: "lap", customerProductCode: "lap" });
+    expect(asked).not.toContain("login_form");
+    expect(asked).not.toContain("nach_mandate");
+    expect(asked).not.toContain("application_form");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ITR, and the difference between "no" and "not asked" (Part 8)
+// ---------------------------------------------------------------------------
+
+describe("the default pack — ITR against a customer who does not file", () => {
+  const selfEmployed = (itrFiled?: boolean): string[] =>
+    evaluate({
+      productCode: "lap",
+      customerProductCode: "lap",
+      parties: [
+        individual({
+          employmentTypeCode: "business_owner",
+          ...(itrFiled === undefined ? {} : { itrFiled }),
+        }),
+      ],
+    });
+
+  it("asks a self-employed customer for the return when nobody has been asked yet", () => {
+    // The failure this guards against is a rule built on `is_true`, which
+    // would fire on nothing until somebody ticked a box — so the newest case
+    // in the system would have the emptiest checklist, which is the exact bug
+    // the 0026 audit found on the GST rules.
+    expect(selfEmployed(undefined)).toContain("itr");
+  });
+
+  it("asks when the customer says they do file", () => {
+    expect(selfEmployed(true)).toContain("itr");
+  });
+
+  it("stops asking only when the customer says they do not", () => {
+    expect(selfEmployed(false)).not.toContain("itr");
+  });
+
+  it("still asks for banking and business proof when there is no return", () => {
+    // Not filing is not a reason to stop assessing income — it changes WHICH
+    // evidence exists, not whether any is needed.
+    const asked = selfEmployed(false);
+    expect(asked).toContain("bank_statement");
+    expect(asked).toContain("business_proof");
   });
 });

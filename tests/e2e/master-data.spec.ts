@@ -57,7 +57,7 @@ test.describe("Document Rules — reads and writes the office database", () => {
     await signIn(page, "e2e.telecaller");
     await expect(page.getByRole("link", { name: "Document Rules" })).toHaveCount(0);
 
-    const token = await page.evaluate(() => localStorage.getItem("aos.token"));
+    const token = await page.evaluate(() => sessionStorage.getItem("aos.token"));
     const rules = await page.request.get("/api/master-data/document-rules", {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -121,7 +121,7 @@ test.describe("Master Data — Document Types and Rejection Reasons are server-a
     await expect(page.getByText("This user can view but not edit")).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
 
-    const token = await page.evaluate(() => localStorage.getItem("aos.token"));
+    const token = await page.evaluate(() => sessionStorage.getItem("aos.token"));
     const reasons = await page.request.get("/api/master-data/rejection-reasons", {
       headers: { Authorization: `Bearer ${token}` },
     });

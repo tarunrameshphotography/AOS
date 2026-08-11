@@ -101,6 +101,10 @@ export interface CasePartyView {
   readonly employmentTypeId: string | null;
   readonly borrowerTypeId: string | null;
   readonly businessConstitutionId: string | null;
+  /** Three-valued (0035): null is "nobody has asked", which the rules read
+   * differently from an explicit no. */
+  readonly itrFiled: boolean | null;
+  readonly isGstRegistered: boolean | null;
   readonly removedAt: string | null;
   readonly createdAt: string;
 }
@@ -108,6 +112,7 @@ export interface CasePartyView {
 const PARTY_COLUMNS = `
   cpa.id, cpa.case_id, cpa.person_id, cpa.organisation_id, cpa.role, cpa.is_primary,
   cpa.employment_type_id, cpa.borrower_type_id, cpa.business_constitution_id,
+  cpa.itr_filed, cpa.is_gst_registered,
   cpa.removed_at::text, cpa.created_at::text,
   coalesce(p.full_name, o.canonical_name) as name`;
 
@@ -123,6 +128,8 @@ function partyFromRow(row: Record<string, unknown>): CasePartyView {
     employmentTypeId: (row.employment_type_id as string | null) ?? null,
     borrowerTypeId: (row.borrower_type_id as string | null) ?? null,
     businessConstitutionId: (row.business_constitution_id as string | null) ?? null,
+    itrFiled: (row.itr_filed as boolean | null) ?? null,
+    isGstRegistered: (row.is_gst_registered as boolean | null) ?? null,
     removedAt: (row.removed_at as string | null) ?? null,
     createdAt: row.created_at as string,
   };
@@ -200,8 +207,21 @@ export async function addCaseParty(
       if (!can(actor, "organisation.create", "all")) {
         throw new ApiError(403, refusalMessage("organisation.create"));
       }
+      // `roles` MUST be set: `organisation_roles_not_empty` (0003) requires at
+      // least one, and the column defaults to `{}`. Phase 4 inserted without
+      // it, so creating a borrowing firm inline raised a check violation and a
+      // 500 on every attempt — found by the intake milestone's integration
+      // tests, which are the first to exercise this path.
+      //
+      // `borrower` is the honest role and the only one this path knows: the
+      // organisation is being attached to a case as the party that is
+      // borrowing. Roles are flags, not a classification (0001's own comment)
+      // — the same firm can gain `employer` later from another case without
+      // this one having guessed.
       const inserted = await client.query<{ id: string }>(
-        `insert into organisation (canonical_name, created_by) values ($1, $2) returning id`,
+        `insert into organisation (canonical_name, roles, created_by)
+         values ($1, array['borrower']::app.organisation_role[], $2)
+         returning id`,
         [newOrganisationName, actor.userId],
       );
       organisationId = inserted.rows[0]!.id;
@@ -279,6 +299,8 @@ export interface UpdateCasePartyInput {
   employmentTypeId?: unknown;
   borrowerTypeId?: unknown;
   businessConstitutionId?: unknown;
+  itrFiled?: unknown;
+  isGstRegistered?: unknown;
 }
 
 /**
@@ -297,7 +319,8 @@ export async function updateCasePartyProfile(
   requireCaseUpdate(actor, header);
 
   const current = await client.query(
-    `select id, employment_type_id, borrower_type_id, business_constitution_id
+    `select id, employment_type_id, borrower_type_id, business_constitution_id,
+            itr_filed, is_gst_registered
        from case_party where id = $1 and case_id = $2 and removed_at is null`,
     [casePartyId, caseId],
   );
@@ -307,6 +330,18 @@ export async function updateCasePartyProfile(
     employmentTypeId: { column: "employment_type_id", table: "employment_type" },
     borrowerTypeId: { column: "borrower_type_id", table: "borrower_type" },
     businessConstitutionId: { column: "business_constitution_id", table: "business_constitution" },
+  };
+
+  /**
+   * The three-valued facts (0035). Separate from FIELDS above because they are
+   * answers, not master-data references: there is no table to check an id
+   * against, and `null` is a MEANINGFUL value here rather than "leave it
+   * alone" — an intake answer of yes must be retractable to "we no longer
+   * know", which is what an explicit null means.
+   */
+  const BOOLEAN_FIELDS: Record<string, string> = {
+    itrFiled: "itr_filed",
+    isGstRegistered: "is_gst_registered",
   };
 
   const sets: string[] = [];
@@ -323,6 +358,19 @@ export async function updateCasePartyProfile(
       const exists = await client.query(`select id from ${table} where id = $1`, [wanted]);
       if (!exists.rows[0]) throw new ApiError(400, `No such ${table.replace(/_/g, " ")}.`);
     }
+    if (current.rows[0][column] === wanted) continue;
+    values.push(wanted);
+    sets.push(`${column} = $${values.length}`);
+    changed.push(field);
+  }
+
+  for (const [field, column] of Object.entries(BOOLEAN_FIELDS)) {
+    const raw = body[field as keyof UpdateCasePartyInput];
+    if (raw === undefined) continue;
+    if (raw !== null && raw !== "" && typeof raw !== "boolean") {
+      throw new ApiError(400, `${field} must be true, false, or left unanswered.`);
+    }
+    const wanted = raw === null || raw === "" ? null : (raw as boolean);
     if (current.rows[0][column] === wanted) continue;
     values.push(wanted);
     sets.push(`${column} = $${values.length}`);

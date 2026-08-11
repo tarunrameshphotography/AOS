@@ -105,7 +105,23 @@ export interface ApiRequirement {
   readonly periodEnd: string | null;
   readonly requiredOfCasePartyId: string | null;
   readonly requiredOfCasePropertyId: string | null;
+  /** WHOSE document this is, resolved from the requirement's structural
+   * subject rather than assembled from a string. What makes "Applicant — PAN
+   * Card" and "Co-applicant — PAN Card" two visibly different rows. */
+  readonly subject: {
+    readonly kind: "party" | "property" | "case";
+    readonly role: string | null;
+    readonly name: string | null;
+  };
   readonly generatedByRuleCode: string | null;
+  /** Why this is being asked for, in the words of whoever wrote the rule.
+   * Null on a hand-added row — no rule produced it. */
+  readonly generatedByRuleName: string | null;
+  readonly generatedByRuleNotes: string | null;
+  /** An Additional Document: added by hand for this case, not asked for by a
+   * rule (`document_requirement.is_custom`). */
+  readonly isCustom: boolean;
+  readonly customName: string | null;
   /** A rejection's reason, or — when `status` is `waived` — the waiver's
    * reason (BR-035). One column on `document_requirement` serves both, since
    * a requirement is never both at once. */
@@ -135,6 +151,10 @@ export interface ApiCaseParty {
   readonly employmentTypeId: string | null;
   readonly borrowerTypeId: string | null;
   readonly businessConstitutionId: string | null;
+  /** Three-valued: null is "nobody has asked", which the rules read
+   * differently from an explicit no (migration 0035). */
+  readonly itrFiled: boolean | null;
+  readonly isGstRegistered: boolean | null;
   readonly removedAt: string | null;
   readonly createdAt: string;
 }
@@ -199,9 +219,37 @@ export interface ApiLoanProduct {
   readonly isActive: boolean;
   readonly displayOrder: number;
   readonly customerProductName: string | null;
+  /** The commercial grouping's code — `home_loan`, `lap`, `business_loan`.
+   * What the requirement engine calls `case.customer_product_code`. */
+  readonly customerProductCode: string | null;
+  /**
+   * What the product itself declares about property and GST (ADR-032). The
+   * New Case screen reveals its property and GST questions from these rather
+   * than from a list of product codes written into the browser — a new
+   * product added in Master Data then asks the right questions without a
+   * frontend change.
+   */
+  readonly propertyRequirement: "mandatory" | "optional" | "not_applicable" | null;
+  readonly gstRequirement: "mandatory" | "optional" | "not_applicable" | null;
+  /** Which employment types, borrower types and constitutions this product is
+   * offered to (`loan_product_employment_type` and friends, 0015). The intake
+   * form offers exactly these and nothing else. */
+  readonly employmentTypeIds: readonly string[];
+  readonly borrowerTypeIds: readonly string[];
+  readonly businessConstitutionIds: readonly string[];
   /** "Home Loan · Home Loan — Purchase", built server-side so every screen
    * shows the same label and none of them owns the fallback rule. */
   readonly label: string;
+}
+
+/** A master-data row as the reference endpoint returns it — employment types,
+ * borrower types, constitutions, property types. Same five fields each. */
+export interface ApiReferenceItem {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly isActive: boolean;
+  readonly displayOrder: number;
 }
 
 export interface ApiReferralSource {
@@ -215,6 +263,13 @@ export interface ApiReferralSource {
 export interface ApiReference {
   readonly loanProducts: readonly ApiLoanProduct[];
   readonly referralSources: readonly ApiReferralSource[];
+  /** The master data the New Case screen turns into dropdowns. On this one
+   * endpoint rather than four for the reason its server-side comment gives:
+   * every screen that needs one needs the others. */
+  readonly employmentTypes: readonly ApiReferenceItem[];
+  readonly borrowerTypes: readonly ApiReferenceItem[];
+  readonly businessConstitutions: readonly ApiReferenceItem[];
+  readonly propertyTypes: readonly ApiReferenceItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +515,10 @@ export interface ApiSendableDocument {
   /** Present, with the reason, when this document may not be sent (e.g. too
    * large for one email). Absent means it may be selected. */
   readonly blockedBecause?: string;
+  /** Added by hand for this case rather than asked for by a rule. Shown beside
+   * the tick box; it changes no selection behaviour — the package is whatever
+   * the operator ticked. */
+  readonly isCustom: boolean;
 }
 
 export interface ApiPlannedEmail {

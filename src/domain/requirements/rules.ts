@@ -71,6 +71,18 @@ export interface PartyFacts {
   readonly borrowerTypeCode?: string | undefined;
   /** Is this party (or its firm) registered under GST? */
   readonly isGstRegistered?: boolean | undefined;
+  /**
+   * Does this party file an income tax return?
+   *
+   * Three-valued for the same reason `isGstRegistered` is: undefined means
+   * nobody has asked, and a rule that reads that as "no" stops asking a
+   * self-employed borrower for the one document their file is assessed on.
+   * An explicit FALSE is the only answer that suppresses the ITR requirement,
+   * and it suppresses it honestly — a return that was never filed cannot be
+   * collected, and showing it as pending forever is how a checklist stops
+   * meaning anything.
+   */
+  readonly itrFiled?: boolean | undefined;
   /** Does this party already service a loan somewhere? */
   readonly hasExistingObligations?: boolean | undefined;
   /** Is this party the primary applicant? */
@@ -175,6 +187,7 @@ export const FACT_PATHS = [
   "party.business_constitution",
   "party.borrower_type",
   "party.is_gst_registered",
+  "party.itr_filed",
   "party.has_existing_obligations",
   "party.is_primary",
   "property.role",
@@ -322,6 +335,12 @@ export function resolveFact(
       // their firm are GST-registered as one fact in practice, and asking the
       // user to say so twice is how two sources of truth begin.
       return subject.party?.isGstRegistered ?? facts.isGstRegistered;
+    case "party.itr_filed":
+      // No case-level fallback, unlike GST. GST registration is a property of
+      // the business the case is built on, which a proprietor and their firm
+      // share; filing a return is a property of one taxpayer, and a salaried
+      // co-applicant's answer says nothing about the applicant's.
+      return subject.party?.itrFiled;
     case "party.has_existing_obligations":
       return subject.party?.hasExistingObligations ?? facts.hasExistingObligations;
     case "party.is_primary":

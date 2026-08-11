@@ -165,6 +165,8 @@ interface PartyRow {
   employment_type_code: string | null;
   borrower_type_code: string | null;
   business_constitution_code: string | null;
+  itr_filed: boolean | null;
+  is_gst_registered: boolean | null;
 }
 
 interface PropertyRow {
@@ -202,7 +204,8 @@ export async function loadCaseFacts(client: Queryable, caseId: string): Promise<
   const { rows: partyRows } = await client.query<PartyRow>(
     `select cpa.id as case_party_id, cpa.person_id, cpa.organisation_id, cpa.role, cpa.is_primary,
             et.code as employment_type_code, bt.code as borrower_type_code,
-            bc.code as business_constitution_code
+            bc.code as business_constitution_code,
+            cpa.itr_filed, cpa.is_gst_registered
        from case_party cpa
        left join employment_type et on et.id = cpa.employment_type_id
        left join borrower_type bt on bt.id = cpa.borrower_type_id
@@ -236,6 +239,13 @@ export async function loadCaseFacts(client: Queryable, caseId: string): Promise<
     ...(row.business_constitution_code
       ? { businessConstitutionCode: row.business_constitution_code }
       : {}),
+    // Both stay ABSENT when the column is null rather than becoming `false`
+    // (0035). Null means nobody has been asked, which is a third value the
+    // rules distinguish: `is_true` needs a yes, `not_equals 'false'` accepts
+    // unknown, and collapsing unknown to false here would silently answer the
+    // question on the customer's behalf.
+    ...(row.itr_filed !== null ? { itrFiled: row.itr_filed } : {}),
+    ...(row.is_gst_registered !== null ? { isGstRegistered: row.is_gst_registered } : {}),
   }));
 
   const properties: PropertyFacts[] = propertyRows.map((row) => ({

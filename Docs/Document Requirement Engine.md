@@ -81,17 +81,48 @@ these (`FACT_PATHS` in `rules.ts`):
 | Namespace | Facts |
 |---|---|
 | `case.` | `product_code`, `customer_product_code`, `security_type_code`, `property_requirement`, `gst_requirement`, `requested_amount`, `is_gst_registered`, `construction_stage`, `has_existing_obligations`, `has_collateral`, `has_co_applicant`, `has_guarantor`, `has_borrower_firm` |
-| `party.` | `role`, `kind`, `employment_type`, `business_constitution`, `borrower_type`, `is_gst_registered`, `has_existing_obligations`, `is_primary` |
+| `party.` | `role`, `kind`, `employment_type`, `business_constitution`, `borrower_type`, `is_gst_registered`, `itr_filed`, `has_existing_obligations`, `is_primary` |
 | `property.` | `role`, `type`, `ownership_type` |
 
 The list is closed on purpose: a rule editor has to offer a dropdown of what
 can be asked, and "any string" is not a dropdown.
 
-**Three-valued facts.** `is_gst_registered`, `has_existing_obligations` and
-`construction_stage` are nullable and stay nullable. `undefined` means *nobody
-has asked yet*, which is not `false`. Rules use `is_true` / `is_false`
-precisely so an unanswered question never silently generates — or silently
-suppresses — a requirement.
+**Three-valued facts.** `is_gst_registered`, `itr_filed`,
+`has_existing_obligations` and `construction_stage` are nullable and stay
+nullable. `undefined` means *nobody has asked yet*, which is not `false`. Rules
+use `is_true` / `is_false` precisely so an unanswered question never silently
+generates — or silently suppresses — a requirement.
+
+A third shape exists for documents that **exist by default**: `not_equals
+"false"` (`notExplicitlyNo` in `default-rules.ts`). It fires on *yes* and on
+*unknown*, and stands down only on an explicit *no*. The ITR rules use it. The
+distinction matters — a rule built on `is_true` would ask nothing until
+somebody ticked a box, so the newest case in the system would have the emptiest
+checklist, which is exactly the bug the 9.1 audit found on the GST rules.
+
+### Where the facts come from
+
+Facts are recorded at **intake** (`Frontend/src/screens/NewCase.tsx` →
+`Backend/cases.ts`'s `createCase`) and corrected afterwards on the case screen.
+Every one is optional: a telecaller who does not yet know is not blocked from
+opening a case, because *unknown* is a value the rules already handle.
+
+| Fact | Column | Why it exists |
+|---|---|---|
+| Applicant type | `case_party.employment_type_id` | The three-way income split the whole income section of the pack turns on. |
+| Business type | `case_party.business_constitution_id` | Drives the partnership deed / LLP agreement / MOA-AOA / board resolution rules. |
+| Borrower type | `case_party.borrower_type_id` | An NRI file needs passport, visa, overseas income proof and a POA. |
+| Files an ITR? | `case_party.itr_filed` (0035) | An explicit *no* stands the ITR rules down; unknown does not. |
+| GST registered? | `loan_case.is_gst_registered` | The GST certificate and returns rules for a business in the customer's own name. |
+| Already repaying? | `loan_case.has_existing_obligations` | The existing-loan statement — the obligations half of FOIR. |
+
+**This is the defect the intake milestone fixed.** All but two of those columns
+existed from migration 0021, and the rule pack has read them properly since
+0026. Nothing ever *wrote* them: `createCase` took an applicant, a product, an
+amount and a source, so `party.employment_type` resolved to unknown on every
+real case, every income-conditioned rule matched nothing, and the login desk
+received KYC plus whatever the product code alone could justify. The rules were
+right. Nobody had told them anything.
 
 ### 2. Rules
 
@@ -214,6 +245,22 @@ Sources: published documentation checklists from Indian banks, HFCs and NBFCs,
 and Tamil Nadu registration- and revenue-department practice. The defaults are
 market norms, not any single lender's policy, and every one of them is
 editable.
+
+**Rule provenance.** A rule's `notes` column is where its reasoning lives, in
+the words of whoever added it — prose, never parsed, the same discipline
+`lender_insight.body` keeps (ADR-034). It is what the case screen shows under
+"Asked for", so it is written for a telecaller rather than a credit manager.
+Where a rule was derived from a specific published checklist, the source is
+named in the note. Two cited directly, both checked against the lender's own
+site during the case-intake milestone:
+
+| Source | What it grounded |
+|---|---|
+| ICICI Bank — *Loan Against Property: documents required* | Self-employed LAP: "Last 2 years CA Certified/Audited Income Tax Returns (ITR), computation of income, Profit and loss account statement and balance sheet", "GST returns of the last 1 year", "Last 6 months' Bank statements of all operative accounts". Matches `income_itr`, `income_balance_sheet_individual`, `income_profit_and_loss_individual`, `gst_returns_individual`, `income_self_employed_banking`. |
+| HDFC Bank — *Loan Against Property: documentation* | Salaried LAP: six months' salary slips, Form 16 for two years. Matches `income_salary_slip`, `income_form_16`. |
+
+Both were already satisfied by the pack; what the milestone changed is that the
+facts deciding *which* of the two lists applies are now recorded.
 
 **KYC** is universal and near-identical across lenders: PAN, Aadhaar, address
 proof, photograph, signature. PAN is the one every lender treats as
@@ -410,12 +457,80 @@ on the scheme products. Amaze asks for it every time, so it is on the list from
 the start — but a genuine small proprietor often has not registered, and a
 mandatory row would hold up a file that no lender is holding up.
 
-### Requirements added by hand
+### Corrections from the case-intake milestone
+
+**Customer documents only.** A requirement rule puts a row on a *telecaller's
+collection list*. Three rules asked for documents the customer does not produce:
+`case_login_form` and `case_nach_mandate` (the lender's own forms, which do not
+exist until a lender is chosen) and `case_application_form` (Amaze's own
+paperwork). They were on every case, and live use answered them the only way it
+could — by waiving them. A waiver means *"this file goes to the bank with a
+known gap, and my name is on that decision"* (BR-035); spending it on a row that
+was never the customer's to supply devalues every real waiver on the case.
+Waiving a bad rule is not a fix; it is the symptom.
+
+`document_type.artifact_kind` (0035) now records who produces each document:
+
+| Kind | Meaning | May a rule ask for it? |
+|---|---|---|
+| `customer` | The customer hands it over. | Yes — the only kind that may. |
+| `bank_submission` | The lender's own form (`login_form`, `nach_mandate`). | No. Belongs to the submission workflow, which knows the lender. |
+| `internal` | Amaze's own paperwork (`application_form`). | No. |
+
+This is a **classification, not an enforcement**. Nothing was deleted: the
+document types stay, every requirement ever generated against them stays
+readable, and the three rules stay in the table marked `is_active = false` with
+the reason written on them — one click in the Document Rules screen turns any of
+them back on if the business disagrees. All three remain uploadable against a
+case as Additional Documents. `default-rules.test.ts` asserts that no *active*
+rule in the shipped pack asks for a non-customer artifact.
+
+**The ITR question.** `income_itr` and `income_itr_business_promoter` gained
+`party.itr_filed not_equals "false"`. A return that was never filed cannot be
+collected, and leaving it pending forever is how a checklist stops being read —
+but an *unanswered* question must never suppress the one document a
+self-employed file is assessed on. Not filing changes *which* evidence exists,
+not whether any is needed: banking and business proof are still asked for.
+
+### Whose document is it — subjects
+
+A requirement points at a `case_party` or a `case_property` (migration 0005), and
+the API returns that association structurally as `requirement.subject`
+(`{ kind, role, name }`, resolved in `Backend/documents.ts`). The Documents tab
+renders it as a line above the document's name: **Applicant — PAN Card**,
+**Co-applicant — PAN Card**, **Property — Saibaba Colony — Sale Deed**.
+
+This is not a display-string trick. The rows were never ambiguous underneath —
+the association has always been correct — but the screen printed only the
+document type, so a case with a co-applicant showed two rows called "PAN Card"
+with nothing to tell them apart, and a list that looks duplicated is a list
+people stop trusting. The party's *name* is shown only when the case has more
+than one person on it; on a single-applicant case "Applicant" is unambiguous and
+repeating the customer's name on fourteen rows is noise.
+
+Property requirements attach to the **property**, never to the applicant. A
+property-backed case with no property on file generates no property rows at all
+— absence is silence (ADR-010, BR-033), not a row marked N/A.
+
+### Requirements added by hand — Additional Documents
 
 A rule pack cannot anticipate everything: one bank asks for one extra letter on
-one file. A Login Executive can add a requirement to a single case — category,
-name, mandatory or optional, description — and it is then uploaded, verified and
-versioned exactly like a generated one.
+one file. A Login Executive can add a requirement to a single case
+(`POST /api/cases/:id/requirements`, `case.update`) — document type, subject and
+an optional note — and it is then uploaded, viewed, verified and versioned
+exactly like a generated one.
+
+The Documents tab shows **Required documents** and **Additional documents** as
+two separate sections, because they answer two different questions. Required is
+what the rule engine says this case needs, given its facts; it is not editable by
+hand. Additional is what a person asked for on this case alone. Mixing them would
+make the checklist look editable, which is the misunderstanding that ends with
+people adding rows instead of fixing the rule that is wrong.
+
+**The document type comes from the controlled catalogue, never from a text box.**
+A free-text name would be unverifiable in any consistent way, unfileable under a
+storage path, and — worst — would make *"how often do we end up asking for X?"*
+unanswerable, which is the question that tells the business a rule is missing.
 
 Two rules govern it. **No master rule is touched**, so nothing another case asks
 for changes. And **regeneration leaves it alone**: no rule produced it, so no
@@ -423,6 +538,15 @@ rule's absence may withdraw it. Withdrawing one marks it `not_applicable` rather
 than deleting it, the same way a rule-generated row that stops being wanted is
 handled (BR-034) — somebody asked the customer for it, and that they did is part
 of what happened to the case.
+
+**In a bank submission.** An additional document behaves like any other verified
+document: it becomes a candidate for a package, and `isCustom` travels with it
+so the Banks tab can say which documents are the standard set and which are this
+case's own. It changes no selection behaviour — `preparePackage` takes explicit
+`documentIds`, so a package contains exactly what the operator ticked. Nothing
+is auto-attached to every lender, and nothing is withheld from one; whether a
+lender wants it is a judgement about that lender, and the person choosing needs
+to be able to see the difference.
 
 ---
 

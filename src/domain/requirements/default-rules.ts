@@ -102,6 +102,7 @@
 import type { ProgressionStage } from "../case/stages.js";
 import type { ApplicabilityCode } from "../products/catalogue.js";
 
+import { isCustomerDocument } from "./document-catalogue.js";
 import type { FactPath, RequirementRule, RuleCondition, RuleScope } from "./rules.js";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,17 @@ const employmentIn = (...codes: string[]): RuleCondition =>
 const constitutionIn = (...codes: string[]): RuleCondition =>
   fact("party.business_constitution", "in", ...codes);
 const isTrue = (path: FactPath): RuleCondition => fact(path, "is_true");
+/**
+ * Not an explicit NO — which is different from `is_true`, and the difference
+ * is the whole point.
+ *
+ * `is_true` fires only once somebody has answered yes, so a rule built on it
+ * asks for nothing on a case created five minutes ago. `notExplicitlyNo` fires
+ * on yes AND on unknown, and stands down only when a human has actually said
+ * no. That is the right shape for a document that exists by default: keep
+ * asking until told the document does not exist.
+ */
+const notExplicitlyNo = (path: FactPath): RuleCondition => fact(path, "not_equals", "false");
 /**
  * The product itself says GST is non-negotiable (ADR-032). Distinct from
  * anyone having ticked "GST registered" on the case, which is a fact about
@@ -216,6 +228,15 @@ interface RuleInput {
   match?: "all" | "any";
   order: number;
   notes?: string;
+  /**
+   * Omitted means in service. Set false for a rule that is DELIBERATELY not
+   * generating anything but is worth keeping legible — see the three
+   * non-customer artifacts at the end of the pack. Distinct from
+   * `applicability: "not_applicable"`, which is "this situation does not need
+   * the document"; this is "AOS should never have been asking a customer for
+   * it at all".
+   */
+  active?: boolean;
 }
 
 function rule(input: RuleInput): RequirementRule {
@@ -233,7 +254,7 @@ function rule(input: RuleInput): RequirementRule {
     ...(input.financialYears ? { financialYears: input.financialYears } : {}),
     conditions: input.conditions ?? [],
     ...(input.match ? { match: input.match } : {}),
-    isActive: true,
+    isActive: input.active ?? true,
     // Ties broken by declaration order, so the checklist reads in the order
     // this file is written rather than alphabetically by code.
     displayOrder: input.order + sequence,
@@ -454,9 +475,14 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     conditions: [
       employmentIn("self_employed", "business_owner"),
       customerProductNotIn(...ASSET_ONLY_PRODUCTS, "business_loan"),
+      notExplicitlyNo("party.itr_filed"),
     ],
     order: ORDER.income,
-    notes: "Two assessment years with computation; the market standard.",
+    notes:
+      "Two assessment years with computation; the market standard (ICICI's LAP checklist " +
+      "asks for exactly that). Stands down only where the intake recorded that the " +
+      "customer does not file — a return that does not exist cannot be collected, and " +
+      "leaving it pending forever is how a checklist stops being read.",
   }),
   rule({
     code: "income_itr_business_promoter",
@@ -466,7 +492,11 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     partyRoles: INCOME_ROLES,
     partyKind: "person",
     financialYears: 3,
-    conditions: [customerProductIn("business_loan"), fact("case.has_borrower_firm", "is_true")],
+    conditions: [
+      customerProductIn("business_loan"),
+      fact("case.has_borrower_firm", "is_true"),
+      notExplicitlyNo("party.itr_filed"),
+    ],
     order: ORDER.income,
     notes:
       "Only where a separate firm is borrowing. Then the firm's return and the promoter's " +
@@ -1521,7 +1551,26 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
   }),
 
   // -------------------------------------------------------------------------
-  // Case-level paperwork.
+  // Case-level paperwork — RETIRED, and kept legible rather than deleted.
+  //
+  // All three ask for a document the CUSTOMER does not produce
+  // (`DOCUMENT_ARTIFACT_KINDS`, document-catalogue.ts): two are the lender's
+  // own forms and one is Amaze's. They were on every case's collection list,
+  // and live use answered them the only way they could be answered — by
+  // waiving them. A waiver means "this file goes to the bank with a known gap,
+  // and my name is on that decision" (BR-035); spending it on a row that was
+  // never the customer's to supply devalues every real waiver on the case.
+  //
+  // Kept as rows, inactive, with the reason attached, because a rule that
+  // vanishes takes its history with it: cases that already carry these
+  // requirements keep them, readable, and regeneration retires them to
+  // `not_applicable` the ordinary way (BR-034). Turning any of them back on is
+  // one click in the Document Rules screen if the business disagrees.
+  //
+  // None of this removes the documents from AOS. The login form and the NACH
+  // mandate belong to the submission workflow, which knows which lender was
+  // chosen; the Amaze application form is internal paperwork. All three remain
+  // in the catalogue, uploadable against the case as Additional Documents.
   // -------------------------------------------------------------------------
   rule({
     code: "case_application_form",
@@ -1529,6 +1578,10 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     documentTypeCode: "application_form",
     scope: "case",
     order: ORDER.caseLevel,
+    active: false,
+    notes:
+      "RETIRED — internal artifact. Amaze's own application form is filled by Amaze, " +
+      "not collected from the customer, so it does not belong on a collection call's list.",
   }),
   rule({
     code: "case_login_form",
@@ -1537,7 +1590,12 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     scope: "case",
     stage: "ready_for_submission",
     order: ORDER.caseLevel,
-    notes: "The lender's own form. Not fillable until the lender is chosen.",
+    active: false,
+    notes:
+      "RETIRED — bank submission artifact. The lender's own form, which does not exist " +
+      "until a lender is chosen and is not the customer's to supply. It belongs to the " +
+      "submission workflow, which knows the lender; asking for it here made every case " +
+      "carry a row nobody could ever satisfy.",
   }),
   rule({
     code: "case_nach_mandate",
@@ -1547,8 +1605,27 @@ export const DEFAULT_REQUIREMENT_RULES: readonly RequirementRule[] = [
     stage: "ready_for_submission",
     conditions: [customerProductNotIn("gold_loan")],
     order: ORDER.caseLevel,
+    active: false,
+    notes:
+      "RETIRED — bank submission artifact. The mandate is the lender's form on the " +
+      "lender's format, signed at sanction. Same reasoning as the login form.",
   }),
 ];
+
+/**
+ * A rule may only ask a customer for a customer document.
+ *
+ * Asserted by default-rules.test.ts rather than enforced at runtime, on
+ * purpose: the rule table is master data a business user edits, and a save
+ * that silently did nothing would be worse than a rule that generates a row
+ * somebody can see and turn off. What this guarantees is that the pack AOS
+ * SHIPS never puts a bank's or Amaze's own paperwork on a collection list.
+ */
+export function activeRulesAskingForNonCustomerDocuments(): RequirementRule[] {
+  return DEFAULT_REQUIREMENT_RULES.filter(
+    (r) => r.isActive && !isCustomerDocument(r.documentTypeCode),
+  );
+}
 
 /** Every document type code the default pack can ask for. */
 export function defaultRuleDocumentTypeCodes(): string[] {

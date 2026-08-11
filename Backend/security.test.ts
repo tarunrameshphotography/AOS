@@ -505,6 +505,76 @@ describe("the full authentication lifecycle, served by an API running as aos_app
     expect((await appApi("/api/cases", { token: session.token })).status).toBe(401);
   });
 
+  /**
+   * INACTIVITY, which is a different control from the absolute lifetime above
+   * and the one that was missing.
+   *
+   * Before this, expiry was the only expiry: an employee who signed in at 9am
+   * and walked away at 10am left a session valid until 9pm — on a shared
+   * office PC, with a token that survived closing the browser. Reopening
+   * Chrome resumed somebody else's session, which is exactly the behaviour
+   * reported.
+   *
+   * `last_seen_at` is backdated rather than waited for; the window is two
+   * hours by default.
+   */
+  it("expires a session that has been idle past the inactivity window", async () => {
+    const employee = await createEmployee("manager");
+    const session = await signIn(appApi, employee.username);
+
+    expect((await appApi("/api/cases", { token: session.token })).status).toBe(200);
+
+    await pool.query(
+      `update api_session set last_seen_at = now() - interval '25 hours' where user_id = $1`,
+      [session.userId],
+    );
+
+    expect((await appApi("/api/cases", { token: session.token })).status).toBe(401);
+  });
+
+  it("revokes the lapsed session rather than merely refusing it", async () => {
+    // Leaving the row live would mean a token that fails the idle check now
+    // could pass it again if the clock or the configured window moved — and
+    // "when did this session end" is a question the audit will ask.
+    const employee = await createEmployee("manager");
+    const session = await signIn(appApi, employee.username);
+
+    await pool.query(
+      `update api_session set last_seen_at = now() - interval '25 hours' where user_id = $1`,
+      [session.userId],
+    );
+    await appApi("/api/cases", { token: session.token });
+
+    const { rows } = await pool.query(
+      `select revoked_at, revoked_by from api_session where user_id = $1`,
+      [session.userId],
+    );
+    expect(rows[0].revoked_at).not.toBeNull();
+    // Nobody logged this session out. It lapsed.
+    expect(rows[0].revoked_by).toBeNull();
+  });
+
+  it("keeps an actively-used session alive — the idle window is not a countdown to logout", async () => {
+    // The failure mode on the other side: an inactivity timeout that ignores
+    // activity is just a shorter absolute lifetime, and would sign a
+    // telecaller out mid-call.
+    const employee = await createEmployee("manager");
+    const session = await signIn(appApi, employee.username);
+
+    await pool.query(
+      `update api_session set last_seen_at = now() - interval '1 hour' where user_id = $1`,
+      [session.userId],
+    );
+    expect((await appApi("/api/cases", { token: session.token })).status).toBe(200);
+
+    // That request touched `last_seen_at`, so the clock restarted.
+    const { rows } = await pool.query(
+      `select last_seen_at from api_session where user_id = $1`,
+      [session.userId],
+    );
+    expect(Date.now() - new Date(rows[0].last_seen_at).getTime()).toBeLessThan(60_000);
+  });
+
   it("refuses a deactivated employee at the login form and on an existing token", async () => {
     const employee = await createEmployee("manager");
     const session = await signIn(appApi, employee.username);

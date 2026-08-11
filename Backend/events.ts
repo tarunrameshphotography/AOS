@@ -592,6 +592,45 @@ export async function recordRequirementWaivedEvent(
   );
 }
 
+/**
+ * `requirement.added` — a human asking this case for one more document
+ * (Additional Documents).
+ *
+ * Shaped like `requirement.waived` rather than like
+ * `requirement.regenerated`, and for the same reason: a person decided this,
+ * against one specific row, so `actor_kind` is `'user'` and `entity_id` is the
+ * requirement. Regeneration is the system reconciling many rows at once and is
+ * batched accordingly.
+ *
+ * The payload carries the document type's CODE and the subject's ids — never
+ * the customer's name, the property's address, or the free-text note the
+ * employee typed. `document_requirement.custom_description` is where the note
+ * lives, reachable by redaction; the event log is not (BR-051).
+ */
+export interface RequirementAddedEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly requirementId: string;
+  readonly payloadAfter: Record<string, unknown>;
+}
+
+export async function recordRequirementAddedEvent(
+  client: Queryable,
+  event: RequirementAddedEvent,
+): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'document_requirement', $2, $3, 'requirement.added', $4, 'ui')`,
+    [
+      event.actorUserId,
+      event.requirementId,
+      event.caseId,
+      JSON.stringify(event.payloadAfter),
+    ],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Master data (Stage 4 Item 4)
 // ---------------------------------------------------------------------------

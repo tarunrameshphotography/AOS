@@ -86,7 +86,11 @@ export const DOCUMENT_CATEGORY_LABELS: Record<DocumentCategory, string> = {
   business_financials: "Business Financials",
   income: "Income Documents",
   property: "Property Documents",
-  additional: "Additional Documents",
+  // "Additional Documents" until the intake milestone, where it collided with
+  // the case screen's own Additional Documents section — which means something
+  // else entirely (a document added by hand for one case). This category is
+  // the standard loan paperwork every file carries.
+  additional: "Loan Paperwork",
 };
 
 /** One line under each heading, so the grouping explains itself. */
@@ -96,7 +100,7 @@ export const DOCUMENT_CATEGORY_HINTS: Record<DocumentCategory, string> = {
   business_financials: "Returns, accounts and banking that show what the business earns.",
   income: "What the customer personally earns, and how it is evidenced.",
   property: "Title, revenue and approval papers for the property.",
-  additional: "Loan paperwork, and anything specific to this case.",
+  additional: "The standard paperwork that goes with the loan itself.",
 };
 
 /**
@@ -122,6 +126,39 @@ export const DOCUMENT_OWNER_KINDS = ["person", "property", "organisation", "case
 
 export type DocumentOwnerKind = (typeof DOCUMENT_OWNER_KINDS)[number];
 
+/**
+ * WHO PRODUCES THIS DOCUMENT — and therefore whether Amaze may put it on a
+ * customer's collection list at all.
+ *
+ * AOS's document engine exists to answer one question for the person on the
+ * phone: what do I still have to get from this customer? A checklist that
+ * also contains the lender's own login form and Amaze's internal application
+ * form answers a different question badly, and the observable result is a
+ * telecaller waiving rows to clear them — which quietly trains everyone that
+ * a waiver means "not really needed" rather than "sent to the bank with a
+ * known gap" (BR-035). Waiving a bad rule is not a fix; it is the symptom.
+ *
+ *   customer         The customer hands it over. The only kind a requirement
+ *                    rule may ask a telecaller to collect.
+ *   bank_submission  Produced by, or for, the lender as part of logging the
+ *                    file — a bank login form, its NACH mandate. Real, and
+ *                    handled by the submission workflow, but never a customer
+ *                    collection item: it does not exist until a lender is
+ *                    chosen, and it is not the customer's to supply.
+ *   internal         Amaze's own paperwork. Real, and not something to chase
+ *                    a customer for.
+ *
+ * This is a CLASSIFICATION, not an enforcement. Nothing here deletes a
+ * document type or a historical requirement (BR-003, BR-034): the types stay,
+ * every row ever generated against them stays readable, and the rules that
+ * used to generate them stay in the table marked inactive with the reason
+ * written on them. What changes is that no NEW customer requirement is raised
+ * for a non-customer artifact.
+ */
+export const DOCUMENT_ARTIFACT_KINDS = ["customer", "bank_submission", "internal"] as const;
+
+export type DocumentArtifactKind = (typeof DOCUMENT_ARTIFACT_KINDS)[number];
+
 export interface DocumentTypeDefinition {
   readonly code: string;
   /** What we call it to the customer. */
@@ -136,6 +173,12 @@ export interface DocumentTypeDefinition {
   /** What actually counts, where the honest answer is a list of things. */
   readonly examples?: readonly string[];
   readonly category: DocumentCategory;
+  /**
+   * Who produces it. Omitted means `customer`, which is what all but three of
+   * the types below are — stating it on every row would bury the three that
+   * matter.
+   */
+  readonly artifactKind?: DocumentArtifactKind;
   /** How a per-period row names its period. Only for recurring documents. */
   readonly periodKind?: PeriodKind;
   /**
@@ -184,7 +227,7 @@ export const DOCUMENT_CATALOGUE: readonly DocumentTypeDefinition[] = [
   { code: "valuation_report", name: "Property Valuation Report", ownerKind: "property", requiresPeriod: false, requiresExpiry: true, description: "The bank's own valuer visits and values the property. Arranged after the bank is chosen.", category: "property", displayOrder: 170 },
 
   // --- The bank's own paperwork, once a bank has been chosen ----------------
-  { code: "login_form", name: "Bank Login Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The bank's own application form, signed. Only available once a bank has been chosen.", category: "additional", displayOrder: 180 },
+  { code: "login_form", name: "Bank Login Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The bank's own application form, signed. Only available once a bank has been chosen.", category: "additional", artifactKind: "bank_submission", displayOrder: 180 },
   { code: "sanction_letter", name: "Sanction Letter", ownerKind: "case", requiresPeriod: false, requiresExpiry: true, description: "The bank's letter confirming the approved amount and terms.", category: "additional", displayOrder: 190 },
 
   // --- KYC: the extra proofs some customers need ----------------------------
@@ -277,8 +320,8 @@ export const DOCUMENT_CATALOGUE: readonly DocumentTypeDefinition[] = [
   { code: "fd_receipt", name: "Fixed Deposit Receipt", localName: "FD Receipt", ownerKind: "person", requiresPeriod: false, requiresExpiry: false, description: "The deposit receipt being pledged for the loan.", category: "additional", displayOrder: 770 },
 
   // --- Amaze's own case paperwork -------------------------------------------
-  { code: "application_form", name: "Amaze Loans Application Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Amaze's own application form, filled and signed by the customer. Separate from the bank's login form.", category: "additional", displayOrder: 780 },
-  { code: "nach_mandate", name: "NACH Mandate / Security Cheques", localName: "ECS Mandate", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The signed EMI auto-debit mandate and any blank cheques the bank asks for.", category: "additional", displayOrder: 790 },
+  { code: "application_form", name: "Amaze Loans Application Form", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Amaze's own application form, filled and signed by the customer. Separate from the bank's login form.", category: "additional", artifactKind: "internal", displayOrder: 780 },
+  { code: "nach_mandate", name: "NACH Mandate / Security Cheques", localName: "ECS Mandate", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "The signed EMI auto-debit mandate and any blank cheques the bank asks for.", category: "additional", artifactKind: "bank_submission", displayOrder: 790 },
   { code: "tenant_kyc", name: "Tenant KYC", ownerKind: "case", requiresPeriod: false, requiresExpiry: false, description: "Identity and agreement papers of the tenant paying the rent, for a rent-based loan.", category: "additional", displayOrder: 800 },
 
   // --- What the tax department itself says, and what the customer paid ------
@@ -313,6 +356,22 @@ export function documentTypeByCode(code: string): DocumentTypeDefinition | undef
 /** Every document type code AOS knows about. */
 export function allDocumentTypeCodes(): string[] {
   return DOCUMENT_CATALOGUE.map((type) => type.code);
+}
+
+/**
+ * Who produces a document type, defaulting to `customer` — see
+ * `DOCUMENT_ARTIFACT_KINDS`. An unknown code reads as `customer` too: the
+ * conservative answer for a type a business user added through Master Data,
+ * which will overwhelmingly be something the customer hands over.
+ */
+export function artifactKindOf(code: string): DocumentArtifactKind {
+  return DOCUMENT_TYPES_BY_CODE.get(code)?.artifactKind ?? "customer";
+}
+
+/** Is this something to ask a customer for? The question the Documents tab
+ * and every requirement rule are really asking. */
+export function isCustomerDocument(code: string): boolean {
+  return artifactKindOf(code) === "customer";
 }
 
 /**

@@ -44,11 +44,68 @@ export async function readReference(client: Queryable, actor: Actor) {
     // Loan"), with the product's own name beneath it. `category`/`variant` are
     // the pre-catalogue text pair, kept populated by migration 0016 and used
     // only as a fallback for rows written before the catalogue existed.
+    //
+    // `customer_product_code`, `property_requirement` and `gst_requirement`
+    // ride along for the New Case screen's progressive disclosure: which
+    // questions a loan type reveals is decided by what the product declares
+    // (ADR-032), never by a hard-coded list of product codes in the browser.
     `select p.id, p.name, p.category, p.variant, p.code, p.is_active, p.display_order,
-            cp.name as customer_product_name
+            cp.name as customer_product_name, cp.code as customer_product_code,
+            pr.code as property_requirement, gr.code as gst_requirement
        from loan_product p
        left join customer_product cp on cp.id = p.customer_product_id
+       left join requirement_applicability pr on pr.id = p.property_requirement_id
+       left join requirement_applicability gr on gr.id = p.gst_requirement_id
       order by p.display_order, p.category, p.variant`,
+  );
+
+  // Which employment types, borrower types and constitutions each product is
+  // actually offered to (0015/0016). This is what makes the intake form ask
+  // only the questions the chosen loan type can answer: a Professional Loan
+  // offers "self-employed professional", a Two-Wheeler Loan offers everything,
+  // and neither list is written down twice.
+  const productEmployment = await client.query(
+    `select loan_product_id, employment_type_id from loan_product_employment_type`,
+  );
+  const productBorrower = await client.query(
+    `select loan_product_id, borrower_type_id from loan_product_borrower_type`,
+  );
+  const productConstitution = await client.query(
+    `select loan_product_id, business_constitution_id from loan_product_business_constitution`,
+  );
+
+  const applicable = (
+    rows: readonly Record<string, unknown>[],
+    key: string,
+  ): Map<string, string[]> => {
+    const byProduct = new Map<string, string[]>();
+    for (const row of rows) {
+      const productId = row.loan_product_id as string;
+      const list = byProduct.get(productId) ?? [];
+      list.push(row[key] as string);
+      byProduct.set(productId, list);
+    }
+    return byProduct;
+  };
+
+  const employmentByProduct = applicable(productEmployment.rows, "employment_type_id");
+  const borrowerByProduct = applicable(productBorrower.rows, "borrower_type_id");
+  const constitutionByProduct = applicable(productConstitution.rows, "business_constitution_id");
+
+  // The master-data lists the intake form turns into dropdowns. Small, closed,
+  // and changed about twice a year — the same reasoning that put products and
+  // referral sources on this one endpoint rather than on four.
+  const employmentTypes = await client.query(
+    `select id, code, name, is_active, display_order from employment_type order by display_order, name`,
+  );
+  const borrowerTypes = await client.query(
+    `select id, code, name, is_active, display_order from borrower_type order by display_order, name`,
+  );
+  const businessConstitutions = await client.query(
+    `select id, code, name, is_active, display_order from business_constitution order by display_order, name`,
+  );
+  const propertyTypes = await client.query(
+    `select id, code, name, is_active, display_order from property_type order by display_order, name`,
   );
 
   const referralSources = await client.query(
@@ -56,7 +113,20 @@ export async function readReference(client: Queryable, actor: Actor) {
        from referral_source order by display_order, name`,
   );
 
+  const simpleList = (rows: readonly Record<string, unknown>[]) =>
+    rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      isActive: row.is_active,
+      displayOrder: row.display_order,
+    }));
+
   return {
+    employmentTypes: simpleList(employmentTypes.rows),
+    borrowerTypes: simpleList(borrowerTypes.rows),
+    businessConstitutions: simpleList(businessConstitutions.rows),
+    propertyTypes: simpleList(propertyTypes.rows),
     loanProducts: products.rows.map((row: Record<string, unknown>) => ({
       id: row.id,
       name: row.name,
@@ -66,6 +136,12 @@ export async function readReference(client: Queryable, actor: Actor) {
       isActive: row.is_active,
       displayOrder: row.display_order,
       customerProductName: row.customer_product_name,
+      customerProductCode: row.customer_product_code,
+      propertyRequirement: row.property_requirement,
+      gstRequirement: row.gst_requirement,
+      employmentTypeIds: employmentByProduct.get(row.id as string) ?? [],
+      borrowerTypeIds: borrowerByProduct.get(row.id as string) ?? [],
+      businessConstitutionIds: constitutionByProduct.get(row.id as string) ?? [],
       /** "Home Loan · Home Loan — Purchase". Built here so every screen shows
        * the same label and none of them has to know the fallback rule. */
       label: `${row.customer_product_name ?? row.category} · ${row.name ?? row.variant}`,

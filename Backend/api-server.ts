@@ -90,7 +90,14 @@ import {
   setUserActive,
   setUserRoles,
 } from "./users.js";
-import { listCaseRequirements, uploadDocument, decideDocument, downloadDocument, waiveRequirement } from "./documents.js";
+import {
+  addCustomRequirement,
+  listCaseRequirements,
+  uploadDocument,
+  decideDocument,
+  downloadDocument,
+  waiveRequirement,
+} from "./documents.js";
 import {
   addCaseParty,
   addCaseProperty,
@@ -142,10 +149,41 @@ const PORT = Number(process.env.AOS_API_PORT ?? 4321);
  */
 const HOST = process.env.AOS_API_HOST?.trim() || "127.0.0.1";
 
-/** A workday. Long enough that nobody is re-authenticating mid-case, short
- * enough that a browser left logged in overnight in a shared office does not
- * stay open indefinitely. */
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * ABSOLUTE session lifetime. A workday: long enough that nobody is
+ * re-authenticating mid-case, short enough that a browser left logged in
+ * overnight in a shared office does not stay open indefinitely. A session
+ * reaches this and ends, however busy the employee has been — the ceiling
+ * exists precisely so activity cannot extend a session forever.
+ */
+const SESSION_TTL_MS = Number(process.env.AOS_SESSION_TTL_MS ?? 12 * 60 * 60 * 1000);
+
+/**
+ * INACTIVITY timeout, which is a different control and the one that was
+ * missing.
+ *
+ * WHAT WAS WRONG. The absolute lifetime was the only expiry. An employee who
+ * signed in at 9am and walked away at 10am left a session that stayed valid
+ * until 9pm — on a shared office PC, with the token in localStorage, which
+ * survives closing the browser. "Close the browser and come back" was
+ * therefore not a logout in any sense, and the reported symptom (still signed
+ * in after reopening) was the honest consequence.
+ *
+ * `api_session.last_seen_at` has existed since 0031 and has been touched on
+ * every authenticated request since — its own comment says it is there "so an
+ * idle session can be distinguished from an active one". Nothing read it. This
+ * reads it.
+ *
+ * Two hours: longer than a lunch break and a site visit, shorter than an
+ * evening. Configurable because the right number is an office policy, not a
+ * property of the code.
+ *
+ * NOT enforced with `beforeunload` or `unload`, deliberately. Those fire
+ * unreliably, never at all on a crash or a power cut, and are trivially
+ * skipped — a browser event is not a security control. This is a server-side
+ * check on every request, which is the only place it can be one.
+ */
+const SESSION_IDLE_MS = Number(process.env.AOS_SESSION_IDLE_MS ?? 2 * 60 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // HTTP plumbing
@@ -318,7 +356,7 @@ async function loadActor(client: pg.PoolClient, token: string | null): Promise<A
   if (!token) return null;
 
   const { rows } = await client.query(
-    `select u.id, u.auth_identity_id, u.is_active, s.expires_at, s.revoked_at
+    `select u.id, u.auth_identity_id, u.is_active, s.expires_at, s.revoked_at, s.last_seen_at
        from api_session s
        join app_user u on u.id = s.user_id
       where s.token_hash = $1`,
@@ -329,6 +367,27 @@ async function loadActor(client: pg.PoolClient, token: string | null): Promise<A
   if (session.revoked_at !== null) return null;
   if (new Date(session.expires_at).getTime() < Date.now()) return null;
   if (!session.is_active) return null;
+
+  // Idle too long. REVOKED, not merely refused: leaving the row live would
+  // mean a token that fails this check now could pass it again if the clock or
+  // the configured window moved, and "when did this session end" is a question
+  // the audit will ask (0031's own note on `revoked_at`). `revoked_by` stays
+  // null — nobody logged this session out, it lapsed.
+  //
+  // ON ITS OWN CONNECTION (`pool`), NOT on `client`. Every request runs in one
+  // transaction, and refusing this one raises a 401 that rolls that
+  // transaction back — which would discard the revocation along with it, so
+  // the row would stay live no matter how many times the lapsed token was
+  // presented. The lapse is not part of the request's business transaction; it
+  // is a fact about the session that has already happened.
+  const idleFor = Date.now() - new Date(session.last_seen_at).getTime();
+  if (idleFor > SESSION_IDLE_MS) {
+    await pool.query(
+      `update api_session set revoked_at = now() where token_hash = $1 and revoked_at is null`,
+      [hashToken(token)],
+    );
+    return null;
+  }
 
   const roleRows = await client.query(
     `select role from user_role where user_id = $1 and revoked_at is null`,
@@ -919,6 +978,12 @@ async function route(
   const requirementsMatch = new RegExp(`^/api/cases/(${UUID})/requirements$`).exec(path);
   if (requirementsMatch && method === "GET") {
     return await listCaseRequirements(client, requireActor(actor), requirementsMatch[1]!);
+  }
+  // POST to the same collection: ask this case for one more document
+  // (Additional Documents). A hand-added requirement, not a way around the
+  // rule engine — see `addCustomRequirement`.
+  if (requirementsMatch && method === "POST") {
+    return await addCustomRequirement(client, requireActor(actor), requirementsMatch[1]!, body);
   }
 
   const uploadMatch = new RegExp(`^/api/cases/(${UUID})/requirements/(${UUID})/documents$`).exec(path);

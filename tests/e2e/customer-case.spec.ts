@@ -89,7 +89,7 @@ test.describe("authentication against the backend", () => {
 
     // Capture the token, log out, then try to use it directly. A logout that
     // only cleared the browser would leave this token working.
-    const token = await page.evaluate(() => localStorage.getItem("aos.token"));
+    const token = await page.evaluate(() => sessionStorage.getItem("aos.token"));
     expect(token).toBeTruthy();
 
     await signOut(page);
@@ -102,7 +102,7 @@ test.describe("authentication against the backend", () => {
 
   test("a stale token in storage returns to the login screen", async ({ page }) => {
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("aos.token", "not-a-real-token"));
+    await page.evaluate(() => sessionStorage.setItem("aos.token", "not-a-real-token"));
     await page.goto("/#/cases");
 
     // Validated against the server on load rather than trusted.
@@ -130,8 +130,16 @@ test.describe("customers and cases are read and written through the API", () => 
 
     // The old prototype kept everything here. Clearing it used to be the same
     // as deleting the database; now it only signs the employee out.
+    //
+    // Both stores are cleared, which is what a genuine browser restart does.
+    // The token lives in sessionStorage as of the case-intake milestone —
+    // precisely so that ending the browsing context ends the session rather
+    // than resuming it hours later on a shared office PC.
     await context.clearCookies();
-    await page.evaluate(() => localStorage.clear());
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
 
     await signIn(page, TELECALLER);
     await page.goto("/#/cases");

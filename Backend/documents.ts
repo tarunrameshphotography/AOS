@@ -30,7 +30,12 @@ import { nextVersion } from "@domain/storage/versioning.js";
 import type { Queryable } from "./db.js";
 import { can, canActOnCase, type Actor } from "./authorize.js";
 import { ApiError, refusalMessage } from "./http.js";
-import { recordDocumentEvent, recordRequirementWaivedEvent, recordSystemCaseEvent } from "./events.js";
+import {
+  recordDocumentEvent,
+  recordRequirementAddedEvent,
+  recordRequirementWaivedEvent,
+  recordSystemCaseEvent,
+} from "./events.js";
 import { regenerateRequirements } from "./requirements.js";
 import { storageAdapter, getObjectWithContentType } from "./storage-client.js";
 import { submissionOutcomeFacts } from "./case-stage.js";
@@ -76,6 +81,32 @@ function requireCaseAccess(actor: Actor, header: CaseHeader, permission: string)
 // Reading — requirements, their current document, and progress
 // ---------------------------------------------------------------------------
 
+/**
+ * WHOSE document this is — resolved from the requirement's structural subject,
+ * never assembled from a display string.
+ *
+ * THE PROBLEM IT SOLVES. A case with a co-applicant generated two rows called
+ * "PAN Card", two called "Aadhaar Card" and two called "Bank Statement", and
+ * nothing on screen said which belonged to whom. The rows were never
+ * ambiguous in the database — `required_of_case_party_id` has pointed at the
+ * right party since 0005 — but the screen rendered only the document type, so
+ * a login executive had to guess, and a duplicated-looking list is a list
+ * people stop trusting (the same failure the 0027 audit found for financial
+ * years).
+ *
+ * `kind` and `role` are CODES, not sentences: the label a screen prints is a
+ * presentation decision, and shipping it from here would mean the API had to
+ * be redeployed to reword a heading. `name` is the party's or property's own
+ * name, which only the database knows.
+ */
+export interface RequirementSubject {
+  readonly kind: "party" | "property" | "case";
+  /** `case_party.role` or `case_property.role`. Absent on a case-level row. */
+  readonly role: string | null;
+  /** The person's, organisation's or property's own name, where it has one. */
+  readonly name: string | null;
+}
+
 export interface RequirementView {
   readonly id: string;
   readonly documentTypeCode: string;
@@ -86,7 +117,17 @@ export interface RequirementView {
   readonly periodEnd: string | null;
   readonly requiredOfCasePartyId: string | null;
   readonly requiredOfCasePropertyId: string | null;
+  readonly subject: RequirementSubject;
   readonly generatedByRuleCode: string | null;
+  /** Why this requirement exists, from the rule that generated it. Null on a
+   * hand-added row: no rule produced it, so the honest answer is that a person
+   * decided, and `isCustom` already says so. */
+  readonly generatedByRuleName: string | null;
+  readonly generatedByRuleNotes: string | null;
+  /** Added by hand for this case only (`document_requirement.is_custom`, 0026)
+   * — an Additional Document, not something a rule asked for. */
+  readonly isCustom: boolean;
+  readonly customName: string | null;
   readonly reason: string | null;
   /** Set together, never one without the other (`document_requirement_waiver_is_complete`,
    * 0005) — who excused this requirement and when, so a waived row on screen
@@ -115,7 +156,15 @@ interface RequirementRow {
   period_end: string | null;
   required_of_case_party_id: string | null;
   required_of_case_property_id: string | null;
+  party_role: string | null;
+  party_name: string | null;
+  property_role: string | null;
+  property_name: string | null;
   generated_by_rule_code: string | null;
+  generated_by_rule_name: string | null;
+  generated_by_rule_notes: string | null;
+  is_custom: boolean;
+  custom_name: string | null;
   reason: string | null;
   waived_by: string | null;
   waived_at: string | null;
@@ -127,6 +176,99 @@ interface RequirementRow {
   uploaded_by: string | null;
   verified_at: string | null;
   verified_by: string | null;
+}
+
+/**
+ * The requirement projection, written once.
+ *
+ * `listCaseRequirements` and `requirementView` used to carry two copies of
+ * this select and two copies of the mapper below, and adding a field meant
+ * editing four places or shipping a screen where a freshly-uploaded row was
+ * missing what the list showed. One definition, two callers, one `where`
+ * clause each.
+ */
+const REQUIREMENT_SELECT = `
+  select r.id, dt.code as document_type_code, r.applicable_from_stage,
+         a.code as applicability, r.status, r.period_start::text, r.period_end::text,
+         r.required_of_case_party_id, r.required_of_case_property_id,
+         cpa.role as party_role,
+         coalesce(pp.full_name, po.canonical_name) as party_name,
+         cpr.role as property_role,
+         -- A property has no single "name": what identifies it on a checklist
+         -- is the building or the locality, in that order of specificity.
+         coalesce(prop.building_name, prop.locality, prop.door_number) as property_name,
+         rule.code as generated_by_rule_code, rule.name as generated_by_rule_name,
+         rule.notes as generated_by_rule_notes,
+         r.is_custom, r.custom_name, r.reason, r.waived_by, r.waived_at::text,
+         d.id as document_id, d.file_name, d.file_size_bytes, d.version,
+         d.uploaded_at::text, d.uploaded_by, d.verified_at::text, d.verified_by
+    from document_requirement r
+    join document_type dt on dt.id = r.document_type_id
+    left join requirement_applicability a on a.id = r.applicability_id
+    left join document_requirement_rule rule on rule.id = r.generated_by_rule_id
+    left join case_party cpa on cpa.id = r.required_of_case_party_id
+    left join person pp on pp.id = cpa.person_id
+    left join organisation po on po.id = cpa.organisation_id
+    left join case_property cpr on cpr.id = r.required_of_case_property_id
+    left join property prop on prop.id = cpr.property_id
+    left join lateral (
+      select doc.*
+        from document doc
+       where doc.document_type_id = r.document_type_id
+         and doc.period_start is not distinct from r.period_start
+         and (
+           (cpa.person_id is not null and doc.person_id = cpa.person_id) or
+           (cpa.organisation_id is not null and doc.organisation_id = cpa.organisation_id) or
+           (cpr.property_id is not null and doc.property_id = cpr.property_id) or
+           (cpa.id is null and cpr.id is null and doc.case_id = r.case_id)
+         )
+       order by doc.version desc
+       limit 1
+    ) d on true`;
+
+function subjectOf(row: RequirementRow): RequirementSubject {
+  if (row.required_of_case_party_id) {
+    return { kind: "party", role: row.party_role, name: row.party_name };
+  }
+  if (row.required_of_case_property_id) {
+    return { kind: "property", role: row.property_role, name: row.property_name };
+  }
+  return { kind: "case", role: null, name: null };
+}
+
+function requirementFromRow(row: RequirementRow): RequirementView {
+  return {
+    id: row.id,
+    documentTypeCode: row.document_type_code,
+    applicableFromStage: row.applicable_from_stage,
+    applicability: row.applicability,
+    status: row.status,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    requiredOfCasePartyId: row.required_of_case_party_id,
+    requiredOfCasePropertyId: row.required_of_case_property_id,
+    subject: subjectOf(row),
+    generatedByRuleCode: row.generated_by_rule_code,
+    generatedByRuleName: row.generated_by_rule_name,
+    generatedByRuleNotes: row.generated_by_rule_notes,
+    isCustom: row.is_custom === true,
+    customName: row.custom_name,
+    reason: row.reason,
+    waivedByUserId: row.waived_by,
+    waivedAt: row.waived_at,
+    document: row.document_id
+      ? {
+          id: row.document_id,
+          fileName: row.file_name,
+          fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+          version: row.version ?? 1,
+          uploadedAt: row.uploaded_at as string,
+          uploadedByUserId: row.uploaded_by,
+          verifiedAt: row.verified_at,
+          verifiedByUserId: row.verified_by,
+        }
+      : null,
+  };
 }
 
 /**
@@ -147,64 +289,13 @@ export async function listCaseRequirements(
   await regenerateRequirements(client, caseId);
 
   const { rows } = await client.query<RequirementRow>(
-    `select r.id, dt.code as document_type_code, r.applicable_from_stage,
-            a.code as applicability, r.status, r.period_start::text, r.period_end::text,
-            r.required_of_case_party_id, r.required_of_case_property_id,
-            rule.code as generated_by_rule_code, r.reason, r.waived_by, r.waived_at::text,
-            d.id as document_id, d.file_name, d.file_size_bytes, d.version,
-            d.uploaded_at::text, d.uploaded_by, d.verified_at::text, d.verified_by
-       from document_requirement r
-       join document_type dt on dt.id = r.document_type_id
-       left join requirement_applicability a on a.id = r.applicability_id
-       left join document_requirement_rule rule on rule.id = r.generated_by_rule_id
-       left join case_party cpa on cpa.id = r.required_of_case_party_id
-       left join case_property cpr on cpr.id = r.required_of_case_property_id
-       left join lateral (
-         select doc.*
-           from document doc
-          where doc.document_type_id = r.document_type_id
-            and doc.period_start is not distinct from r.period_start
-            and (
-              (cpa.person_id is not null and doc.person_id = cpa.person_id) or
-              (cpa.organisation_id is not null and doc.organisation_id = cpa.organisation_id) or
-              (cpr.property_id is not null and doc.property_id = cpr.property_id) or
-              (cpa.id is null and cpr.id is null and doc.case_id = r.case_id)
-            )
-          order by doc.version desc
-          limit 1
-       ) d on true
+    `${REQUIREMENT_SELECT}
       where r.case_id = $1 and r.status <> 'not_applicable'
       order by dt.display_order, dt.code, r.period_start desc nulls last`,
     [caseId],
   );
 
-  const requirements: RequirementView[] = rows.map((row) => ({
-    id: row.id,
-    documentTypeCode: row.document_type_code,
-    applicableFromStage: row.applicable_from_stage,
-    applicability: row.applicability,
-    status: row.status,
-    periodStart: row.period_start,
-    periodEnd: row.period_end,
-    requiredOfCasePartyId: row.required_of_case_party_id,
-    requiredOfCasePropertyId: row.required_of_case_property_id,
-    generatedByRuleCode: row.generated_by_rule_code,
-    reason: row.reason,
-    waivedByUserId: row.waived_by,
-    waivedAt: row.waived_at,
-    document: row.document_id
-      ? {
-          id: row.document_id,
-          fileName: row.file_name,
-          fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
-          version: row.version ?? 1,
-          uploadedAt: row.uploaded_at as string,
-          uploadedByUserId: row.uploaded_by,
-          verifiedAt: row.verified_at,
-          verifiedByUserId: row.verified_by,
-        }
-      : null,
-  }));
+  const requirements: RequirementView[] = rows.map(requirementFromRow);
 
   const progress = summariseProgress(
     requirements.map(
@@ -399,65 +490,12 @@ export async function uploadDocument(
 }
 
 async function requirementView(client: Queryable, requirementId: string): Promise<RequirementView> {
-  const { rows } = await client.query<RequirementRow>(
-    `select r.id, dt.code as document_type_code, r.applicable_from_stage,
-            a.code as applicability, r.status, r.period_start::text, r.period_end::text,
-            r.required_of_case_party_id, r.required_of_case_property_id,
-            rule.code as generated_by_rule_code, r.reason, r.waived_by, r.waived_at::text,
-            d.id as document_id, d.file_name, d.file_size_bytes, d.version,
-            d.uploaded_at::text, d.uploaded_by, d.verified_at::text, d.verified_by
-       from document_requirement r
-       join document_type dt on dt.id = r.document_type_id
-       left join requirement_applicability a on a.id = r.applicability_id
-       left join document_requirement_rule rule on rule.id = r.generated_by_rule_id
-       left join case_party cpa on cpa.id = r.required_of_case_party_id
-       left join case_property cpr on cpr.id = r.required_of_case_property_id
-       left join lateral (
-         select doc.*
-           from document doc
-          where doc.document_type_id = r.document_type_id
-            and doc.period_start is not distinct from r.period_start
-            and (
-              (cpa.person_id is not null and doc.person_id = cpa.person_id) or
-              (cpa.organisation_id is not null and doc.organisation_id = cpa.organisation_id) or
-              (cpr.property_id is not null and doc.property_id = cpr.property_id) or
-              (cpa.id is null and cpr.id is null and doc.case_id = r.case_id)
-            )
-          order by doc.version desc
-          limit 1
-       ) d on true
-      where r.id = $1`,
-    [requirementId],
-  );
+  const { rows } = await client.query<RequirementRow>(`${REQUIREMENT_SELECT} where r.id = $1`, [
+    requirementId,
+  ]);
   const row = rows[0];
   if (!row) throw new ApiError(404, "No such requirement.");
-  return {
-    id: row.id,
-    documentTypeCode: row.document_type_code,
-    applicableFromStage: row.applicable_from_stage,
-    applicability: row.applicability,
-    status: row.status,
-    periodStart: row.period_start,
-    periodEnd: row.period_end,
-    requiredOfCasePartyId: row.required_of_case_party_id,
-    requiredOfCasePropertyId: row.required_of_case_property_id,
-    generatedByRuleCode: row.generated_by_rule_code,
-    reason: row.reason,
-    waivedByUserId: row.waived_by,
-    waivedAt: row.waived_at,
-    document: row.document_id
-      ? {
-          id: row.document_id,
-          fileName: row.file_name,
-          fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
-          version: row.version ?? 1,
-          uploadedAt: row.uploaded_at as string,
-          uploadedByUserId: row.uploaded_by,
-          verifiedAt: row.verified_at,
-          verifiedByUserId: row.verified_by,
-        }
-      : null,
-  };
+  return requirementFromRow(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,6 +648,134 @@ export async function waiveRequirement(
   await reconcileStage(client, caseId, {
     entityType: "document_requirement",
     entityId: requirementId,
+  });
+
+  return await requirementView(client, requirementId);
+}
+
+// ---------------------------------------------------------------------------
+// Additional documents — a requirement added by hand, for this case only
+// ---------------------------------------------------------------------------
+
+export interface AddRequirementInput {
+  documentTypeCode?: unknown;
+  casePartyId?: unknown;
+  casePropertyId?: unknown;
+  note?: unknown;
+}
+
+/**
+ * Ask this case for one more document.
+ *
+ * WHAT THIS IS FOR. A lender asks for something the rule pack does not cover —
+ * a specific NOC, a letter explaining a gap in banking, a second address
+ * proof for a shared premises. Before this the only recourse was to chase it
+ * outside AOS, which means it is not on the checklist, not in storage, not
+ * verified and not in the submission package.
+ *
+ * WHAT IT IS NOT. It is not a way around the requirement engine. It ADDS a
+ * row; it can neither remove nor weaken one a rule generated, and it cannot
+ * invent a document type — the type comes from the controlled catalogue
+ * (`document_type`), so a hand-added row is verifiable, storable and
+ * packageable exactly like a generated one. Free-text document names would
+ * make "how often do we end up asking for X?" unanswerable, which is the
+ * question that tells the business a rule is missing.
+ *
+ * `is_custom` (0026) is what keeps the two apart for good. Regeneration passes
+ * these rows through untouched — no rule produced them, so no rule's absence
+ * may withdraw them — and the submission workflow can tell a hand-added
+ * document from a generated one when deciding what belongs in a lender's
+ * package.
+ *
+ * PERMISSION: `case.update`, which is what already governs inserting into
+ * `document_requirement` (src/domain/permissions/tables.ts). Deliberately NOT
+ * `requirement.waive`: adding an ask is an ordinary act of running the case,
+ * while excusing one is a decision with a name on it.
+ */
+export async function addCustomRequirement(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  body: AddRequirementInput,
+): Promise<RequirementView> {
+  const header = await loadCaseHeader(client, caseId);
+  requireCaseAccess(actor, header, "case.update");
+
+  const documentTypeCode =
+    typeof body.documentTypeCode === "string" ? body.documentTypeCode.trim() : "";
+  if (!documentTypeCode) throw new ApiError(400, "Choose a document type.");
+
+  const { rows: typeRows } = await client.query<{ id: string; name: string; is_active: boolean }>(
+    `select id, name, is_active from document_type where code = $1`,
+    [documentTypeCode],
+  );
+  const documentType = typeRows[0];
+  if (!documentType) throw new ApiError(400, "No such document type.");
+  // A deactivated type is one the business has retired. Adding a new ask
+  // against it would quietly bring it back, one case at a time.
+  if (!documentType.is_active) {
+    throw new ApiError(400, "That document type is no longer in use.");
+  }
+
+  const casePartyId = typeof body.casePartyId === "string" && body.casePartyId ? body.casePartyId : null;
+  const casePropertyId =
+    typeof body.casePropertyId === "string" && body.casePropertyId ? body.casePropertyId : null;
+
+  // `document_requirement_subject_is_singular` (0005) would refuse this
+  // anyway; the check exists so the refusal reads as a sentence.
+  if (casePartyId && casePropertyId) {
+    throw new ApiError(400, "A document belongs to a person or to a property, not to both.");
+  }
+
+  if (casePartyId) {
+    const { rows } = await client.query(
+      `select id from case_party where id = $1 and case_id = $2 and removed_at is null`,
+      [casePartyId, caseId],
+    );
+    if (!rows[0]) throw new ApiError(400, "That party is not on this case.");
+  }
+  if (casePropertyId) {
+    const { rows } = await client.query(
+      `select id from case_property where id = $1 and case_id = $2 and removed_at is null`,
+      [casePropertyId, caseId],
+    );
+    if (!rows[0]) throw new ApiError(400, "That property is not on this case.");
+  }
+
+  const note = typeof body.note === "string" ? body.note.trim() : "";
+
+  const applicability = await client.query<{ id: string }>(
+    `select id from requirement_applicability where code = 'mandatory'`,
+  );
+
+  const inserted = await client.query<{ id: string }>(
+    `insert into document_requirement
+       (case_id, document_type_id, required_of_case_party_id, required_of_case_property_id,
+        applicable_from_stage, applicability_id, is_custom, custom_name, custom_description,
+        created_by)
+     values ($1, $2, $3, $4, 'documents_pending', $5, true, $6, $7, $8)
+     returning id`,
+    [
+      caseId,
+      documentType.id,
+      casePartyId,
+      casePropertyId,
+      applicability.rows[0]?.id ?? null,
+      // `document_requirement_custom_needs_a_name` (0026) requires a name on
+      // every custom row. The document type's own name is the honest default:
+      // the type IS what is being asked for, and the note explains why.
+      documentType.name,
+      note.length > 0 ? note : null,
+      actor.userId,
+    ],
+  );
+  const requirementId = inserted.rows[0]!.id;
+
+  await recordRequirementAddedEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    requirementId,
+    payloadAfter: { documentTypeCode, casePartyId, casePropertyId },
   });
 
   return await requirementView(client, requirementId);

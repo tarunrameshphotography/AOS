@@ -103,13 +103,18 @@ import {
 } from "./case-composition.js";
 import { listLenders } from "./lenders.js";
 import {
+  acceptOffer,
+  answerQuery,
   createSubmission,
   listPackages,
   listSubmissions,
   preparePackage,
+  raiseQuery,
+  recordOffer,
   retryPackage,
   sendableDocuments,
   sendPackage,
+  updateSubmissionStatus,
 } from "./submissions.js";
 
 const PORT = Number(process.env.AOS_API_PORT ?? 4321);
@@ -993,6 +998,56 @@ async function route(
       retryMatch[1]!,
       retryMatch[2]!,
       retryMatch[3]!,
+    );
+  }
+
+  // ── Loan outcome tracking (Phase 5) ────────────────────────────────────────
+  //
+  // Status is a PATCH on the submission (a partial update to one existing
+  // resource, matching `PATCH /api/cases/:id` for the case itself); offers
+  // and query answers are their own sub-resources / actions, matching the
+  // shape `/requirements/:id/waive` (Phase 4) already established for a
+  // single-verb action on a case-derived row.
+
+  const statusMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/status$`).exec(path);
+  if (statusMatch && method === "PATCH") {
+    return await updateSubmissionStatus(client, requireActor(actor), statusMatch[1]!, statusMatch[2]!, body);
+  }
+
+  const queriesMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/queries$`).exec(path);
+  if (queriesMatch && method === "POST") {
+    return await raiseQuery(client, requireActor(actor), queriesMatch[1]!, queriesMatch[2]!, body);
+  }
+
+  const answerMatch = new RegExp(
+    `^/api/cases/(${UUID})/submissions/(${UUID})/queries/(${UUID})/answer$`,
+  ).exec(path);
+  if (answerMatch && method === "PUT") {
+    return await answerQuery(
+      client,
+      requireActor(actor),
+      answerMatch[1]!,
+      answerMatch[2]!,
+      answerMatch[3]!,
+      body,
+    );
+  }
+
+  const offersMatch = new RegExp(`^/api/cases/(${UUID})/submissions/(${UUID})/offers$`).exec(path);
+  if (offersMatch && method === "POST") {
+    return await recordOffer(client, requireActor(actor), offersMatch[1]!, offersMatch[2]!, body);
+  }
+
+  const acceptOfferMatch = new RegExp(
+    `^/api/cases/(${UUID})/submissions/(${UUID})/offers/(${UUID})/accept$`,
+  ).exec(path);
+  if (acceptOfferMatch && method === "PUT") {
+    return await acceptOffer(
+      client,
+      requireActor(actor),
+      acceptOfferMatch[1]!,
+      acceptOfferMatch[2]!,
+      acceptOfferMatch[3]!,
     );
   }
 

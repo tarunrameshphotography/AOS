@@ -383,15 +383,32 @@ export type SubmissionEventType =
   | "submission.email_sent"
   | "submission.email_failed"
   | "submission.documents_sent"
-  | "submission.documents_partially_sent";
+  | "submission.documents_partially_sent"
+  // Loan outcome tracking (Phase 5) — one event per submission-status write in
+  // `Backend/submissions.ts`'s `updateSubmissionStatus`, named after the
+  // status the submission moved to, matching the prototype's dynamic
+  // `submission.${status}` naming (`Frontend/src/fake/store.ts`).
+  | "submission.under_process"
+  | "submission.query_raised"
+  | "submission.query_answered"
+  | "submission.eligibility_received"
+  | "submission.sanctioned"
+  | "submission.rejected"
+  | "submission.withdrawn"
+  | "submission.disbursed";
 
 export interface SubmissionEvent {
   readonly actorUserId: string;
   readonly caseId: string;
-  /** Which row this event is about: the submission itself for `created`, one
-   * outgoing email for the two `email_*` events, the package as a whole for
-   * `documents_*`. */
-  readonly entityType: "submission" | "submission_package_email" | "submission_package";
+  /** Which row this event is about: the submission itself for `created` and
+   * every outcome status, one outgoing email for the two `email_*` events,
+   * the package as a whole for `documents_*`, and the query row for the two
+   * `query_*` events. */
+  readonly entityType:
+    | "submission"
+    | "submission_package_email"
+    | "submission_package"
+    | "submission_query";
   readonly entityId: string;
   readonly eventType: SubmissionEventType;
   /** Ids, statuses and counts only — never a recipient's name or a bank
@@ -411,6 +428,78 @@ export async function recordSubmissionEvent(client: Queryable, event: Submission
       event.actorUserId,
       event.entityType,
       event.entityId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}
+
+/**
+ * `submission_query` — a bank's query and, on the same row, the employee's
+ * answer to it (Phase 5). Two events, both about the same row:
+ * `query_raised` when the row is inserted, `query_answered` when `answer`/
+ * `answered_at` are filled in — matching `src/domain/permissions/tables.ts`'s
+ * note that recording the answer is an update, not a new row.
+ *
+ * WHAT MAY GO IN THE PAYLOAD: ids only — never the bank's question text or the
+ * employee's answer, which live on `submission_query` itself, where redaction
+ * can reach them, on the same discipline every other event recorder in this
+ * file applies.
+ */
+export interface SubmissionQueryEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly submissionQueryId: string;
+  readonly eventType: "submission.query_raised" | "submission.query_answered";
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordSubmissionQueryEvent(
+  client: Queryable,
+  event: SubmissionQueryEvent,
+): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'submission_query', $2, $3, $4, $5, 'ui')`,
+    [
+      event.actorUserId,
+      event.submissionQueryId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}
+
+/**
+ * `offer` — recording and accepting a sanction offer (Phase 5), matching the
+ * prototype's `offer.accepted` naming (`Frontend/src/fake/store.ts`'s
+ * `acceptOffer`).
+ *
+ * WHAT MAY GO IN THE PAYLOAD: ids and counts only — e.g. how many competing
+ * submissions were withdrawn when this offer was accepted (BR-025) — never
+ * the offer's commercial terms (amount, rate, tenure, conditions), which live
+ * on `offer` itself, masked and revealed the same way every other commercial
+ * figure in this codebase is (ADR-026).
+ */
+export interface OfferEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly offerId: string;
+  readonly eventType: "offer.recorded" | "offer.accepted";
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordOfferEvent(client: Queryable, event: OfferEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'offer', $2, $3, $4, $5, 'ui')`,
+    [
+      event.actorUserId,
+      event.offerId,
       event.caseId,
       event.eventType,
       event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),

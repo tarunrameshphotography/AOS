@@ -20,19 +20,35 @@ import { useState, type ReactNode } from "react";
 import { api } from "../api/client.js";
 import { useApiQuery, useMutation } from "../api/hooks.js";
 import { useLenders } from "../api/lenders.js";
+import { useRejectionReasons } from "../api/master-data.js";
 import type {
   ApiCase,
   ApiLenderBranch,
+  ApiOffer,
   ApiPackage,
   ApiPreparedPackage,
   ApiSendableDocument,
   ApiSendResult,
   ApiSubmission,
+  ApiSubmissionQuery,
   SubmissionStatus,
 } from "../api/types.js";
 import { bytes, when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, Field, Input, Modal, PermissionCode, Select, cx, useToast } from "../ui/index.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  Field,
+  Input,
+  Modal,
+  PermissionCode,
+  Select,
+  Textarea,
+  cx,
+  useToast,
+} from "../ui/index.js";
 
 const SUBMISSION_STATUS_LABELS: Record<SubmissionStatus, string> = {
   not_submitted: "Draft",
@@ -223,6 +239,12 @@ function SubmissionCard({
         </div>
       </div>
 
+      {submission.status !== "not_submitted" && (
+        <div className="border-t border-ink-100 p-3">
+          <OutcomePanel loanCase={loanCase} submission={submission} onChanged={onChanged} />
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t border-ink-100 p-3">
           {packagesQuery.loading && <Empty>Loading packages…</Empty>}
@@ -238,6 +260,512 @@ function SubmissionCard({
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Outcome — under process, queries, eligibility, sanction, offer, rejection,
+// withdrawal, disbursement (Phase 5). One submission's status is server-
+// authoritative (`Backend/submissions.ts`'s `updateSubmissionStatus`); this
+// panel only offers the actions legal from the submission's CURRENT status,
+// but the backend refuses an illegal one regardless — the buttons below are
+// a convenience, never the enforcement.
+// ---------------------------------------------------------------------------
+
+type OutcomeAction = "reject" | "raiseQuery" | "answerQuery" | "recordOffer" | null;
+
+function OutcomePanel({
+  loanCase,
+  submission,
+  onChanged,
+}: {
+  loanCase: ApiCase;
+  submission: ApiSubmission;
+  onChanged: () => void;
+}): ReactNode {
+  const session = useSession();
+  const mutation = useMutation();
+  const toast = useToast();
+  const [action, setAction] = useState<OutcomeAction>(null);
+  const [answeringQuery, setAnsweringQuery] = useState<ApiSubmissionQuery | null>(null);
+
+  const mayUpdateStatus = session.canActOnCase(loanCase.ownerUserId, "submission.update_status");
+  const mayRecordOffer = session.canActOnCase(loanCase.ownerUserId, "offer.record");
+  const mayAcceptOffer = session.canActOnCase(loanCase.ownerUserId, "offer.accept");
+  const mayReadOffer = session.canActOnCase(loanCase.ownerUserId, "offer.read");
+
+  const openQuery = submission.queries.find((q) => q.answeredAt === null) ?? null;
+  const hasAcceptedOffer = submission.offers.some((o) => o.isAccepted);
+
+  const setStatus = async (
+    status: SubmissionStatus,
+    extra?: { rejectionReasonId?: string; bankReasonText?: string | undefined },
+  ): Promise<void> => {
+    const result = await mutation.run(() =>
+      api<ApiSubmission>(`/cases/${loanCase.id}/submissions/${submission.id}/status`, {
+        method: "PATCH",
+        body: { status, ...extra },
+      }),
+    );
+    if (result) {
+      toast.show(`Marked ${SUBMISSION_STATUS_LABELS[status]}`, "good");
+      setAction(null);
+      onChanged();
+    }
+  };
+
+  const actionButtons: ReactNode[] = [];
+  if (mayUpdateStatus) {
+    if (submission.status === "submitted") {
+      actionButtons.push(
+        <Button key="under_process" disabled={mutation.pending} onClick={() => setStatus("under_process")}>
+          Move to under process
+        </Button>,
+      );
+    }
+    if (submission.status === "under_process") {
+      actionButtons.push(
+        <Button key="raise_query" variant="ghost" disabled={mutation.pending} onClick={() => setAction("raiseQuery")}>
+          Raise query
+        </Button>,
+      );
+      actionButtons.push(
+        <Button key="eligibility" disabled={mutation.pending} onClick={() => setStatus("eligibility_received")}>
+          Record eligibility
+        </Button>,
+      );
+    }
+    if (submission.status === "eligibility_received") {
+      actionButtons.push(
+        <Button
+          key="sanction"
+          disabled={mutation.pending || submission.offers.length === 0}
+          onClick={() => setStatus("sanctioned")}
+        >
+          Record sanction
+        </Button>,
+      );
+    }
+    if (submission.status === "sanctioned") {
+      actionButtons.push(
+        <Button key="disburse" disabled={mutation.pending} onClick={() => setStatus("disbursed")}>
+          Record disbursement
+        </Button>,
+      );
+    }
+    if (["submitted", "under_process", "eligibility_received"].includes(submission.status)) {
+      actionButtons.push(
+        <Button key="reject" variant="ghost" disabled={mutation.pending} onClick={() => setAction("reject")}>
+          Reject
+        </Button>,
+      );
+    }
+    if (["not_submitted", "submitted", "under_process", "eligibility_received", "sanctioned"].includes(submission.status)) {
+      actionButtons.push(
+        <Button key="withdraw" variant="ghost" disabled={mutation.pending} onClick={() => setStatus("withdrawn")}>
+          Withdraw
+        </Button>,
+      );
+    }
+  }
+  if (
+    mayRecordOffer &&
+    !hasAcceptedOffer &&
+    ["under_process", "query_raised", "eligibility_received", "sanctioned"].includes(submission.status)
+  ) {
+    actionButtons.push(
+      <Button key="record_offer" variant="ghost" disabled={mutation.pending} onClick={() => setAction("recordOffer")}>
+        {submission.offers.length === 0 ? "Record offer" : "Revise offer"}
+      </Button>,
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {submission.status === "rejected" && (
+        <p className="text-xs text-ink-600">
+          Rejected {submission.rejectedAt ? when(submission.rejectedAt) : ""}
+          {submission.bankReasonText ? ` — "${submission.bankReasonText}"` : ""}
+        </p>
+      )}
+
+      {openQuery && mayUpdateStatus && (
+        <div className="rounded-md bg-amber-50 p-2.5 text-sm text-amber-900 ring-1 ring-amber-200">
+          <p className="font-medium">Bank query — {when(openQuery.raisedAt)}</p>
+          <p className="mt-1 whitespace-pre-wrap">{openQuery.question}</p>
+          <Button className="mt-2" disabled={mutation.pending} onClick={() => setAnsweringQuery(openQuery)}>
+            Answer query
+          </Button>
+        </div>
+      )}
+
+      {submission.queries.filter((q) => q.answeredAt !== null).length > 0 && (
+        <details className="text-xs text-ink-500">
+          <summary className="cursor-pointer">Query history</summary>
+          <ul className="mt-1 space-y-2">
+            {submission.queries
+              .filter((q) => q.answeredAt !== null)
+              .map((q) => (
+                <li key={q.id} className="rounded bg-ink-50 p-2">
+                  <p className="font-medium text-ink-700">Q: {q.question}</p>
+                  <p className="mt-1 text-ink-600">A: {q.answer}</p>
+                </li>
+              ))}
+          </ul>
+        </details>
+      )}
+
+      {mayReadOffer && submission.offers.length > 0 && (
+        <div className="space-y-2">
+          {submission.offers.map((offer) => (
+            <OfferRow
+              key={offer.id}
+              loanCase={loanCase}
+              submission={submission}
+              offer={offer}
+              mayAccept={mayAcceptOffer && submission.status === "sanctioned" && !hasAcceptedOffer}
+              onChanged={onChanged}
+            />
+          ))}
+        </div>
+      )}
+
+      {actionButtons.length > 0 && <div className="flex flex-wrap gap-2">{actionButtons}</div>}
+
+      {mutation.error && (
+        <p className="text-xs text-red-700" role="alert">
+          {mutation.error}
+        </p>
+      )}
+
+      {action === "raiseQuery" && (
+        <RaiseQueryModal
+          loanCase={loanCase}
+          submission={submission}
+          onClose={() => setAction(null)}
+          onChanged={() => {
+            setAction(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {action === "reject" && (
+        <RejectModal
+          onClose={() => setAction(null)}
+          onReject={(rejectionReasonId, bankReasonText) => setStatus("rejected", { rejectionReasonId, bankReasonText })}
+          pending={mutation.pending}
+          error={mutation.error}
+        />
+      )}
+
+      {action === "recordOffer" && (
+        <RecordOfferModal
+          loanCase={loanCase}
+          submission={submission}
+          onClose={() => setAction(null)}
+          onChanged={() => {
+            setAction(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {answeringQuery && (
+        <AnswerQueryModal
+          loanCase={loanCase}
+          submission={submission}
+          query={answeringQuery}
+          onClose={() => setAnsweringQuery(null)}
+          onChanged={() => {
+            setAnsweringQuery(null);
+            onChanged();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function OfferRow({
+  loanCase,
+  submission,
+  offer,
+  mayAccept,
+  onChanged,
+}: {
+  loanCase: ApiCase;
+  submission: ApiSubmission;
+  offer: ApiOffer;
+  mayAccept: boolean;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-ink-50 p-2.5 text-xs">
+      <div>
+        <p className="font-medium text-ink-800">
+          ₹{offer.sanctionedAmount.toLocaleString("en-IN")}
+          {offer.interestRate !== null && <> · {offer.interestRate}%</>}
+          {offer.tenureMonths !== null && <> · {offer.tenureMonths} months</>}
+        </p>
+        {offer.conditions && <p className="mt-0.5 text-ink-500">{offer.conditions}</p>}
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge tone={offer.isAccepted ? "good" : "neutral"}>{offer.isAccepted ? "Accepted" : "Not accepted"}</Badge>
+        {mayAccept && !offer.isAccepted && (
+          <Button
+            disabled={mutation.pending}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api<ApiSubmission>(
+                  `/cases/${loanCase.id}/submissions/${submission.id}/offers/${offer.id}/accept`,
+                  { method: "PUT" },
+                ),
+              );
+              if (result) {
+                toast.show("Offer accepted — other live submissions withdrawn", "good");
+                onChanged();
+              }
+            }}
+          >
+            Accept
+          </Button>
+        )}
+      </div>
+      {mutation.error && (
+        <p className="w-full text-xs text-red-700" role="alert">
+          {mutation.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RaiseQueryModal({
+  loanCase,
+  submission,
+  onClose,
+  onChanged,
+}: {
+  loanCase: ApiCase;
+  submission: ApiSubmission;
+  onClose: () => void;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const [question, setQuestion] = useState("");
+
+  return (
+    <Modal open title="Raise a bank query" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="What did the bank ask?">
+          <Textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={4} />
+        </Field>
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={mutation.pending || question.trim() === ""}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api<ApiSubmission>(`/cases/${loanCase.id}/submissions/${submission.id}/queries`, {
+                  method: "POST",
+                  body: { question: question.trim() },
+                }),
+              );
+              if (result) onChanged();
+            }}
+          >
+            Raise query
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AnswerQueryModal({
+  loanCase,
+  submission,
+  query,
+  onClose,
+  onChanged,
+}: {
+  loanCase: ApiCase;
+  submission: ApiSubmission;
+  query: ApiSubmissionQuery;
+  onClose: () => void;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const [answer, setAnswer] = useState("");
+
+  return (
+    <Modal open title="Answer bank query" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="rounded-md bg-ink-50 p-2.5 text-sm text-ink-700">{query.question}</p>
+        <Field label="Answer">
+          <Textarea value={answer} onChange={(event) => setAnswer(event.target.value)} rows={4} />
+        </Field>
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={mutation.pending || answer.trim() === ""}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api<ApiSubmission>(
+                  `/cases/${loanCase.id}/submissions/${submission.id}/queries/${query.id}/answer`,
+                  { method: "PUT", body: { answer: answer.trim() } },
+                ),
+              );
+              if (result) onChanged();
+            }}
+          >
+            Send answer
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function RejectModal({
+  onClose,
+  onReject,
+  pending,
+  error,
+}: {
+  onClose: () => void;
+  onReject: (rejectionReasonId: string, bankReasonText: string | undefined) => void;
+  pending: boolean;
+  error: string | null;
+}): ReactNode {
+  const { rejectionReasons } = useRejectionReasons();
+  const [reasonId, setReasonId] = useState("");
+  const [bankText, setBankText] = useState("");
+
+  return (
+    <Modal open title="Reject submission" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Reason (BR-024)">
+          <Select value={reasonId} onChange={(event) => setReasonId(event.target.value)}>
+            <option value="">Choose a reason…</option>
+            {rejectionReasons.map((reason) => (
+              <option key={reason.id} value={reason.id}>
+                {reason.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Bank's own wording (optional)">
+          <Textarea value={bankText} onChange={(event) => setBankText(event.target.value)} rows={3} />
+        </Field>
+        {error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={pending || reasonId === ""}
+            onClick={() => onReject(reasonId, bankText.trim() === "" ? undefined : bankText.trim())}
+          >
+            Reject
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function RecordOfferModal({
+  loanCase,
+  submission,
+  onClose,
+  onChanged,
+}: {
+  loanCase: ApiCase;
+  submission: ApiSubmission;
+  onClose: () => void;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const [amount, setAmount] = useState("");
+  const [rate, setRate] = useState("");
+  const [tenure, setTenure] = useState("");
+  const [conditions, setConditions] = useState("");
+
+  return (
+    <Modal open title="Record offer" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Sanctioned amount">
+          <Input type="number" value={amount} onChange={(event) => setAmount(event.target.value)} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Interest rate % (optional)">
+            <Input type="number" value={rate} onChange={(event) => setRate(event.target.value)} />
+          </Field>
+          <Field label="Tenure, months (optional)">
+            <Input type="number" value={tenure} onChange={(event) => setTenure(event.target.value)} />
+          </Field>
+        </div>
+        <Field label="Conditions (optional)">
+          <Textarea value={conditions} onChange={(event) => setConditions(event.target.value)} rows={3} />
+        </Field>
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={mutation.pending || amount.trim() === ""}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api<ApiSubmission>(`/cases/${loanCase.id}/submissions/${submission.id}/offers`, {
+                  method: "POST",
+                  body: {
+                    sanctionedAmount: Number(amount),
+                    ...(rate.trim() !== "" ? { interestRate: Number(rate) } : {}),
+                    ...(tenure.trim() !== "" ? { tenureMonths: Number(tenure) } : {}),
+                    ...(conditions.trim() !== "" ? { conditions: conditions.trim() } : {}),
+                  },
+                }),
+              );
+              if (result) onChanged();
+            }}
+          >
+            Record offer
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

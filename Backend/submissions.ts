@@ -46,17 +46,21 @@
  */
 
 import {
+  canTransitionSubmission,
   describePackageProblem,
   describeProblem,
   groupsIn,
   ineligibility,
+  isLiveSubmissionStatus,
   planSubmissionPackage,
   validateRecipients,
+  GENERIC_TARGET_STATUSES,
   type CandidateDocument,
   type PackagePlanInput,
   type RecipientDraft,
   type SubmissionContext,
   type SubmissionPackagePlan,
+  type SubmissionStatus,
 } from "@domain/submissions/index.js";
 import { documentRowLabel, financialYearOf, type PeriodKind } from "@domain/requirements/index.js";
 import {
@@ -70,15 +74,20 @@ import {
   type EmailProvider,
   type OutgoingEmail,
 } from "@domain/communications/index.js";
-import { evaluateTransition, type CaseSnapshot } from "@domain/case/transitions.js";
 import type { CaseStage } from "@domain/case/stages.js";
 
 import type { Queryable } from "./db.js";
 import { canActOnCase, type Actor } from "./authorize.js";
 import { ApiError, refusalMessage } from "./http.js";
-import { recordSubmissionEvent, recordSystemCaseEvent } from "./events.js";
+import {
+  recordOfferEvent,
+  recordSubmissionEvent,
+  recordSubmissionQueryEvent,
+  type SubmissionEventType,
+} from "./events.js";
 import { storageAdapter } from "./storage-client.js";
 import { emailProvider as defaultEmailProvider } from "./mail-client.js";
+import { advanceCaseStage, lockCaseForOutcomeMutation } from "./case-stage.js";
 
 const DEFAULT_SENDER: EmailSender = {
   name: process.env.AOS_MAIL_SENDER_NAME ?? "Amaze Loans",
@@ -131,6 +140,10 @@ interface SubmissionRow {
   submitted_at: string | null;
   submitted_by: string | null;
   created_at: string;
+  rejection_reason_id: string | null;
+  bank_reason_text: string | null;
+  rejected_at: string | null;
+  status_note: string | null;
 }
 
 async function loadSubmission(
@@ -141,7 +154,8 @@ async function loadSubmission(
   const { rows } = await client.query<SubmissionRow>(
     `select id, case_id, branch_organisation_id, submission_mode_id, status,
             bank_name_at_submission, branch_name_at_submission,
-            submitted_at::text, submitted_by, created_at::text
+            submitted_at::text, submitted_by, created_at::text,
+            rejection_reason_id, bank_reason_text, rejected_at::text, status_note
        from submission where id = $1 and case_id = $2`,
     [submissionId, caseId],
   );
@@ -162,6 +176,29 @@ function counterpartyOf(row: Pick<SubmissionRow, "bank_name_at_submission" | "br
 // Listing
 // ---------------------------------------------------------------------------
 
+export interface OfferView {
+  readonly id: string;
+  readonly submissionId: string;
+  readonly sanctionedAmount: number;
+  readonly interestRate: number | null;
+  readonly tenureMonths: number | null;
+  readonly processingFee: number | null;
+  readonly conditions: string | null;
+  readonly validUntil: string | null;
+  readonly isAccepted: boolean;
+  readonly acceptedAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface SubmissionQueryView {
+  readonly id: string;
+  readonly submissionId: string;
+  readonly raisedAt: string;
+  readonly question: string;
+  readonly answeredAt: string | null;
+  readonly answer: string | null;
+}
+
 export interface SubmissionView {
   readonly id: string;
   readonly caseId: string;
@@ -170,6 +207,9 @@ export interface SubmissionView {
   readonly status: string;
   readonly submittedAt: string | null;
   readonly createdAt: string;
+  readonly rejectionReasonId: string | null;
+  readonly bankReasonText: string | null;
+  readonly rejectedAt: string | null;
   readonly recipients: readonly {
     readonly id: string;
     readonly email: string;
@@ -185,6 +225,8 @@ export interface SubmissionView {
     readonly emailCount: number;
     readonly initiatedAt: string;
   } | null;
+  readonly offers: readonly OfferView[];
+  readonly queries: readonly SubmissionQueryView[];
 }
 
 export async function listSubmissions(
@@ -194,7 +236,21 @@ export async function listSubmissions(
 ): Promise<SubmissionView[]> {
   const header = await loadCaseHeader(client, caseId);
   requireCaseAccess(actor, header, "submission.read");
+  return await submissionViewsFor(client, caseId);
+}
 
+/**
+ * The shared query behind `listSubmissions` and `viewOf` — one submission or
+ * every submission on a case, always with recipients, its latest package,
+ * every offer and every query attached. Every Phase 5 mutation returns
+ * through `viewOf` rather than a bespoke shape, so the screen that just
+ * acted on a submission repaints from the same data the list would show.
+ */
+async function submissionViewsFor(
+  client: Queryable,
+  caseId: string,
+  onlySubmissionId?: string,
+): Promise<SubmissionView[]> {
   const { rows } = await client.query<
     SubmissionRow & {
       latest_package_id: string | null;
@@ -207,6 +263,7 @@ export async function listSubmissions(
     `select s.id, s.case_id, s.branch_organisation_id, s.submission_mode_id, s.status,
             s.bank_name_at_submission, s.branch_name_at_submission,
             s.submitted_at::text, s.submitted_by, s.created_at::text,
+            s.rejection_reason_id, s.bank_reason_text, s.rejected_at::text, s.status_note,
             p.id as latest_package_id, p.status as latest_package_status,
             p.document_count as latest_package_document_count,
             p.email_count as latest_package_email_count,
@@ -218,9 +275,9 @@ export async function listSubmissions(
           order by sp.initiated_at desc
           limit 1
        ) p on true
-      where s.case_id = $1
+      where s.case_id = $1 ${onlySubmissionId ? "and s.id = $2" : ""}
       order by s.created_at desc`,
-    [caseId],
+    onlySubmissionId ? [caseId, onlySubmissionId] : [caseId],
   );
 
   const submissionIds = rows.map((row) => row.id);
@@ -250,6 +307,9 @@ export async function listSubmissions(
     recipientsBySubmission.set(recipient.submission_id, list);
   }
 
+  const offersBySubmission = await offersFor(client, submissionIds);
+  const queriesBySubmission = await queriesFor(client, submissionIds);
+
   return rows.map((row) => ({
     id: row.id,
     caseId: row.case_id,
@@ -258,6 +318,9 @@ export async function listSubmissions(
     status: row.status,
     submittedAt: row.submitted_at,
     createdAt: row.created_at,
+    rejectionReasonId: row.rejection_reason_id,
+    bankReasonText: row.bank_reason_text,
+    rejectedAt: row.rejected_at,
     recipients: (recipientsBySubmission.get(row.id) ?? []).map((recipient) => ({
       id: recipient.id,
       email: recipient.email,
@@ -275,7 +338,96 @@ export async function listSubmissions(
           initiatedAt: row.latest_package_initiated_at as string,
         }
       : null,
+    offers: offersBySubmission.get(row.id) ?? [],
+    queries: queriesBySubmission.get(row.id) ?? [],
   }));
+}
+
+async function offersFor(client: Queryable, submissionIds: readonly string[]): Promise<Map<string, OfferView[]>> {
+  const byId = new Map<string, OfferView[]>();
+  if (submissionIds.length === 0) return byId;
+  const { rows } = await client.query<{
+    id: string;
+    submission_id: string;
+    sanctioned_amount: string;
+    interest_rate: string | null;
+    tenure_months: number | null;
+    processing_fee: string | null;
+    conditions: string | null;
+    valid_until: string | null;
+    is_accepted: boolean;
+    accepted_at: string | null;
+    created_at: string;
+  }>(
+    `select id, submission_id, sanctioned_amount, interest_rate, tenure_months, processing_fee,
+            conditions, valid_until::text, is_accepted, accepted_at::text, created_at::text
+       from offer
+      where submission_id = any($1::uuid[])
+      order by created_at desc`,
+    [submissionIds],
+  );
+  for (const row of rows) {
+    const list = byId.get(row.submission_id) ?? [];
+    list.push({
+      id: row.id,
+      submissionId: row.submission_id,
+      sanctionedAmount: Number(row.sanctioned_amount),
+      interestRate: row.interest_rate === null ? null : Number(row.interest_rate),
+      tenureMonths: row.tenure_months,
+      processingFee: row.processing_fee === null ? null : Number(row.processing_fee),
+      conditions: row.conditions,
+      validUntil: row.valid_until,
+      isAccepted: row.is_accepted,
+      acceptedAt: row.accepted_at,
+      createdAt: row.created_at,
+    });
+    byId.set(row.submission_id, list);
+  }
+  return byId;
+}
+
+async function queriesFor(
+  client: Queryable,
+  submissionIds: readonly string[],
+): Promise<Map<string, SubmissionQueryView[]>> {
+  const byId = new Map<string, SubmissionQueryView[]>();
+  if (submissionIds.length === 0) return byId;
+  const { rows } = await client.query<{
+    id: string;
+    submission_id: string;
+    raised_at: string;
+    question: string;
+    answered_at: string | null;
+    answer: string | null;
+  }>(
+    `select id, submission_id, raised_at::text, question, answered_at::text, answer
+       from submission_query
+      where submission_id = any($1::uuid[])
+      order by raised_at desc`,
+    [submissionIds],
+  );
+  for (const row of rows) {
+    const list = byId.get(row.submission_id) ?? [];
+    list.push({
+      id: row.id,
+      submissionId: row.submission_id,
+      raisedAt: row.raised_at,
+      question: row.question,
+      answeredAt: row.answered_at,
+      answer: row.answer,
+    });
+    byId.set(row.submission_id, list);
+  }
+  return byId;
+}
+
+/** One submission, with its offers and queries — the shape every Phase 5
+ * mutation returns, so the screen that just acted on a submission can repaint
+ * it without a second round trip. */
+async function viewOf(client: Queryable, caseId: string, submissionId: string): Promise<SubmissionView> {
+  const [view] = await submissionViewsFor(client, caseId, submissionId);
+  if (!view) throw new ApiError(404, "No such submission on this case.");
+  return view;
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1297,13 @@ async function rollUpPackageStatus(client: Queryable, packageId: string): Promis
  * `status = 'not_submitted'`, so a second package sent to an
  * already-submitted bank (0030's "a second send is a new package") neither
  * re-dispatches the submission nor re-fires the case transition.
+ *
+ * Delegates the actual stage walk to `advanceCaseStage`
+ * (`Backend/case-stage.ts`, Phase 5) rather than checking only
+ * `ready_for_submission -> submitted` by hand: a submission recorded via a
+ * manual/walk-in path (`updateSubmissionStatus` dispatching it directly to
+ * `sanctioned` with an inline offer) can justify more than one step, and the
+ * shared helper is what guarantees every caller derives the same path.
  */
 async function finalizeIfFullySent(
   client: Queryable,
@@ -1167,43 +1326,11 @@ async function finalizeIfFullySent(
   );
   if (dispatched.rows.length === 0) return; // Already dispatched by an earlier package.
 
-  const header = await loadCaseHeader(client, caseId);
-  if (header.isOnHold) return;
-  if (header.stage !== "ready_for_submission") return;
-
-  const liveSubmissionCount = await liveSubmissionCountFor(client, caseId);
   const outstandingRequirementCount = await outstandingRequirementCountFor(client, caseId);
-
-  const snapshot: CaseSnapshot = {
-    stage: header.stage,
-    outstandingRequirementCount,
-    liveSubmissionCount,
-    hasSanctionedSubmissionWithOffer: false,
-    hasDisbursedSubmission: false,
-    isInvoiceRaised: false,
-    stageBeforeLost: null,
-  };
-
-  const verdict = evaluateTransition(snapshot, { to: "submitted", actor: "system" });
-  if (!verdict.allowed) return;
-
-  await client.query(`update loan_case set stage = 'submitted' where id = $1`, [caseId]);
-  await recordSystemCaseEvent(client, {
-    caseId,
-    eventType: "case.stage_changed",
-    payloadBefore: { stage: "ready_for_submission" },
-    payloadAfter: { stage: "submitted" },
-    causedByEntityType: "submission",
-    causedByEntityId: submissionId,
+  await advanceCaseStage(client, caseId, outstandingRequirementCount, {
+    entityType: "submission",
+    entityId: submissionId,
   });
-}
-
-async function liveSubmissionCountFor(client: Queryable, caseId: string): Promise<number> {
-  const { rows } = await client.query<{ n: string }>(
-    `select count(*) as n from submission where case_id = $1 and status <> 'not_submitted'`,
-    [caseId],
-  );
-  return Number(rows[0]?.n ?? 0);
 }
 
 async function outstandingRequirementCountFor(client: Queryable, caseId: string): Promise<number> {
@@ -1313,4 +1440,386 @@ export async function listPackages(
       failureMessage: email.failure_message,
     })),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Loan outcome tracking (Phase 5)
+//
+// Everything below writes `submission.status`, `offer` or `submission_query`
+// — the three tables Stage 3D's schema always carried but nothing wrote to
+// (Database/migrations/0006). The state invariants (BR-022 one disbursed
+// submission per case, BR-023 a sanction needs an offer, BR-024 a rejection
+// needs a reason, BR-025 one accepted offer per submission) are already
+// enforced by Postgres constraints and the deferred `submission_sanction_
+// has_offer` trigger; what was missing was the TRANSITION layer the 0006
+// header explicitly reserves for the domain/application (`@domain/
+// submissions/status.js`'s `canTransitionSubmission`), and the wiring that
+// turns a permitted mutation into a clean 4xx before the database ever has
+// to refuse it.
+//
+// `lockCaseForOutcomeMutation` (`Backend/case-stage.ts`) opens every one of
+// these functions: BR-025's cascade touches every submission on the case,
+// so the whole family serialises per case, the same way `sendPackage`
+// serialises per submission (Phase 3).
+// ---------------------------------------------------------------------------
+
+async function requireOfferAccess(actor: Actor, header: CaseHeader, permission: string): Promise<void> {
+  if (!canActOnCase(actor, header.ownerUserId, "submission.read")) {
+    throw new ApiError(404, "No such case, or you do not have access to it.");
+  }
+  if (!canActOnCase(actor, header.ownerUserId, permission)) {
+    throw new ApiError(403, refusalMessage(permission));
+  }
+}
+
+/**
+ * Move a submission's status — every generic outcome except `query_raised`
+ * and the `query_raised -> under_process` return, which carry a question and
+ * an answer and go through `raiseQuery`/`answerQuery` instead.
+ *
+ * Mirrors `Frontend/src/fake/store.ts`'s `updateSubmissionStatus` for the
+ * business rules (a rejection needs a reason, a sanction needs an offer, one
+ * disbursed submission per case) but adds the transition-legality check the
+ * prototype never had (`canTransitionSubmission`) — the frontend is never
+ * authoritative, and "can this submission go straight from `submitted` to
+ * `disbursed`" must be refused here, not merely hidden in the UI.
+ */
+export async function updateSubmissionStatus(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  submissionId: string,
+  body: Record<string, unknown>,
+): Promise<SubmissionView> {
+  const header = await loadCaseHeader(client, caseId);
+  requireCaseAccess(actor, header, "submission.update_status");
+  if (header.isOnHold) throw new ApiError(409, "This case is on hold. Release the hold before recording an outcome.");
+  await lockCaseForOutcomeMutation(client, caseId);
+
+  const submission = await loadSubmission(client, caseId, submissionId);
+  const from = submission.status as SubmissionStatus;
+  const to = String(body.status ?? "") as SubmissionStatus;
+
+  if (!GENERIC_TARGET_STATUSES.includes(to)) {
+    throw new ApiError(400, `Unknown or unsupported status: ${String(body.status ?? "")}.`);
+  }
+  if (!canTransitionSubmission(from, to)) {
+    throw new ApiError(409, `A submission cannot move from ${from} to ${to}.`);
+  }
+
+  const rejectionReasonId = typeof body.rejectionReasonId === "string" ? body.rejectionReasonId : null;
+  const bankReasonText =
+    typeof body.bankReasonText === "string" && body.bankReasonText.trim() !== ""
+      ? body.bankReasonText.trim()
+      : null;
+
+  if (to === "rejected") {
+    if (!rejectionReasonId) {
+      throw new ApiError(400, "A rejection reason is required (BR-024).");
+    }
+    const { rows: reasonRows } = await client.query(
+      `select id from rejection_reason where id = $1 and is_active`,
+      [rejectionReasonId],
+    );
+    if (!reasonRows[0]) throw new ApiError(400, "No such rejection reason, or it is no longer active.");
+  }
+
+  if (to === "sanctioned" || to === "disbursed") {
+    const { rows: offerRows } = await client.query(`select 1 from offer where submission_id = $1 limit 1`, [
+      submissionId,
+    ]);
+    if (!offerRows[0]) {
+      throw new ApiError(409, "A sanction needs an offer attached before it can be recorded (BR-023).");
+    }
+  }
+
+  if (to === "disbursed") {
+    const { rows: otherDisbursed } = await client.query(
+      `select id from submission where case_id = $1 and status = 'disbursed' and id <> $2`,
+      [caseId, submissionId],
+    );
+    if (otherDisbursed[0]) {
+      throw new ApiError(409, "This case already has a disbursed submission (BR-022).");
+    }
+  }
+
+  const updated =
+    to === "rejected"
+      ? await client.query<{ id: string }>(
+          `update submission
+              set status = $1, rejection_reason_id = $2, bank_reason_text = $3, rejected_at = now()
+            where id = $4 and status = $5
+            returning id`,
+          [to, rejectionReasonId, bankReasonText, submissionId, from],
+        )
+      : await client.query<{ id: string }>(
+          `update submission set status = $1 where id = $2 and status = $3 returning id`,
+          [to, submissionId, from],
+        );
+  if (updated.rows.length === 0) {
+    throw new ApiError(409, "This submission has already moved on — reload and try again.");
+  }
+
+  await recordSubmissionEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    entityType: "submission",
+    entityId: submissionId,
+    eventType: `submission.${to}` as SubmissionEventType,
+  });
+
+  const outstandingRequirementCount = await outstandingRequirementCountFor(client, caseId);
+  await advanceCaseStage(client, caseId, outstandingRequirementCount, {
+    entityType: "submission",
+    entityId: submissionId,
+  });
+
+  return await viewOf(client, caseId, submissionId);
+}
+
+/**
+ * A bank raises a query mid-processing. Inserts the `submission_query` row
+ * and moves the submission to `query_raised` in the same transaction — the
+ * two are one fact, not two independent writes that could disagree.
+ */
+export async function raiseQuery(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  submissionId: string,
+  body: Record<string, unknown>,
+): Promise<SubmissionView> {
+  const header = await loadCaseHeader(client, caseId);
+  requireCaseAccess(actor, header, "submission.update_status");
+  if (header.isOnHold) throw new ApiError(409, "This case is on hold. Release the hold before recording an outcome.");
+  await lockCaseForOutcomeMutation(client, caseId);
+
+  const submission = await loadSubmission(client, caseId, submissionId);
+  const question = typeof body.question === "string" ? body.question.trim() : "";
+  if (question === "") throw new ApiError(400, "The bank's question is required.");
+
+  if (!canTransitionSubmission(submission.status as SubmissionStatus, "query_raised")) {
+    throw new ApiError(409, `A query cannot be raised while the submission is ${submission.status}.`);
+  }
+
+  const updated = await client.query<{ id: string }>(
+    `update submission set status = 'query_raised' where id = $1 and status = $2 returning id`,
+    [submissionId, submission.status],
+  );
+  if (updated.rows.length === 0) {
+    throw new ApiError(409, "This submission has already moved on — reload and try again.");
+  }
+
+  const { rows: queryRows } = await client.query<{ id: string }>(
+    `insert into submission_query (submission_id, question) values ($1, $2) returning id`,
+    [submissionId, question],
+  );
+  const queryId = queryRows[0]!.id;
+
+  await recordSubmissionQueryEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    submissionQueryId: queryId,
+    eventType: "submission.query_raised",
+  });
+
+  return await viewOf(client, caseId, submissionId);
+}
+
+/**
+ * The employee answers a bank's query. Moves the submission back to
+ * `under_process` — the loop `src/domain/permissions/tables.ts` calls "the
+ * single most common real-world transition".
+ */
+export async function answerQuery(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  submissionId: string,
+  queryId: string,
+  body: Record<string, unknown>,
+): Promise<SubmissionView> {
+  const header = await loadCaseHeader(client, caseId);
+  requireCaseAccess(actor, header, "submission.update_status");
+  if (header.isOnHold) throw new ApiError(409, "This case is on hold. Release the hold before recording an outcome.");
+  await lockCaseForOutcomeMutation(client, caseId);
+
+  const submission = await loadSubmission(client, caseId, submissionId);
+  const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+  if (answer === "") throw new ApiError(400, "An answer is required.");
+
+  if (submission.status !== "query_raised") {
+    throw new ApiError(409, "This submission has no open query to answer.");
+  }
+
+  const answered = await client.query<{ id: string }>(
+    `update submission_query set answer = $1, answered_at = now(), answered_by = $2
+      where id = $3 and submission_id = $4 and answered_at is null
+      returning id`,
+    [answer, actor.userId, queryId, submissionId],
+  );
+  if (answered.rows.length === 0) {
+    throw new ApiError(409, "No such open query on this submission.");
+  }
+
+  const updated = await client.query<{ id: string }>(
+    `update submission set status = 'under_process' where id = $1 and status = 'query_raised' returning id`,
+    [submissionId],
+  );
+  if (updated.rows.length === 0) {
+    throw new ApiError(409, "This submission has already moved on — reload and try again.");
+  }
+
+  await recordSubmissionQueryEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    submissionQueryId: queryId,
+    eventType: "submission.query_answered",
+  });
+
+  return await viewOf(client, caseId, submissionId);
+}
+
+/**
+ * Record a sanction offer against a submission. May be called more than once
+ * before any offer is accepted — each call is a revision, kept as its own
+ * row (the schema has no "supersedes" column, and a revision history is more
+ * useful than an overwrite). Does not itself move the submission's status;
+ * `updateSubmissionStatus(..., "sanctioned")` is the separate action that
+ * records the sanction, and the deferred `submission_sanction_has_offer`
+ * trigger is what actually enforces BR-023 either order.
+ */
+export async function recordOffer(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  submissionId: string,
+  body: Record<string, unknown>,
+): Promise<SubmissionView> {
+  const header = await loadCaseHeader(client, caseId);
+  await requireOfferAccess(actor, header, "offer.record");
+  if (header.isOnHold) throw new ApiError(409, "This case is on hold. Release the hold before recording an offer.");
+  await lockCaseForOutcomeMutation(client, caseId);
+
+  const submission = await loadSubmission(client, caseId, submissionId);
+  if (!isLiveSubmissionStatus(submission.status as SubmissionStatus)) {
+    throw new ApiError(409, `An offer cannot be recorded — this submission is ${submission.status}.`);
+  }
+
+  const { rows: acceptedRows } = await client.query(
+    `select 1 from offer where submission_id = $1 and is_accepted`,
+    [submissionId],
+  );
+  if (acceptedRows[0]) {
+    throw new ApiError(409, "This submission already has an accepted offer.");
+  }
+
+  const sanctionedAmount = Number(body.sanctionedAmount);
+  if (!Number.isFinite(sanctionedAmount) || sanctionedAmount <= 0) {
+    throw new ApiError(400, "A positive sanctioned amount is required.");
+  }
+  const interestRate = body.interestRate === undefined || body.interestRate === null ? null : Number(body.interestRate);
+  if (interestRate !== null && (!Number.isFinite(interestRate) || interestRate <= 0 || interestRate >= 100)) {
+    throw new ApiError(400, "The interest rate must be between 0 and 100.");
+  }
+  const tenureMonths = body.tenureMonths === undefined || body.tenureMonths === null ? null : Number(body.tenureMonths);
+  if (tenureMonths !== null && (!Number.isInteger(tenureMonths) || tenureMonths <= 0)) {
+    throw new ApiError(400, "The tenure must be a positive whole number of months.");
+  }
+  const processingFee =
+    body.processingFee === undefined || body.processingFee === null ? null : Number(body.processingFee);
+  const conditions = typeof body.conditions === "string" && body.conditions.trim() !== "" ? body.conditions.trim() : null;
+  const validUntil = typeof body.validUntil === "string" && body.validUntil.trim() !== "" ? body.validUntil : null;
+
+  const { rows: offerRows } = await client.query<{ id: string }>(
+    `insert into offer (submission_id, sanctioned_amount, interest_rate, tenure_months,
+                        processing_fee, conditions, valid_until, created_by)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
+     returning id`,
+    [submissionId, sanctionedAmount, interestRate, tenureMonths, processingFee, conditions, validUntil, actor.userId],
+  );
+  const offerId = offerRows[0]!.id;
+
+  await recordOfferEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    offerId,
+    eventType: "offer.recorded",
+  });
+
+  return await viewOf(client, caseId, submissionId);
+}
+
+/**
+ * The customer accepts one offer. BR-025: every other still-live submission
+ * on the same case is withdrawn, not rejected — "our choice to stop" is a
+ * different fact from "their refusal", and conflating the two destroys the
+ * rejection dataset (`Frontend/src/fake/store.ts`'s `acceptOffer` comment,
+ * which this mirrors). Unlike the prototype, every withdrawal here writes
+ * its own `submission.withdrawn` event: the Phase 5 brief is explicit that
+ * each one must be independently auditable, not folded into the offer's own
+ * event as a bare count.
+ */
+export async function acceptOffer(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  submissionId: string,
+  offerId: string,
+): Promise<SubmissionView> {
+  const header = await loadCaseHeader(client, caseId);
+  await requireOfferAccess(actor, header, "offer.accept");
+  if (header.isOnHold) throw new ApiError(409, "This case is on hold. Release the hold before accepting an offer.");
+  await lockCaseForOutcomeMutation(client, caseId);
+
+  const submission = await loadSubmission(client, caseId, submissionId);
+  if (submission.status !== "sanctioned") {
+    throw new ApiError(409, "Only a sanctioned submission's offer can be accepted.");
+  }
+
+  const accepted = await client.query<{ id: string }>(
+    `update offer set is_accepted = true, accepted_at = now(), accepted_by = $1
+      where id = $2 and submission_id = $3 and is_accepted = false
+      returning id`,
+    [actor.userId, offerId, submissionId],
+  );
+  if (accepted.rows.length === 0) {
+    throw new ApiError(409, "No such unaccepted offer on this submission.");
+  }
+
+  const { rows: competing } = await client.query<{ id: string }>(
+    `update submission
+        set status = 'withdrawn'
+      where case_id = $1
+        and id <> $2
+        and status not in ('rejected', 'withdrawn', 'disbursed')
+      returning id`,
+    [caseId, submissionId],
+  );
+  for (const row of competing) {
+    await recordSubmissionEvent(client, {
+      actorUserId: actor.userId,
+      caseId,
+      entityType: "submission",
+      entityId: row.id,
+      eventType: "submission.withdrawn",
+      payloadAfter: { causedByOfferId: offerId },
+    });
+  }
+
+  await recordOfferEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    offerId,
+    eventType: "offer.accepted",
+    payloadAfter: { withdrawnSubmissionCount: competing.length },
+  });
+
+  const outstandingRequirementCount = await outstandingRequirementCountFor(client, caseId);
+  await advanceCaseStage(client, caseId, outstandingRequirementCount, {
+    entityType: "offer",
+    entityId: offerId,
+  });
+
+  return await viewOf(client, caseId, submissionId);
 }

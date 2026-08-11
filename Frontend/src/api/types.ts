@@ -407,6 +407,29 @@ export interface ApiSubmissionPackageSummary {
   readonly initiatedAt: string;
 }
 
+export interface ApiOffer {
+  readonly id: string;
+  readonly submissionId: string;
+  readonly sanctionedAmount: number;
+  readonly interestRate: number | null;
+  readonly tenureMonths: number | null;
+  readonly processingFee: number | null;
+  readonly conditions: string | null;
+  readonly validUntil: string | null;
+  readonly isAccepted: boolean;
+  readonly acceptedAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface ApiSubmissionQuery {
+  readonly id: string;
+  readonly submissionId: string;
+  readonly raisedAt: string;
+  readonly question: string;
+  readonly answeredAt: string | null;
+  readonly answer: string | null;
+}
+
 export interface ApiSubmission {
   readonly id: string;
   readonly caseId: string;
@@ -415,8 +438,13 @@ export interface ApiSubmission {
   readonly status: SubmissionStatus;
   readonly submittedAt: string | null;
   readonly createdAt: string;
+  readonly rejectionReasonId: string | null;
+  readonly bankReasonText: string | null;
+  readonly rejectedAt: string | null;
   readonly recipients: readonly ApiSubmissionRecipient[];
   readonly latestPackage: ApiSubmissionPackageSummary | null;
+  readonly offers: readonly ApiOffer[];
+  readonly queries: readonly ApiSubmissionQuery[];
 }
 
 export interface ApiSendableDocument {

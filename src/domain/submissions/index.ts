@@ -89,3 +89,11 @@ export {
   type PlannedEmail,
   type SubmissionPackagePlan,
 } from "./package.js";
+
+export {
+  GENERIC_TARGET_STATUSES,
+  SUBMISSION_STATUSES,
+  canTransitionSubmission,
+  isLiveSubmissionStatus,
+  type SubmissionStatus,
+} from "./status.js";

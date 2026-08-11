@@ -33,6 +33,7 @@ import { ApiError, refusalMessage } from "./http.js";
 import { recordDocumentEvent, recordRequirementWaivedEvent, recordSystemCaseEvent } from "./events.js";
 import { regenerateRequirements } from "./requirements.js";
 import { storageAdapter, getObjectWithContentType } from "./storage-client.js";
+import { submissionOutcomeFacts } from "./case-stage.js";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -671,9 +672,20 @@ export async function downloadDocument(
  * bypass of `evaluateTransition`. Only the two moves whose guard this
  * milestone can now answer honestly: `documents_pending` -> settled, and the
  * reverse when a rejection re-opens what looked done (ADR-019's backwards
- * move). Everything past `ready_for_submission` still depends on
- * submissions, which remain out of scope, so their guards keep refusing
- * exactly as before.
+ * move).
+ *
+ * NOT routed through `advanceCaseStage` (`Backend/case-stage.ts`, Phase 5):
+ * that helper's `deriveSystemStagePath` only ever targets `submitted`,
+ * `sanctioned` or `disbursed` (`highestJustifiedStage`,
+ * `@domain/case/transitions.ts`) — it has no notion of
+ * `ready_for_submission` at all, because that stage is not "justified by a
+ * submission fact", it is justified by requirements being settled. Routing
+ * this function through it would silently stop reconciling documents_pending
+ * <-> ready_for_submission, which is exactly the regression a Phase 5
+ * integration test caught. `hasSanctionedSubmissionWithOffer` and
+ * `hasDisbursedSubmission` stay real (`submissionOutcomeFacts`, shared with
+ * `cases.ts` and `submissions.ts`) even though neither guard below reads
+ * them, so a future guard change here does not silently see stale zeros.
  */
 async function reconcileStage(
   client: Queryable,
@@ -685,12 +697,13 @@ async function reconcileStage(
   if (header.stage !== "documents_pending" && header.stage !== "ready_for_submission") return;
 
   const outstanding = await outstandingCountOnly(client, caseId);
+  const facts = await submissionOutcomeFacts(client, caseId);
   const snapshot: CaseSnapshot = {
     stage: header.stage,
     outstandingRequirementCount: outstanding,
-    liveSubmissionCount: 0,
-    hasSanctionedSubmissionWithOffer: false,
-    hasDisbursedSubmission: false,
+    liveSubmissionCount: facts.liveSubmissionCount,
+    hasSanctionedSubmissionWithOffer: facts.hasSanctionedSubmissionWithOffer,
+    hasDisbursedSubmission: facts.hasDisbursedSubmission,
     isInvoiceRaised: false,
     stageBeforeLost: null,
   };

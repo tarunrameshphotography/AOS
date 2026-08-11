@@ -24,9 +24,10 @@ Phase 1 — Column Masking / ADR-026: COMPLETE (4d56eed)
 Phase 2 — Admin-Screen Honesty: COMPLETE (342e649)
 Phase 3 — Concurrency & Audit Hardening: COMPLETE (see PHASE 3 section below)
 Phase 4 — Case Completeness: COMPLETE (see PHASE 4 section below)
+Phase 5 — Loan Outcome Tracking: COMPLETE (see PHASE 5 section below)
 
 Current repository:
-  HEAD: see git log (Phase 4 commit, this checkpoint)
+  HEAD: see git log (Phase 5 commit, this checkpoint)
   origin/main: pushed by this change — see final report
   Working tree: clean except pre-existing untracked scratch files
     ("USER ID.txt", "future unseen potential.txt")
@@ -369,34 +370,94 @@ Exit criteria:
 
 ------------------------------------------------------------
 PHASE 5 — LOAN OUTCOME TRACKING
-STATUS: NOT STARTED
+STATUS: COMPLETE (see PHASE 5 section below)
 PRIORITY: MEDIUM / POST-INITIAL-INTAKE
 ------------------------------------------------------------
 
 Goal:
 Complete the lifecycle after lender submission.
 
-Known gap:
-  - Sanction tracking is not implemented.
-  - Rejection tracking is not implemented.
-  - Disbursement tracking is not implemented.
-  - The stage machine effectively dead-ends at Submitted.
+Known gap (as found — confirmed true before this phase):
+  - Sanction tracking was not implemented.
+  - Rejection tracking was not implemented.
+  - Disbursement tracking was not implemented.
+  - The stage machine effectively dead-ended at Submitted.
 
-Scope:
-  - Record lender sanction outcomes.
-  - Record rejection outcomes/reasons.
-  - Record disbursement.
-  - Advance the case lifecycle appropriately.
-  - Preserve audit trail and permissions.
+What this phase actually was: the schema (`submission_status` enum, `offer`,
+`submission_query`, `rejection_reason`, the BR-022/023/024/025 constraints
+and the deferred `submission_sanction_has_offer` trigger), the permissions
+(`submission.update_status`, `offer.read`/`record`/`accept`) and the domain
+stage-derivation logic (`deriveSystemStagePath`, `sanctionHasOffer`,
+`disbursementExists`) already existed, unused, since Stage 3D. This phase
+wired them to the real backend and frontend — no new tables, no new
+permissions, no new stage-derivation logic.
+
+Scope (delivered):
+  - Record lender sanction outcomes — `updateSubmissionStatus(..., "sanctioned")`,
+    refused without an offer on file (BR-023, checked in the app for a clean
+    error and enforced regardless by the deferred DB trigger).
+  - Record rejection outcomes/reasons — `updateSubmissionStatus(..., "rejected")`,
+    requires an active `rejection_reason` row (BR-024); never moves the case
+    backwards (`deriveSystemStagePath` is one-directional).
+  - Record disbursement — `updateSubmissionStatus(..., "disbursed")`, one
+    disbursed submission per case (BR-022, DB unique index + app check).
+  - The bank-query loop — `raiseQuery`/`answerQuery`, writing `submission_query`.
+  - The offer workflow — `recordOffer` (revisable — a live submission may
+    carry more than one offer row before acceptance) and `acceptOffer`, which
+    withdraws every other live submission on the case (BR-025) inside one
+    transaction, each withdrawal individually audited.
+  - The case lifecycle advances automatically — `Backend/case-stage.ts`'s
+    `advanceCaseStage` walks `deriveSystemStagePath`'s full multi-step path
+    (e.g. `submitted -> sanctioned -> disbursed` in one visit), never a
+    manual "Move stage -> Sanctioned/Disbursed" choice (those remain
+    `actor: "system"` rows in the transition table, so `userSelectableStages`
+    already excluded them — no frontend change was needed there).
+  - Multi-bank independence — each `submission` row keeps its own status;
+    one bank's rejection never touches another's live submission on the
+    same case.
+  - Audit trail — new event types (`submission.under_process` /
+    `query_raised` / `query_answered` / `eligibility_received` /
+    `sanctioned` / `rejected` / `withdrawn` / `disbursed`, `offer.recorded`,
+    `offer.accepted`), all payload-disciplined (ids/counts only, matching
+    every other event recorder in `Backend/events.ts`).
+  - Concurrency — every outcome mutation takes `pg_advisory_xact_lock`
+    on the case (`lockCaseForOutcomeMutation`), a second lock key alongside
+    Phase 3's per-submission send lock; simple status writes are additionally
+    guarded by an atomic `UPDATE ... WHERE status = $from`.
+  - BanksTab.tsx gained the operational UI: status actions gated by current
+    status and permission, offer recording/display/acceptance, a rejection-
+    reason picker, and the bank-query raise/answer flow. CaseDetail's Move
+    Stage UI was not changed — it already excluded system-actor stages.
+
+Explicitly NOT delivered (deferred, as scoped):
+  - Inbound bank-email ingestion (Gmail polling, AI classification, OCR).
+    The submission_status/offer/query model this phase completed is exactly
+    what a future ingestion pipeline would write into — nothing here
+    precludes it, nothing here builds it.
+  - New document types for sanction letter / rejection communication /
+    eligibility communication / disbursement proof beyond the one that
+    already existed (`sanction_letter`). Adding the other three is a small,
+    separate, additive migration+catalogue change, left for whenever the
+    business actually asks for that evidence to be attached.
+
+Database:
+  ZERO migrations. Verified true — every table, column, constraint, index,
+  trigger, RLS policy and grant Phase 5 needed already existed
+  (`Database/migrations/0006_banking.sql`, `0033`, `0034`).
 
 Exit criteria:
-  - A submitted case can progress through its lender outcome.
-  - Sanction/rejection/disbursement are durable and auditable.
-  - Case stages accurately represent the lifecycle.
+  - A submitted case can progress through its lender outcome. MET.
+  - Sanction/rejection/disbursement are durable and auditable. MET.
+  - Case stages accurately represent the lifecycle. MET — proven by
+    integration tests against real Postgres and a real HTTP server
+    (`Backend/submission-outcomes.test.ts`, 8 tests) plus a domain-level
+    transition-lattice test (`src/domain/submissions/status.test.ts`).
 
 IMPORTANT:
-This is NOT required before the initial intake/document/submission
-production cutover unless the business explicitly requires it.
+This was NOT required before the initial intake/document/submission
+production cutover, and cutover does not depend on it. It was completed as
+the next scheduled development phase, ahead of cutover, per this
+checkpoint's instruction.
 
 ============================================================
 PRODUCTION CUTOVER — SEPARATE FROM DEVELOPMENT PHASES
@@ -479,21 +540,24 @@ MASTER MILESTONE
 
 CURRENT:
   Phase 1 (Column Masking), Phase 2 (Admin-screen honesty),
-  Phase 3 (Concurrency & audit hardening) and Phase 4 (Case completeness)
-  complete
+  Phase 3 (Concurrency & audit hardening), Phase 4 (Case completeness) and
+  Phase 5 (Loan outcome tracking) complete
 
 REMAINING DEVELOPMENT:
-  Phase 5 — Loan outcome tracking
+  None currently defined. The five-phase list that began this checkpoint
+  is now complete.
 
 THEN:
-  Office Server Production Cutover Gate
+  Office Server Production Cutover Gate (unstarted — see the 21-step
+  checklist above; nothing in Phase 5 advances or substitutes for it)
 
 THEN:
   INITIAL PRODUCTION
 
 AFTER INITIAL PRODUCTION:
-  Continue Phase 5 and later roadmap items based on actual business
-  priorities.
+  Inbound bank-email ingestion (Gmail polling, AI classification, OCR) and
+  any later roadmap items, based on actual business priorities. Explicitly
+  NOT started as part of Phase 5.
 
 ============================================================
 ANTI-SCOPE-CREEP RULE

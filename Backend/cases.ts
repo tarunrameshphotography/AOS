@@ -33,6 +33,7 @@ import { can, canActOnCase, widestScopeFor, type Actor } from "./authorize.js";
 import { recordCaseEvent } from "./events.js";
 import { ApiError, refusalMessage } from "./http.js";
 import { caseListProgress, outstandingRequirementCount } from "./requirements.js";
+import { submissionOutcomeFacts } from "./case-stage.js";
 
 const COLUMNS = `c.id, c.case_number, c.loan_product_id, c.requested_amount, c.stage,
                  c.owner_user_id, c.created_by, c.source, c.referral_source_id,
@@ -109,42 +110,31 @@ export function caseFromRow(
  * `liveSubmissionCount` is real as of Stage 3D — `Backend/submissions.ts`
  * writes genuine `submission` rows now, so this counts them rather than
  * assuming zero. `hasSanctionedSubmissionWithOffer` and
- * `hasDisbursedSubmission` remain false — sanction and disbursement are still
- * out of scope (Stage 3D built the submission vertical only). Every
- * transition whose guard reads those two — → sanctioned, → disbursed — is
- * declared `actor: "system"`, and `evaluateTransition` checks the actor
- * BEFORE running the guard, so a request from this API is refused on the
- * actor check and the `false`s are never consulted. → submitted is the same
- * shape but its guard (`hasLiveSubmission`) now reads a genuine count: this
- * function existing to serve `moveStage`, a `user`-actor endpoint, means the
- * actor check still refuses it first, exactly as before — the fact only
- * matters to `Backend/submissions.ts`'s own system-actor evaluation after a
- * send succeeds.
+ * `hasDisbursedSubmission` are real as of Phase 5 — `submissionOutcomeFacts`
+ * (`Backend/case-stage.ts`) is the one place that reads them, shared with
+ * `documents.ts` and `submissions.ts` so the three cannot disagree on what
+ * "sanctioned with an offer" means. This function still exists to serve
+ * `moveStage`, a `user`-actor endpoint: the transitions whose guards read
+ * those two facts — → sanctioned, → disbursed — are declared
+ * `actor: "system"`, and `evaluateTransition` checks the actor BEFORE running
+ * the guard, so a request through this API is refused on the actor check
+ * regardless of the facts. Only `Backend/case-stage.ts`'s own system-actor
+ * evaluation, run after a submission/offer mutation, ever consults them.
  *
  * The one guarded USER transition, disbursed → closed, reads `isInvoiceRaised`
  * — a column on `loan_case`, which the server does know and passes honestly.
  */
 async function snapshotOf(client: Queryable, row: Record<string, unknown>): Promise<CaseSnapshot> {
+  const facts = await submissionOutcomeFacts(client, row.id as string);
   return {
     stage: row.stage as CaseStage,
     outstandingRequirementCount: await outstandingRequirementCount(client, row.id as string),
-    liveSubmissionCount: await liveSubmissionCount(client, row.id as string),
-    hasSanctionedSubmissionWithOffer: false,
-    hasDisbursedSubmission: false,
+    liveSubmissionCount: facts.liveSubmissionCount,
+    hasSanctionedSubmissionWithOffer: facts.hasSanctionedSubmissionWithOffer,
+    hasDisbursedSubmission: facts.hasDisbursedSubmission,
     isInvoiceRaised: row.is_invoice_raised === true,
     stageBeforeLost: (row.stage_before_lost as CaseStage | null) ?? null,
   };
-}
-
-/** Submissions that have actually gone to a bank — status beyond
- * `not_submitted` — matching `CaseSnapshot.liveSubmissionCount`'s own
- * definition (`src/domain/case/transitions.ts`). */
-async function liveSubmissionCount(client: Queryable, caseId: string): Promise<number> {
-  const { rows } = await client.query<{ n: string }>(
-    `select count(*) as n from submission where case_id = $1 and status <> 'not_submitted'`,
-    [caseId],
-  );
-  return Number(rows[0]?.n ?? 0);
 }
 
 /** 404 rather than 403 when the actor may not see a case. 403 would confirm it

@@ -61,7 +61,16 @@ import {
 import { api, apiDownload, apiUpload } from "../api/client.js";
 import { useReference, useUsers } from "../api/catalogue.js";
 import { useApiQuery, useMutation } from "../api/hooks.js";
-import type { ApiCase, ApiCaseRequirements, ApiRequirement } from "../api/types.js";
+import type {
+  ApiCase,
+  ApiCaseParty,
+  ApiCaseProperty,
+  ApiCaseRequirements,
+  ApiCustomer,
+  ApiRequirement,
+  CasePartyRole,
+  CasePropertyRole,
+} from "../api/types.js";
 import { bytes, exactly, lakhs, money, when } from "../lib.js";
 import { useSession } from "../session.js";
 import { BanksTab } from "./BanksTab.js";
@@ -89,6 +98,7 @@ import {
   cx,
   useToast,
 } from "../ui/index.js";
+import { CustomerSearchField } from "../ui/customer-picker.js";
 
 export function CaseDetail(): ReactNode {
   const { caseId = "" } = useParams();
@@ -748,28 +758,8 @@ function Overview({
           </div>
         </Card>
 
-        <Card
-          title="Who is on this case"
-          subtitle="Co-applicants, guarantors and property are added when the requirement engine moves — see below."
-        >
-          {loanCase.applicantId ? (
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium">
-                  <Link to={`/people/${loanCase.applicantId}`} className="hover:underline">
-                    {loanCase.applicantName}
-                  </Link>
-                </p>
-                <p className="tnum text-xs text-ink-500">
-                  {loanCase.applicantPhone ?? "No number on file"}
-                </p>
-              </div>
-              <Badge tone="info">Applicant</Badge>
-            </div>
-          ) : (
-            <Empty>No applicant on this case.</Empty>
-          )}
-        </Card>
+        <PartiesCard loanCase={loanCase} />
+        <PropertiesCard loanCase={loanCase} />
       </div>
 
       <div className="space-y-4">
@@ -814,6 +804,428 @@ function Fact({
       <dt className="shrink-0 text-xs text-ink-500">{label}</dt>
       <dd className={cx("text-right text-sm", mono && "tnum")}>{value}</dd>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Parties and property — Phase 4 (case completeness). Backed by
+// `case_party`/`case_property`, the same tables the requirement engine has
+// read since migration 0021 — adding a co-applicant, guarantor or property
+// here changes what the Documents tab asks for the next time it is read.
+// ---------------------------------------------------------------------------
+
+const PARTY_ROLE_LABELS: Record<CasePartyRole, string> = {
+  applicant: "Applicant",
+  co_applicant: "Co-applicant",
+  guarantor: "Guarantor",
+  referrer: "Referrer",
+  borrower_firm: "Borrowing firm",
+};
+
+const ADDABLE_PARTY_ROLES: readonly CasePartyRole[] = [
+  "co_applicant",
+  "guarantor",
+  "referrer",
+  "borrower_firm",
+];
+
+function PartiesCard({ loanCase }: { loanCase: ApiCase }): ReactNode {
+  const session = useSession();
+  const query = useApiQuery<ApiCaseParty[]>(`/cases/${loanCase.id}/parties`);
+  const [modal, setModal] = useState<"add" | null>(null);
+  const mayEdit = session.canActOnCase(loanCase.ownerUserId, "case.update");
+
+  const parties = (query.data ?? []).filter((p) => !p.removedAt);
+
+  return (
+    <Card
+      title="Who is on this case"
+      subtitle="The primary applicant, plus any co-applicant, guarantor, referrer or borrowing firm."
+    >
+      <div className="space-y-2">
+        {query.loading && <Empty>Loading parties…</Empty>}
+        {!query.loading && parties.length === 0 && <Empty>No applicant on this case.</Empty>}
+        {parties.map((party) => (
+          <PartyRow key={party.id} caseId={loanCase.id} party={party} mayEdit={mayEdit} onChanged={query.refetch} />
+        ))}
+
+        {!mayEdit && (
+          <div>
+            <p className="text-xs text-ink-500">You can see this case's parties but not change them.</p>
+            <PermissionCode code="case.update" />
+          </div>
+        )}
+
+        {mayEdit && (
+          <div className="pt-1">
+            <Button onClick={() => setModal("add")}>Add co-applicant / guarantor…</Button>
+          </div>
+        )}
+      </div>
+
+      {modal === "add" && (
+        <AddPartyModal caseId={loanCase.id} onClose={() => setModal(null)} onChanged={query.refetch} />
+      )}
+    </Card>
+  );
+}
+
+function PartyRow({
+  caseId,
+  party,
+  mayEdit,
+  onChanged,
+}: {
+  caseId: string;
+  party: ApiCaseParty;
+  mayEdit: boolean;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-ink-100 py-2 last:border-0">
+      <div>
+        <p className="text-sm font-medium">
+          {party.personId ? (
+            <Link to={`/people/${party.personId}`} className="hover:underline">
+              {party.name ?? "Unnamed"}
+            </Link>
+          ) : (
+            (party.name ?? "Unnamed")
+          )}
+        </p>
+        <p className="text-xs text-ink-500">{PARTY_ROLE_LABELS[party.role]}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge tone={party.isPrimary ? "info" : "good"}>{PARTY_ROLE_LABELS[party.role]}</Badge>
+        {mayEdit && !party.isPrimary && (
+          <Button
+            variant="ghost"
+            disabled={mutation.pending}
+            onClick={() => setConfirming(true)}
+          >
+            Remove
+          </Button>
+        )}
+      </div>
+
+      {confirming && (
+        <Modal open title={`Remove ${PARTY_ROLE_LABELS[party.role].toLowerCase()}`} onClose={() => setConfirming(false)}>
+          <div className="space-y-3">
+            <p className="text-sm text-ink-700">
+              {party.name} stays on the case's history — this only removes them going forward. Their
+              requirements become not applicable.
+            </p>
+            {mutation.error && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+                {mutation.error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={mutation.pending}
+                onClick={async () => {
+                  const result = await mutation.run(() =>
+                    api(`/cases/${caseId}/parties/${party.id}`, { method: "DELETE" }),
+                  );
+                  if (result) {
+                    toast.show(`${party.name ?? "Party"} removed.`);
+                    setConfirming(false);
+                    onChanged();
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AddPartyModal({
+  caseId,
+  onClose,
+  onChanged,
+}: {
+  caseId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const [role, setRole] = useState<CasePartyRole>("co_applicant");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [chosen, setChosen] = useState<ApiCustomer | null>(null);
+
+  const isFirm = role === "borrower_firm";
+  const ready = isFirm ? name.trim().length > 1 : chosen !== null || name.trim().length > 1;
+
+  return (
+    <Modal open title="Add a party to this case" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Role">
+          <Select value={role} onChange={(event) => setRole(event.target.value as CasePartyRole)}>
+            {ADDABLE_PARTY_ROLES.map((value) => (
+              <option key={value} value={value}>
+                {PARTY_ROLE_LABELS[value]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        {isFirm ? (
+          <Field label="Organisation name" hint="Typing a name resolves or creates the organisation.">
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Firm name" />
+          </Field>
+        ) : (
+          <CustomerSearchField
+            name={name}
+            phone={phone}
+            chosen={chosen}
+            onNameChange={setName}
+            onPhoneChange={setPhone}
+            onChoose={setChosen}
+          />
+        )}
+
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!ready || mutation.pending}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api(`/cases/${caseId}/parties`, {
+                  method: "POST",
+                  body: isFirm
+                    ? { role, newOrganisationName: name.trim() }
+                    : chosen
+                      ? { role, personId: chosen.id }
+                      : { role, newPersonName: name.trim(), newPersonPhone: phone.trim() },
+                }),
+              );
+              if (result) {
+                toast.show(`${PARTY_ROLE_LABELS[role]} added.`);
+                onChanged();
+                onClose();
+              }
+            }}
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const CASE_PROPERTY_ROLE_LABELS: Record<CasePropertyRole, string> = {
+  collateral: "Collateral",
+  purchase: "Being purchased",
+  both: "Purchase & collateral",
+};
+
+function PropertiesCard({ loanCase }: { loanCase: ApiCase }): ReactNode {
+  const session = useSession();
+  const query = useApiQuery<ApiCaseProperty[]>(`/cases/${loanCase.id}/properties`);
+  const [modal, setModal] = useState<"add" | null>(null);
+  const mayLink = session.canActOnCase(loanCase.ownerUserId, "case.update");
+  const mayCreateProperty = session.can("property.create", "all");
+
+  const properties = (query.data ?? []).filter((p) => !p.removedAt);
+
+  return (
+    <Card title="Property" subtitle="Secured collateral, or the property being purchased.">
+      <div className="space-y-2">
+        {query.loading && <Empty>Loading property…</Empty>}
+        {!query.loading && properties.length === 0 && <Empty>No property recorded on this case.</Empty>}
+        {properties.map((property) => (
+          <PropertyRow key={property.id} caseId={loanCase.id} property={property} onChanged={query.refetch} />
+        ))}
+
+        {mayLink && (
+          <div className="pt-1">
+            <Button onClick={() => setModal("add")}>Add property…</Button>
+          </div>
+        )}
+        {mayLink && !mayCreateProperty && (
+          <div>
+            <p className="text-xs text-ink-500">
+              You may attach a property someone else already recorded, but not record a brand-new one.
+            </p>
+            <PermissionCode code="property.create" />
+          </div>
+        )}
+        {!mayLink && (
+          <div>
+            <p className="text-xs text-ink-500">You can see this case's property but not change it.</p>
+            <PermissionCode code="case.update" />
+          </div>
+        )}
+      </div>
+
+      {modal === "add" && (
+        <AddPropertyModal caseId={loanCase.id} onClose={() => setModal(null)} onChanged={query.refetch} />
+      )}
+    </Card>
+  );
+}
+
+function PropertyRow({
+  caseId,
+  property,
+  onChanged,
+}: {
+  caseId: string;
+  property: ApiCaseProperty;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+
+  const label = [property.buildingName, property.locality, property.city].filter(Boolean).join(", ") || "Property";
+
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-ink-100 py-2 last:border-0">
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        {property.pincode && <p className="tnum text-xs text-ink-500">{property.pincode}</p>}
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge tone="info">{CASE_PROPERTY_ROLE_LABELS[property.role]}</Badge>
+        <Button variant="ghost" disabled={mutation.pending} onClick={() => setConfirming(true)}>
+          Remove
+        </Button>
+      </div>
+
+      {confirming && (
+        <Modal open title="Remove this property" onClose={() => setConfirming(false)}>
+          <div className="space-y-3">
+            <p className="text-sm text-ink-700">
+              {label} stays on file — this only removes it from this case. Its requirements become not
+              applicable.
+            </p>
+            {mutation.error && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+                {mutation.error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={mutation.pending}
+                onClick={async () => {
+                  const result = await mutation.run(() =>
+                    api(`/cases/${caseId}/properties/${property.id}`, { method: "DELETE" }),
+                  );
+                  if (result) {
+                    toast.show(`${label} removed.`);
+                    setConfirming(false);
+                    onChanged();
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AddPropertyModal({
+  caseId,
+  onClose,
+  onChanged,
+}: {
+  caseId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}): ReactNode {
+  const mutation = useMutation();
+  const toast = useToast();
+  const [role, setRole] = useState<CasePropertyRole>("collateral");
+  const [locality, setLocality] = useState("");
+  const [city, setCity] = useState("");
+
+  const ready = locality.trim().length > 0;
+
+  return (
+    <Modal open title="Add a property to this case" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="Role on this case">
+          <Select value={role} onChange={(event) => setRole(event.target.value as CasePropertyRole)}>
+            {(Object.keys(CASE_PROPERTY_ROLE_LABELS) as CasePropertyRole[]).map((value) => (
+              <option key={value} value={value}>
+                {CASE_PROPERTY_ROLE_LABELS[value]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Locality" hint="Needed to be findable later — this is a new property record.">
+          <Input value={locality} onChange={(event) => setLocality(event.target.value)} placeholder="Race Course" />
+        </Field>
+        <Field label="City" hint="Optional.">
+          <Input value={city} onChange={(event) => setCity(event.target.value)} placeholder="Coimbatore" />
+        </Field>
+
+        {mutation.error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {mutation.error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!ready || mutation.pending}
+            onClick={async () => {
+              const result = await mutation.run(() =>
+                api(`/cases/${caseId}/properties`, {
+                  method: "POST",
+                  body: { role, locality: locality.trim(), city: city.trim() || undefined },
+                }),
+              );
+              if (result) {
+                toast.show("Property added.");
+                onChanged();
+                onClose();
+              }
+            }}
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -868,6 +1280,7 @@ function DocumentsTab({
   const { requirements, progress } = query.data;
   const mayUpload = session.canActOnCase(loanCase.ownerUserId, "document.upload");
   const mayVerify = session.canActOnCase(loanCase.ownerUserId, "document.verify");
+  const mayWaive = session.canActOnCase(loanCase.ownerUserId, "requirement.waive");
 
   const refetchAll = (): void => {
     query.refetch();
@@ -928,6 +1341,7 @@ function DocumentsTab({
                 requirement={requirement}
                 mayUpload={mayUpload}
                 mayVerify={mayVerify}
+                mayWaive={mayWaive}
                 onChanged={refetchAll}
               />
             ))}
@@ -943,23 +1357,26 @@ function RequirementRow({
   requirement,
   mayUpload,
   mayVerify,
+  mayWaive,
   onChanged,
 }: {
   caseId: string;
   requirement: ApiRequirement;
   mayUpload: boolean;
   mayVerify: boolean;
+  mayWaive: boolean;
   onChanged: () => void;
 }): ReactNode {
   const definition = DOCUMENT_CATALOGUE.find((type) => type.code === requirement.documentTypeCode);
   const fileInput = useRef<HTMLInputElement>(null);
   const upload = useMutation();
   const decision = useMutation();
+  const waive = useMutation();
   const toast = useToast();
   // One at a time. Nesting a reject form inside the verify dialog would put two
   // `role="dialog"` overlays on screen at once, each claiming the same heading
   // id — so choosing "No" closes the verify dialog and opens the reject one.
-  const [dialog, setDialog] = useState<"view" | "verify" | "reject" | null>(null);
+  const [dialog, setDialog] = useState<"view" | "verify" | "reject" | "waive" | null>(null);
 
   const label = documentRowLabel(
     definition?.name ?? requirement.documentTypeCode,
@@ -989,6 +1406,12 @@ function RequirementRow({
         {requirement.status === "rejected" && requirement.reason && (
           <p className="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-900">
             {requirement.reason}
+          </p>
+        )}
+        {requirement.status === "waived" && (
+          <p className="mt-1 rounded-md bg-ink-50 px-2 py-1 text-xs text-ink-700">
+            Waived{requirement.waivedAt ? ` ${when(requirement.waivedAt)}` : ""}
+            {requirement.reason ? ` — ${requirement.reason}` : ""}
           </p>
         )}
         {requirement.document && (
@@ -1065,6 +1488,12 @@ function RequirementRow({
             </Button>
           </>
         )}
+
+        {mayWaive && (requirement.status === "pending" || requirement.status === "received" || requirement.status === "rejected") && (
+          <Button variant="ghost" disabled={waive.pending} onClick={() => setDialog("waive")}>
+            Waive
+          </Button>
+        )}
       </div>
 
       {dialog === "view" && requirement.document && (
@@ -1122,7 +1551,86 @@ function RequirementRow({
           error={decision.error}
         />
       )}
+
+      {dialog === "waive" && (
+        <WaiveModal
+          label={label}
+          onClose={() => setDialog(null)}
+          onSubmit={async (reason) => {
+            const result = await waive.run(() =>
+              api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/waive`, {
+                method: "PUT",
+                body: { reason },
+              }),
+            );
+            if (result) {
+              toast.show(`${label} waived.`);
+              setDialog(null);
+              onChanged();
+            }
+          }}
+          pending={waive.pending}
+          error={waive.error}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * A waiver excuses a requirement without pretending it was satisfied
+ * (BR-035) — the server refuses one with no reason, and this dialog does not
+ * offer a way around that.
+ */
+function WaiveModal({
+  label,
+  onClose,
+  onSubmit,
+  pending,
+  error,
+}: {
+  label: string;
+  onClose: () => void;
+  onSubmit: (reason: string) => void;
+  pending: boolean;
+  error: string | null;
+}): ReactNode {
+  const [reason, setReason] = useState("");
+
+  return (
+    <Modal open title={`Waive ${label}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-ink-700">
+          This sends the file forward with this requirement excused rather than satisfied. It stays on
+          the case's record as waived, not deleted.
+        </p>
+        <Field label="Reason" hint="A waiver needs a name on it — who decided, and why.">
+          <Textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={2}
+            placeholder="Bank agreed to proceed without this document"
+          />
+        </Field>
+        {error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={pending || reason.trim().length === 0}
+            onClick={() => onSubmit(reason.trim())}
+          >
+            Confirm waiver
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

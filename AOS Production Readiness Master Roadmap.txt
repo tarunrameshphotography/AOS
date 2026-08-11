@@ -23,10 +23,11 @@ Stage 4 — Production Readiness:
 Phase 1 — Column Masking / ADR-026: COMPLETE (4d56eed)
 Phase 2 — Admin-Screen Honesty: COMPLETE (342e649)
 Phase 3 — Concurrency & Audit Hardening: COMPLETE (see PHASE 3 section below)
+Phase 4 — Case Completeness: COMPLETE (see PHASE 4 section below)
 
 Current repository:
-  HEAD: ad0ec68
-  origin/main: not pushed by this change — see final report
+  HEAD: see git log (Phase 4 commit, this checkpoint)
+  origin/main: pushed by this change — see final report
   Working tree: clean except pre-existing untracked scratch files
     ("USER ID.txt", "future unseen potential.txt")
 
@@ -223,38 +224,148 @@ Exit criteria:
 
 ------------------------------------------------------------
 PHASE 4 — CASE COMPLETENESS
-STATUS: NOT STARTED
+STATUS: COMPLETE
 PRIORITY: HIGH / REQUIRED FOR BROADER REAL-WORLD CASES
 ------------------------------------------------------------
 
 Goal:
 Represent the parties and assets that real loan cases actually contain.
 
-Known gap:
-  - No route/workflow currently exists to add:
-      * co-applicant
-      * guarantor
-      * property
-  - Requirement checklists can therefore be incomplete for common
-    secured or multi-party loan cases.
-  - Requirement waiving is also not implemented.
+Reconnaissance found the schema and the requirement engine ALREADY assumed
+this milestone would happen and left the seams for it:
+  - `case_party` (migration 0004) already models co-applicant, guarantor,
+    referrer and borrower_firm roles, `is_primary`, `removed_at`/`removed_by`
+    (soft removal, never deleted), and per-case employment/borrower-type/
+    business-constitution OVERRIDES (0021) — a case-specific fact, never a
+    rewrite of the shared person/organisation record.
+  - `case_property` (0004) already models the case-to-property link and its
+    role (`collateral`/`purchase`/`both`), same soft-removal shape.
+  - `document_requirement` (0005) already carries `waived_by`, `waived_at`
+    and `reason`, with constraints requiring all three or none
+    (`document_requirement_waiver_is_complete`,
+    `document_requirement_waiver_is_reasoned`) — BR-035 was written into the
+    schema before this milestone existed.
+  - `src/domain/permissions/tables.ts` already bound `case_party` and
+    `case_property` insert/update to `case.update`, and
+    `document_requirement` update to `case.update` / `document.verify` /
+    `requirement.waive` — the permission catalog already had
+    `requirement.waive`, `property.create`, `property.update`, all correctly
+    scoped per role (Telecaller holds `case.update:own` but not
+    `property.create`; Login Executive and above hold both).
+  - `Backend/requirements.ts`'s `loadCaseFacts` already read `case_party`
+    and `case_property` rows into `PartyFacts`/`PropertyFacts`, and the rule
+    engine (`src/domain/requirements/rules.ts`) already evaluated
+    party-scoped and property-scoped rules once per role that actually
+    exists (0021's design: "absence is silence" falls out of the design
+    rather than being enforced by a check).
 
-Scope:
-  - Add/manage co-applicants.
-  - Add/manage guarantors.
-  - Add/manage properties where required.
-  - Ensure requirement rules consume the correct parties and properties.
-  - Implement controlled requirement waiving if required by the existing
-    business model.
-  - Preserve auditability and authorization.
+The actual gap was narrow: NOTHING WROTE TO `case_party` or `case_property`
+past case creation, and nothing wrote a waiver to `document_requirement`.
+`Backend/cases.ts`'s own header said so explicitly ("Case parties beyond the
+primary applicant, and case properties, go with [documents/requirements] —
+they exist to feed the requirement engine, which has not moved").
+
+Implementation:
+  - `Backend/case-composition.ts` (new). `addCaseParty` /
+    `updateCasePartyProfile` / `removeCaseParty` and `addCaseProperty` /
+    `updateCaseProperty` / `removeCaseProperty`, plus `listCaseParties` /
+    `listCaseProperties`. Attaching an EXISTING person/organisation/property
+    needs only `case.update`; creating a genuinely new one inline
+    additionally needs `person.create` / `organisation.create` /
+    `property.create` — the same permission that already governs writing to
+    those tables directly, checked inside this module. The primary
+    applicant cannot be added or removed here (0004's own constraints
+    assume exactly one, set once at case creation).
+  - `Backend/documents.ts` gains `waiveRequirement`, next to
+    `decideDocument` (every other `document_requirement` status
+    transition). Requires `requirement.waive` and a non-empty reason;
+    refuses to waive an already-verified or already-not_applicable row;
+    waiving the same row twice is a no-op (no duplicate event). Triggers the
+    same stage reconciliation an upload or verification does — a waiver can
+    be the last outstanding requirement on a file.
+  - `Backend/events.ts` gains `case.party_added` /
+    `case.party_profile_updated` / `case.party_removed` /
+    `case.property_added` / `case.property_updated` /
+    `case.property_removed` (matching `Frontend/src/fake/store.ts`'s own
+    naming for the ones it already had) and `requirement.waived`. Every
+    payload carries ids and closed-vocabulary codes only — never a
+    person's/organisation's name or a property's address, and the waiver's
+    free-text reason stays on the row, never in the event log (BR-051).
+  - `Backend/api-server.ts`: `/api/cases/:id/parties[/:partyId]`,
+    `/api/cases/:id/properties[/:propertyId]`,
+    `/api/cases/:id/requirements/:id/waive`.
+  - Frontend: `Frontend/src/api/types.ts` gains `ApiCaseParty` /
+    `ApiCaseProperty` and extends `ApiRequirement` with
+    `requiredOfCasePropertyId` / `waivedByUserId` / `waivedAt`.
+    `Frontend/src/screens/CaseDetail.tsx`'s Overview tab replaces the
+    applicant-only "Who is on this case" card with a full parties list
+    (add/remove, reusing the existing `CustomerSearchField`) and a new
+    Property card (add/edit/remove); the Documents tab's requirement rows
+    gain a Waive action and show the waiver's reason/date once waived.
+  - NO MIGRATION. NO PERMISSION-CATALOG CHANGE. Both were already
+    sufficient — see reconnaissance above.
+  - REQUIREMENTS ARE NOT REGENERATED FROM THE NEW MUTATION PATHS.
+    `regenerateRequirements` already runs on every read of a case's
+    requirements (Phase 3's deliberate architecture, unchanged) —
+    adding/removing a party or property changes the `CaseFacts` the rule
+    engine reads next time `listCaseRequirements` runs, which is the one
+    place regeneration happens. Proven directly: adding a co-applicant,
+    guarantor or property and then reading requirements shows new
+    party-/property-scoped rows; removing them retires those rows to
+    `not_applicable` on the next read, never deleting them and never
+    leaving them active.
+  - Document collection was already independent of `appointment_fixed`
+    (ADR-020's stage progression puts `documents_pending` and
+    `appointment_fixed` as parallel branches off `contacted`) — Phase 4
+    added no gate and this was reconfirmed, not re-engineered.
+
+Tests:
+  - `Backend/case-composition.test.ts` (new, 13 tests, real Postgres/HTTP):
+    add/read/update/remove a co-applicant with audit events at each step;
+    the primary applicant cannot be removed; adding/removing a co-applicant
+    or guarantor changes the real requirement set (rule engine, not a
+    mock); an unrecognised role and an unauthorized actor (Finance, which
+    holds `case.read` but not `case.update`) are refused; a guarantor
+    created inline; a Telecaller (no `property.create`) cannot record a new
+    property but a Login Executive can, edits it, and removes it, each
+    audited; a duplicate property link is refused; a waiver requires a
+    reason, is refused to an actor without `requirement.waive`, persists
+    (survives a fresh read of the row), is auditable without leaking the
+    reason into the event payload, and is not resurrected as active by a
+    later regeneration.
+  - `tests/e2e/case-completeness.spec.ts` (new): a Login Executive adds a
+    co-applicant, a guarantor and a property through the real Case Detail
+    screen; all three survive a reload; a second, independent browser
+    session signs in and sees the same composition. A second test waives a
+    requirement through the UI and confirms it stays visible as waived
+    after a reload. Both pass.
+  - Full unit suite: 627/627. Full integration suite: 137 passed / 1
+    genuinely failed (`migrate-import-side-effect.test.ts`, a pre-existing
+    dynamic-import quirk unrelated to this phase) / 34 skipped (files
+    explicitly suspended since Stage 3B, unrelated to this phase) — proven
+    identical on the unmodified baseline via `git stash` before attributing
+    it. `Backend/security.test.ts` and `Backend/security-workflows.test.ts`
+    fail to spawn a child `aos_app` server in THIS WORKTREE specifically,
+    because its `node_modules` does not contain `vite-node` (the worktree
+    resolves most modules by walking up to the parent checkout's
+    `node_modules`, which a spawned child process does not do) — an
+    infrastructure gap in this isolated worktree, not a code regression;
+    confirmed present on the unmodified baseline too. Relevant Playwright
+    suites (`customer-case.spec.ts`, `admin-screen-honesty.spec.ts`,
+    `master-data.spec.ts`, `user-management.spec.ts`) rerun clean except
+    three pre-existing failures in `customer-case.spec.ts`, reproduced
+    identically on the unmodified baseline.
+
+Scope boundary respected: no property-management CRM, no sanction/
+rejection/disbursement workflow, no appointment-fixing changes, no broad
+Case Detail redesign.
 
 Exit criteria:
-  - Real multi-party cases can be represented.
-  - Secured-property cases can be represented.
-  - Requirement generation reflects those relationships.
-  - Waiving is controlled and audited if implemented.
-
-This phase must not become a general redesign of the case system.
+  - Real multi-party cases can be represented. MET.
+  - Secured-property cases can be represented. MET.
+  - Requirement generation reflects those relationships. MET, proven by
+    integration test against real rules and real Postgres.
+  - Waiving is controlled and audited. MET.
 
 ------------------------------------------------------------
 PHASE 5 — LOAN OUTCOME TRACKING
@@ -367,11 +478,11 @@ MASTER MILESTONE
 ============================================================
 
 CURRENT:
-  Phase 1 (Column Masking), Phase 2 (Admin-screen honesty) and
-  Phase 3 (Concurrency & audit hardening) complete
+  Phase 1 (Column Masking), Phase 2 (Admin-screen honesty),
+  Phase 3 (Concurrency & audit hardening) and Phase 4 (Case completeness)
+  complete
 
 REMAINING DEVELOPMENT:
-  Phase 4 — Case completeness
   Phase 5 — Loan outcome tracking
 
 THEN:
@@ -381,8 +492,8 @@ THEN:
   INITIAL PRODUCTION
 
 AFTER INITIAL PRODUCTION:
-  Continue Phase 4/5 features and later roadmap items based on
-  actual business priorities.
+  Continue Phase 5 and later roadmap items based on actual business
+  priorities.
 
 ============================================================
 ANTI-SCOPE-CREEP RULE

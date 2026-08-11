@@ -90,7 +90,17 @@ import {
   setUserActive,
   setUserRoles,
 } from "./users.js";
-import { listCaseRequirements, uploadDocument, decideDocument, downloadDocument } from "./documents.js";
+import { listCaseRequirements, uploadDocument, decideDocument, downloadDocument, waiveRequirement } from "./documents.js";
+import {
+  addCaseParty,
+  addCaseProperty,
+  listCaseParties,
+  listCaseProperties,
+  removeCaseParty,
+  removeCaseProperty,
+  updateCasePartyProfile,
+  updateCaseProperty,
+} from "./case-composition.js";
 import { listLenders } from "./lenders.js";
 import {
   createSubmission,
@@ -849,6 +859,51 @@ async function route(
     return await assignOwner(client, requireActor(actor), ownerMatch[1]!, body);
   }
 
+  // ── Case parties and properties (Phase 4 — case completeness) ─────────────
+  //
+  // `case.update` governs both tables' insert/update (`src/domain/permissions/
+  // tables.ts`); creating a genuinely new person/organisation/property inline
+  // additionally needs `person.create` / `organisation.create` /
+  // `property.create`, checked inside `Backend/case-composition.ts` itself.
+
+  const partiesMatch = new RegExp(`^/api/cases/(${UUID})/parties$`).exec(path);
+  if (partiesMatch) {
+    const id = partiesMatch[1]!;
+    if (method === "GET") return await listCaseParties(client, requireActor(actor), id);
+    if (method === "POST") return await addCaseParty(client, requireActor(actor), id, body);
+  }
+
+  const partyMatch = new RegExp(`^/api/cases/(${UUID})/parties/(${UUID})$`).exec(path);
+  if (partyMatch) {
+    const [, id, partyId] = partyMatch;
+    if (method === "PATCH") {
+      return await updateCasePartyProfile(client, requireActor(actor), id!, partyId!, body);
+    }
+    if (method === "DELETE") {
+      await removeCaseParty(client, requireActor(actor), id!, partyId!);
+      return { ok: true };
+    }
+  }
+
+  const propertiesMatch = new RegExp(`^/api/cases/(${UUID})/properties$`).exec(path);
+  if (propertiesMatch) {
+    const id = propertiesMatch[1]!;
+    if (method === "GET") return await listCaseProperties(client, requireActor(actor), id);
+    if (method === "POST") return await addCaseProperty(client, requireActor(actor), id, body);
+  }
+
+  const propertyMatch = new RegExp(`^/api/cases/(${UUID})/properties/(${UUID})$`).exec(path);
+  if (propertyMatch) {
+    const [, id, propertyLinkId] = propertyMatch;
+    if (method === "PATCH") {
+      return await updateCaseProperty(client, requireActor(actor), id!, propertyLinkId!, body);
+    }
+    if (method === "DELETE") {
+      await removeCaseProperty(client, requireActor(actor), id!, propertyLinkId!);
+      return { ok: true };
+    }
+  }
+
   // ── Requirements and documents ────────────────────────────────────────────
   //
   // Stage 3C. `document.upload` and `document.verify` are separate
@@ -876,6 +931,11 @@ async function route(
   const verifyMatch = new RegExp(`^/api/cases/(${UUID})/requirements/(${UUID})/decision$`).exec(path);
   if (verifyMatch && method === "PUT") {
     return await decideDocument(client, requireActor(actor), verifyMatch[1]!, verifyMatch[2]!, body);
+  }
+
+  const waiveMatch = new RegExp(`^/api/cases/(${UUID})/requirements/(${UUID})/waive$`).exec(path);
+  if (waiveMatch && method === "PUT") {
+    return await waiveRequirement(client, requireActor(actor), waiveMatch[1]!, waiveMatch[2]!, body);
   }
 
   const downloadMatch = new RegExp(`^/api/documents/(${UUID})/download$`).exec(path);

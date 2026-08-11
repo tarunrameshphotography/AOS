@@ -30,7 +30,7 @@ import { nextVersion } from "@domain/storage/versioning.js";
 import type { Queryable } from "./db.js";
 import { can, canActOnCase, type Actor } from "./authorize.js";
 import { ApiError, refusalMessage } from "./http.js";
-import { recordDocumentEvent, recordSystemCaseEvent } from "./events.js";
+import { recordDocumentEvent, recordRequirementWaivedEvent, recordSystemCaseEvent } from "./events.js";
 import { regenerateRequirements } from "./requirements.js";
 import { storageAdapter, getObjectWithContentType } from "./storage-client.js";
 
@@ -84,8 +84,14 @@ export interface RequirementView {
   readonly periodStart: string | null;
   readonly periodEnd: string | null;
   readonly requiredOfCasePartyId: string | null;
+  readonly requiredOfCasePropertyId: string | null;
   readonly generatedByRuleCode: string | null;
   readonly reason: string | null;
+  /** Set together, never one without the other (`document_requirement_waiver_is_complete`,
+   * 0005) — who excused this requirement and when, so a waived row on screen
+   * can say more than just "Waived" (BR-035). */
+  readonly waivedByUserId: string | null;
+  readonly waivedAt: string | null;
   readonly document: {
     readonly id: string;
     readonly fileName: string | null;
@@ -107,8 +113,11 @@ interface RequirementRow {
   period_start: string | null;
   period_end: string | null;
   required_of_case_party_id: string | null;
+  required_of_case_property_id: string | null;
   generated_by_rule_code: string | null;
   reason: string | null;
+  waived_by: string | null;
+  waived_at: string | null;
   document_id: string | null;
   file_name: string | null;
   file_size_bytes: string | null;
@@ -139,7 +148,8 @@ export async function listCaseRequirements(
   const { rows } = await client.query<RequirementRow>(
     `select r.id, dt.code as document_type_code, r.applicable_from_stage,
             a.code as applicability, r.status, r.period_start::text, r.period_end::text,
-            r.required_of_case_party_id, rule.code as generated_by_rule_code, r.reason,
+            r.required_of_case_party_id, r.required_of_case_property_id,
+            rule.code as generated_by_rule_code, r.reason, r.waived_by, r.waived_at::text,
             d.id as document_id, d.file_name, d.file_size_bytes, d.version,
             d.uploaded_at::text, d.uploaded_by, d.verified_at::text, d.verified_by
        from document_requirement r
@@ -176,8 +186,11 @@ export async function listCaseRequirements(
     periodStart: row.period_start,
     periodEnd: row.period_end,
     requiredOfCasePartyId: row.required_of_case_party_id,
+    requiredOfCasePropertyId: row.required_of_case_property_id,
     generatedByRuleCode: row.generated_by_rule_code,
     reason: row.reason,
+    waivedByUserId: row.waived_by,
+    waivedAt: row.waived_at,
     document: row.document_id
       ? {
           id: row.document_id,
@@ -388,7 +401,8 @@ async function requirementView(client: Queryable, requirementId: string): Promis
   const { rows } = await client.query<RequirementRow>(
     `select r.id, dt.code as document_type_code, r.applicable_from_stage,
             a.code as applicability, r.status, r.period_start::text, r.period_end::text,
-            r.required_of_case_party_id, rule.code as generated_by_rule_code, r.reason,
+            r.required_of_case_party_id, r.required_of_case_property_id,
+            rule.code as generated_by_rule_code, r.reason, r.waived_by, r.waived_at::text,
             d.id as document_id, d.file_name, d.file_size_bytes, d.version,
             d.uploaded_at::text, d.uploaded_by, d.verified_at::text, d.verified_by
        from document_requirement r
@@ -425,8 +439,11 @@ async function requirementView(client: Queryable, requirementId: string): Promis
     periodStart: row.period_start,
     periodEnd: row.period_end,
     requiredOfCasePartyId: row.required_of_case_party_id,
+    requiredOfCasePropertyId: row.required_of_case_property_id,
     generatedByRuleCode: row.generated_by_rule_code,
     reason: row.reason,
+    waivedByUserId: row.waived_by,
+    waivedAt: row.waived_at,
     document: row.document_id
       ? {
           id: row.document_id,
@@ -513,6 +530,82 @@ export async function decideDocument(
     });
   }
 
+  await reconcileStage(client, caseId, {
+    entityType: "document_requirement",
+    entityId: requirementId,
+  });
+
+  return await requirementView(client, requirementId);
+}
+
+// ---------------------------------------------------------------------------
+// Waiving (Phase 4 — case completeness)
+// ---------------------------------------------------------------------------
+
+/**
+ * Excuse a requirement without pretending it was satisfied (BR-035).
+ *
+ * `requirement.waive` is a separate permission from `document.verify` — a
+ * Telecaller who may correct a requested amount holds neither, a Login
+ * Executive holds both (`src/domain/permissions/roles.ts`) — because waiving
+ * sends a file to a bank with a gap in it on purpose, which is a bigger
+ * decision than confirming a document is readable.
+ *
+ * A reason is mandatory: `document_requirement_waiver_is_reasoned` (0005)
+ * would refuse the write anyway, but the check here exists so the refusal
+ * reads as a sentence. `verified` and `not_applicable` are refused for the
+ * same reason `decideDocument` refuses to verify a requirement nothing was
+ * uploaded against: a waiver is a decision about something still missing, not
+ * a way to un-verify a document already confirmed, and a `not_applicable`
+ * requirement means the case does not need this at all — there is nothing
+ * left for a waiver to excuse. Waiving an already-waived requirement again
+ * (a retried request, or the row genuinely being re-opened by a later
+ * regeneration and re-waived) is a no-op that writes no second event, the
+ * same discipline `updateCase` and `setHold` already apply.
+ */
+export async function waiveRequirement(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+  requirementId: string,
+  body: Record<string, unknown>,
+): Promise<RequirementView> {
+  const header = await loadCaseHeader(client, caseId);
+  requireCaseAccess(actor, header, "requirement.waive");
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (reason.length === 0) {
+    throw new ApiError(400, "A waiver needs a reason. It is a decision with a name on it.");
+  }
+
+  const current = await requirementView(client, requirementId);
+  if (current.status === "waived") return current;
+  if (current.status === "not_applicable") {
+    throw new ApiError(409, "This case does not need this requirement — there is nothing to waive.");
+  }
+  if (current.status === "verified") {
+    throw new ApiError(409, "This requirement is already verified and cannot be waived.");
+  }
+
+  await client.query(
+    `update document_requirement
+        set status = 'waived', waived_by = $1, waived_at = now(), reason = $2
+      where id = $3`,
+    [actor.userId, reason, requirementId],
+  );
+
+  // The reason stays off the event payload — see recordRequirementWaivedEvent's
+  // own comment. Only the document type is carried, and it is a code, not a
+  // customer- or employee-identifying fact.
+  await recordRequirementWaivedEvent(client, {
+    actorUserId: actor.userId,
+    caseId,
+    requirementId,
+    payloadAfter: { documentTypeCode: current.documentTypeCode },
+  });
+
+  // Waiving can be the last outstanding requirement on a file — the same
+  // stage reconciliation an upload or a verification triggers.
   await reconcileStage(client, caseId, {
     entityType: "document_requirement",
     entityId: requirementId,

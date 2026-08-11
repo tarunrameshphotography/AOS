@@ -174,7 +174,13 @@ export type CaseEventType =
   | "case.held"
   | "case.hold_lifted"
   | "case.marked_lost"
-  | "case.reopened";
+  | "case.reopened"
+  | "case.party_added"
+  | "case.party_profile_updated"
+  | "case.party_removed"
+  | "case.property_added"
+  | "case.property_updated"
+  | "case.property_removed";
 
 export interface CaseEvent {
   readonly actorUserId: string;
@@ -250,6 +256,69 @@ export async function recordSystemCaseEvent(
       event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
       event.causedByEntityType ?? null,
       event.causedByEntityId ?? null,
+    ],
+  );
+}
+
+/**
+ * Case parties and case properties (Phase 4 — case completeness).
+ *
+ * `entity_type` is `'case_party'`/`'case_property'` — the join table these
+ * events are actually about, matching `Frontend/src/fake/store.ts`'s own
+ * `record()` calls for `case.party_added`, `case.property_added`,
+ * `case.property_updated` and `case.property_removed`. `case.party_removed`
+ * and `case.party_profile_updated` follow the same shape; the prototype's
+ * `updatePartyProfile` is the source for the latter's name.
+ *
+ * WHAT MAY GO IN THE PAYLOAD: ids and closed-vocabulary codes — case_party_id
+ * / case_property_id, role, which fields changed. WHAT MAY NOT: a person's or
+ * organisation's name, or a property's address — those live on `person`,
+ * `organisation` and `property`, where redaction can reach them, never in a
+ * log that is never redacted (the same discipline `recordCaseEvent` applies
+ * to `hold_reason`).
+ */
+export interface CasePartyEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly casePartyId: string;
+  readonly eventType: "case.party_added" | "case.party_profile_updated" | "case.party_removed";
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordCasePartyEvent(client: Queryable, event: CasePartyEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'case_party', $2, $3, $4, $5, 'ui')`,
+    [
+      event.actorUserId,
+      event.casePartyId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}
+
+export interface CasePropertyEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly casePropertyId: string;
+  readonly eventType: "case.property_added" | "case.property_updated" | "case.property_removed";
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordCasePropertyEvent(client: Queryable, event: CasePropertyEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'case_property', $2, $3, $4, $5, 'ui')`,
+    [
+      event.actorUserId,
+      event.casePropertyId,
+      event.caseId,
+      event.eventType,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
     ],
   );
 }
@@ -396,6 +465,41 @@ export async function recordSystemRequirementEvent(client: Queryable, event: Req
                         event_type, payload_after, source)
      values ('system', null, 'document_requirement', null, $1, $2, $3, 'ui')`,
     [event.caseId, event.eventType, JSON.stringify(event.payloadAfter)],
+  );
+}
+
+/**
+ * `requirement.waived` — a human excusing one requirement (BR-035, Phase 4).
+ * Unlike `requirement.regenerated`, this is a named user action against one
+ * specific row, so it is shaped like `recordDocumentEvent` rather than like
+ * the system-actor batched event above: `entity_id` is the requirement, and
+ * `actor_kind` is `'user'`.
+ *
+ * THE REASON STAYS OFF THE PAYLOAD. `document_requirement.reason` is where it
+ * lives — reachable by redaction, unlike the event log (BR-051) — the same
+ * discipline `document.rejected` already applies to a rejection's reason.
+ */
+export interface RequirementWaivedEvent {
+  readonly actorUserId: string;
+  readonly caseId: string;
+  readonly requirementId: string;
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+export async function recordRequirementWaivedEvent(
+  client: Queryable,
+  event: RequirementWaivedEvent,
+): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id, case_id,
+                        event_type, payload_after, source)
+     values ('user', $1, 'document_requirement', $2, $3, 'requirement.waived', $4, 'ui')`,
+    [
+      event.actorUserId,
+      event.requirementId,
+      event.caseId,
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
   );
 }
 

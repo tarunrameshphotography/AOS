@@ -104,10 +104,62 @@ export interface ApiRequirement {
   readonly periodStart: string | null;
   readonly periodEnd: string | null;
   readonly requiredOfCasePartyId: string | null;
+  readonly requiredOfCasePropertyId: string | null;
   readonly generatedByRuleCode: string | null;
-  /** A rejection's reason, in the login desk's own words. */
+  /** A rejection's reason, or — when `status` is `waived` — the waiver's
+   * reason (BR-035). One column on `document_requirement` serves both, since
+   * a requirement is never both at once. */
   readonly reason: string | null;
+  /** Set together, never one without the other. Who excused this requirement
+   * and when, so a waived row can say more than just "Waived" (Phase 4). */
+  readonly waivedByUserId: string | null;
+  readonly waivedAt: string | null;
   readonly document: ApiRequirementDocument | null;
+}
+
+// ---------------------------------------------------------------------------
+// Case parties and properties (Phase 4 — case completeness) — mirrors
+// Backend/case-composition.ts
+// ---------------------------------------------------------------------------
+
+export type CasePartyRole = "applicant" | "co_applicant" | "guarantor" | "referrer" | "borrower_firm";
+
+export interface ApiCaseParty {
+  readonly id: string;
+  readonly caseId: string;
+  readonly personId: string | null;
+  readonly organisationId: string | null;
+  readonly name: string | null;
+  readonly role: CasePartyRole;
+  readonly isPrimary: boolean;
+  readonly employmentTypeId: string | null;
+  readonly borrowerTypeId: string | null;
+  readonly businessConstitutionId: string | null;
+  readonly removedAt: string | null;
+  readonly createdAt: string;
+}
+
+export type CasePropertyRole = "collateral" | "purchase" | "both";
+
+export interface ApiCaseProperty {
+  readonly id: string;
+  readonly caseId: string;
+  readonly propertyId: string;
+  readonly role: CasePropertyRole;
+  readonly removedAt: string | null;
+  readonly createdAt: string;
+  readonly doorNumber: string | null;
+  readonly buildingName: string | null;
+  readonly locality: string | null;
+  readonly city: string | null;
+  readonly pincode: string | null;
+  readonly propertyTypeId: string | null;
+  readonly propertyOwnershipTypeId: string | null;
+  readonly areaSqft: number | null;
+  readonly estimatedValue: number | null;
+  readonly ownershipStatus: string | null;
+  readonly surveyNumber: string | null;
+  readonly registrationNumber: string | null;
 }
 
 /** From `@domain/requirements`'s `summariseProgress` — computed server-side

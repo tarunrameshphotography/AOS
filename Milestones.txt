@@ -1,6 +1,6 @@
 AOS — MILESTONES (quick-glance progress tracker)
 Last updated: 2026-08-11
-Current commit / checkpoint: ad0ec68 — Phase 3 (Concurrency & audit hardening) complete
+Current commit / checkpoint: Phase 4 (Case completeness) complete — see git log for the commit hash
 Full detail: see "AOS Production Readiness Master Roadmap.txt"
 
 ============================================================
@@ -42,8 +42,8 @@ Stage 4 — Production Readiness
   Phase 1 — Column Masking / ADR-026 ✓
   Phase 2 — Admin-screen honesty ✓
   Phase 3 — Concurrency & audit hardening ✓
-  Phase 4 — Case completeness → [ ] NEXT
-  Phase 5 — Loan outcome tracking ○ [ ]
+  Phase 4 — Case completeness ✓
+  Phase 5 — Loan outcome tracking → [ ] NEXT
 
 Office Server Production Cutover Gate ○ [ ]
   (separate from development phases — backup, migrations, aos_app
@@ -60,15 +60,23 @@ INITIAL PRODUCTION ○ [ ]
 STATE AS OF THIS CHECKPOINT
 ============================================================
 
-HEAD: ad0ec68
-origin/main: not pushed by this change
+HEAD: see git log (Phase 4 commit, this checkpoint)
+origin/main: pushed by this change
 Working tree: clean except pre-existing untracked scratch files
 
-Current active work: Phase 3 complete. Phase 4 — Case completeness is next.
+Current active work: Phase 4 complete. Phase 5 — Loan outcome tracking is next.
 
-Phase 3 in one line: `sendPackage`/`retryPackage` now take a
-transaction-scoped `pg_advisory_xact_lock` on the submission id and skip
-re-dispatching a document set already fully sent; `regenerateRequirements`
-only writes rows that actually change and records one batched
-`requirement.regenerated` event, in the same transaction, when it does.
-No migration. Full integration suite: 159/159 passing.
+Phase 4 in one line: co-applicants, guarantors and properties can now be
+added to, edited on and removed from an existing case
+(`Backend/case-composition.ts`, new routes under `/api/cases/:id/parties`
+and `/api/cases/:id/properties`), and a requirement can be waived with a
+reason (`waiveRequirement`, `Backend/documents.ts`) — all through the
+existing `case_party`/`case_property`/`document_requirement` schema (no
+migration), the existing `case.update`/`person.create`/`property.create`/
+`requirement.waive` permissions (no catalog change), and the existing
+on-read requirement regeneration (Phase 3's architecture, unchanged).
+Case Detail's Overview tab shows every party and property with add/remove
+controls; the Documents tab gains a Waive action. Full integration suite
+green (pre-existing `security.test.ts`/`security-workflows.test.ts` spawn
+failures are a worktree `node_modules` gap, not a Phase 4 regression — see
+the master roadmap's Phase 4 section for detail).

@@ -14,12 +14,7 @@
  */
 
 import { formatCaseNumber, parseCaseNumber } from "@domain/case/case-number.js";
-import {
-  type CaseStage,
-  type LostReason,
-  type ProgressionStage,
-  isTerminalStage,
-} from "@domain/case/stages.js";
+import { type CaseStage, type LostReason, isTerminalStage } from "@domain/case/stages.js";
 import {
   type CaseSnapshot,
   deriveSystemStagePath,
@@ -51,7 +46,7 @@ import { applyExistingDocuments, regenerateRequirements } from "./requirements.j
 import { emailProvider } from "./mail.js";
 import { getStorageConfig, objectExists, storageAdapter } from "./storage.js";
 import { buildSeed } from "./seed.js";
-import type { ApplicabilityCode, LendingProduct } from "@domain/products/index.js";
+import type { LendingProduct } from "@domain/products/index.js";
 import type {
   LenderBranch,
   LenderInsight as DomainLenderInsight,
@@ -1683,102 +1678,6 @@ export function ruleBehind(requirementId: Id): DocumentRequirementRule | undefin
   return db.documentRequirementRules.find(
     (rule) => rule.code === requirement.generatedByRuleCode,
   );
-}
-
-export interface RuleEditInput {
-  name?: string;
-  applicability?: ApplicabilityCode;
-  applicableFromStage?: ProgressionStage;
-  /** 0 or undefined clears the financial-year expansion. */
-  financialYears?: number | undefined;
-  notes?: string | undefined;
-}
-
-/**
- * Edit a rule.
- *
- * Only the four fields a business user has a settled opinion about are
- * editable here: how strongly the document is wanted, when it becomes due,
- * how many years of it, and why. Conditions are edited too (see
- * `setRuleConditions`) but separately, because changing WHEN a rule fires is
- * a different kind of decision from changing WHAT it asks for, and a single
- * form that does both invites the accidental version of each.
- *
- * Cases are NOT regenerated here. A rule change can affect hundreds of cases,
- * and silently rewriting all of them from an admin screen is how a system
- * loses a user's trust. Each case picks the change up the next time anything
- * on it changes, and the case screen offers an explicit "re-evaluate now".
- */
-export function updateDocumentRequirementRule(
-  ruleId: Id,
-  input: RuleEditInput,
-  actorUserId: Id,
-): ActionResult {
-  const rule = db.documentRequirementRules.find((r) => r.id === ruleId);
-  if (!rule) return { ok: false, message: "Rule not found." };
-  if (input.name !== undefined && !input.name.trim()) {
-    return { ok: false, message: "A rule needs a name someone else can recognise." };
-  }
-  if (input.financialYears !== undefined && input.financialYears > 10) {
-    return { ok: false, message: "Ten financial years is already more than any lender asks for." };
-  }
-
-  db.documentRequirementRules = db.documentRequirementRules.map((r) => {
-    if (r.id !== ruleId) return r;
-    const { financialYears, notes, ...rest } = r;
-    return {
-      ...rest,
-      ...(input.name !== undefined ? { name: input.name.trim() } : { name: r.name }),
-      ...(input.applicability ? { applicability: input.applicability } : {}),
-      ...(input.applicableFromStage
-        ? { applicableFromStage: input.applicableFromStage }
-        : { applicableFromStage: r.applicableFromStage }),
-      ...(input.financialYears ? { financialYears: input.financialYears } : {}),
-      ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
-    };
-  });
-
-  record({
-    actorUserId,
-    entityType: "document_requirement_rule",
-    entityId: ruleId,
-    eventType: "requirement_rule.updated",
-    summary: `Rule updated: ${input.name?.trim() ?? rule.name}`,
-  });
-
-  commit();
-  return { ok: true };
-}
-
-/**
- * Take a rule in or out of service.
- *
- * Never deleted — the same never-delete discipline as `rejection_reason` and
- * `document_type` (BR-027). A rule that generated a requirement two years ago
- * still has to be readable when someone asks why that document was collected.
- */
-export function setDocumentRequirementRuleActive(
-  ruleId: Id,
-  isActive: boolean,
-  actorUserId: Id,
-): ActionResult {
-  const rule = db.documentRequirementRules.find((r) => r.id === ruleId);
-  if (!rule) return { ok: false, message: "Rule not found." };
-
-  db.documentRequirementRules = db.documentRequirementRules.map((r) =>
-    r.id === ruleId ? { ...r, isActive } : r,
-  );
-
-  record({
-    actorUserId,
-    entityType: "document_requirement_rule",
-    entityId: ruleId,
-    eventType: isActive ? "requirement_rule.activated" : "requirement_rule.deactivated",
-    summary: `${rule.name} ${isActive ? "returned to service" : "taken out of service"}`,
-  });
-
-  commit();
-  return { ok: true };
 }
 
 /**
@@ -3748,136 +3647,14 @@ export function setMasterDataActive(
 }
 
 // ---------------------------------------------------------------------------
-// Document types and rejection reasons — already master data before this
-// milestone (ADR-025, ADR-028), but with no admin screen. Their extra fields
-// (owner_kind / requires_period / requires_expiry) keep them out of the
-// generic MasterDataRecord functions above; these mirror those functions for
-// the two fields every master-data table shares: name/description and
-// is_active.
+// Document types and rejection reasons moved to a real, Postgres-backed
+// write path in Stage 4 Item 4 (Backend/master-data.ts, `/api/master-data/*`)
+// — `MasterData.tsx` no longer reads or writes them here. What remains of
+// them in this store is read-only: `db.documentTypes`/`db.rejectionReasons`,
+// seeded once at bootstrap, still label requirements and rejections on
+// PROTOTYPE (fake-store) cases, the same way `db.documentRequirementRules`
+// still drives `fake/requirements.ts` for those cases.
 // ---------------------------------------------------------------------------
-
-/**
- * Rename a document type, or change what it says about itself.
- *
- * The Telecaller Workflow milestone added three of the four editable fields
- * here. The catalogue ships names, local names, descriptions and categories
- * researched against how lenders in this market actually ask — and every one
- * of them stays master data a business user owns, because the right wording
- * for a Coimbatore branch is a thing the branch knows and a developer does
- * not.
- */
-export function updateDocumentTypeDetails(
-  id: Id,
-  patch: {
-    name?: string;
-    localName?: string;
-    description?: string;
-    /** Comma- or newline-separated in the form; a real list here. */
-    examples?: string[];
-    category?: DocumentCategory;
-  },
-  actorUserId: Id,
-): ActionResult {
-  const existing = db.documentTypes.find((t) => t.id === id);
-  if (!existing) return { ok: false, message: "Document type not found." };
-  const name = patch.name?.trim();
-  if (patch.name !== undefined && !name) return { ok: false, message: "Name cannot be blank." };
-
-  const localName = patch.localName?.trim();
-
-  db.documentTypes = db.documentTypes.map((t) => {
-    if (t.id !== id) return t;
-    // Clearing the local name is a real edit — spread-with-undefined would
-    // leave the old one in place — but only when the caller actually said so.
-    // A patch that never mentions the field leaves it alone.
-    const { localName: keptLocalName, examples: keptExamples, ...rest } = t;
-    const nextLocalName = patch.localName === undefined ? keptLocalName : localName;
-    // An emptied examples list is a real edit — "actually, only these two
-    // count now" — so an explicitly-empty array clears it, while a patch that
-    // never mentions the field leaves it alone.
-    const nextExamples =
-      patch.examples === undefined
-        ? keptExamples
-        : patch.examples.map((e) => e.trim()).filter(Boolean);
-    return {
-      ...rest,
-      ...(name ? { name } : {}),
-      ...(nextLocalName ? { localName: nextLocalName } : {}),
-      ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
-      ...(nextExamples && nextExamples.length > 0 ? { examples: nextExamples } : {}),
-      ...(patch.category ? { category: patch.category } : {}),
-    };
-  });
-  record({
-    actorUserId,
-    entityType: "document_type",
-    entityId: id,
-    eventType: "master_data.updated",
-    summary: `Document Type updated: ${name ?? existing.name}`,
-  });
-  commit();
-  return { ok: true };
-}
-
-export function setDocumentTypeActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
-  const existing = db.documentTypes.find((t) => t.id === id);
-  if (!existing) return { ok: false, message: "Document type not found." };
-  db.documentTypes = db.documentTypes.map((t) => (t.id === id ? { ...t, isActive } : t));
-  record({
-    actorUserId,
-    entityType: "document_type",
-    entityId: id,
-    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
-    summary: `Document Type ${isActive ? "reactivated" : "deactivated"}: ${existing.name}`,
-  });
-  commit();
-  return { ok: true };
-}
-
-export function updateRejectionReasonDetails(
-  id: Id,
-  patch: { name?: string; description?: string },
-  actorUserId: Id,
-): ActionResult {
-  const existing = db.rejectionReasons.find((r) => r.id === id);
-  if (!existing) return { ok: false, message: "Rejection reason not found." };
-  const name = patch.name?.trim();
-  if (patch.name !== undefined && !name) return { ok: false, message: "Name cannot be blank." };
-
-  db.rejectionReasons = db.rejectionReasons.map((r) =>
-    r.id === id
-      ? {
-          ...r,
-          ...(name ? { name } : {}),
-          ...(patch.description?.trim() ? { description: patch.description.trim() } : {}),
-        }
-      : r,
-  );
-  record({
-    actorUserId,
-    entityType: "rejection_reason",
-    entityId: id,
-    eventType: "master_data.updated",
-    summary: `Rejection Reason updated: ${name ?? existing.name}`,
-  });
-  commit();
-  return { ok: true };
-}
-
-export function setRejectionReasonActive(id: Id, isActive: boolean, actorUserId: Id): ActionResult {
-  const existing = db.rejectionReasons.find((r) => r.id === id);
-  if (!existing) return { ok: false, message: "Rejection reason not found." };
-  db.rejectionReasons = db.rejectionReasons.map((r) => (r.id === id ? { ...r, isActive } : r));
-  record({
-    actorUserId,
-    entityType: "rejection_reason",
-    entityId: id,
-    eventType: isActive ? "master_data.activated" : "master_data.deactivated",
-    summary: `Rejection Reason ${isActive ? "reactivated" : "deactivated"}: ${existing.name}`,
-  });
-  commit();
-  return { ok: true };
-}
 
 // ---------------------------------------------------------------------------
 // Lending Product Catalogue (Milestone 7) — Database/migrations/0015.

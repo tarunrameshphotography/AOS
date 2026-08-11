@@ -64,6 +64,19 @@ import {
 } from "./customers.js";
 import { readReference, search } from "./reference.js";
 import {
+  listDocumentTypes,
+  updateDocumentType,
+  setDocumentTypeActive,
+  listRejectionReasons,
+  updateRejectionReason,
+  setRejectionReasonActive,
+  listDocumentRequirementRules,
+  updateDocumentRequirementRule,
+  setDocumentRequirementRuleActive,
+  listThresholds,
+  updateThreshold,
+} from "./master-data.js";
+import {
   changeOwnPassword,
   createUser,
   getUser,
@@ -685,6 +698,71 @@ async function route(
   if (method === "GET" && path === "/api/search") {
     const query = new URL(req.url ?? "/", "http://localhost").searchParams.get("q") ?? "";
     return await search(client, requireActor(actor), query);
+  }
+
+  // ── Master data (Stage 4 Item 4) ─────────────────────────────────────────
+  //
+  // Document types, rejection reasons, document requirement rules and
+  // operational thresholds — the four categories moved onto a real,
+  // permission-gated write path this stage. Products and lenders stay
+  // read-only (`/api/reference`, `/api/lenders` above); see Backend/master-data.ts.
+
+  if (method === "GET" && path === "/api/master-data/document-types") {
+    return await listDocumentTypes(client, requireActor(actor));
+  }
+  const documentTypeMatch = new RegExp(`^/api/master-data/document-types/(${UUID})$`).exec(path);
+  if (documentTypeMatch && method === "PUT") {
+    return await updateDocumentType(client, requireActor(actor), documentTypeMatch[1]!, body);
+  }
+  const documentTypeActiveMatch = new RegExp(`^/api/master-data/document-types/(${UUID})/active$`).exec(path);
+  if (documentTypeActiveMatch && method === "PUT") {
+    return await setDocumentTypeActive(client, requireActor(actor), documentTypeActiveMatch[1]!, body);
+  }
+
+  if (method === "GET" && path === "/api/master-data/rejection-reasons") {
+    return await listRejectionReasons(client, requireActor(actor));
+  }
+  const rejectionReasonMatch = new RegExp(`^/api/master-data/rejection-reasons/(${UUID})$`).exec(path);
+  if (rejectionReasonMatch && method === "PUT") {
+    return await updateRejectionReason(client, requireActor(actor), rejectionReasonMatch[1]!, body);
+  }
+  const rejectionReasonActiveMatch = new RegExp(`^/api/master-data/rejection-reasons/(${UUID})/active$`).exec(
+    path,
+  );
+  if (rejectionReasonActiveMatch && method === "PUT") {
+    return await setRejectionReasonActive(
+      client,
+      requireActor(actor),
+      rejectionReasonActiveMatch[1]!,
+      body,
+    );
+  }
+
+  if (method === "GET" && path === "/api/master-data/document-rules") {
+    return await listDocumentRequirementRules(client, requireActor(actor));
+  }
+  const documentRuleMatch = new RegExp(`^/api/master-data/document-rules/(${UUID})$`).exec(path);
+  if (documentRuleMatch && method === "PUT") {
+    return await updateDocumentRequirementRule(client, requireActor(actor), documentRuleMatch[1]!, body);
+  }
+  const documentRuleActiveMatch = new RegExp(`^/api/master-data/document-rules/(${UUID})/active$`).exec(
+    path,
+  );
+  if (documentRuleActiveMatch && method === "PUT") {
+    return await setDocumentRequirementRuleActive(
+      client,
+      requireActor(actor),
+      documentRuleActiveMatch[1]!,
+      body,
+    );
+  }
+
+  if (method === "GET" && path === "/api/master-data/thresholds") {
+    return await listThresholds(client, requireActor(actor));
+  }
+  const thresholdMatch = /^\/api\/master-data\/thresholds\/([\w.]+)$/.exec(path);
+  if (thresholdMatch && method === "PUT") {
+    return await updateThreshold(client, requireActor(actor), decodeURIComponent(thresholdMatch[1]!), body);
   }
 
   // ── Customers ─────────────────────────────────────────────────────────────

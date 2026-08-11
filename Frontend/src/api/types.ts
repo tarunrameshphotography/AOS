@@ -165,6 +165,78 @@ export interface ApiReference {
   readonly referralSources: readonly ApiReferralSource[];
 }
 
+// ---------------------------------------------------------------------------
+// Master data (Stage 4 Item 4) — mirrors Backend/master-data.ts
+// ---------------------------------------------------------------------------
+
+export type DocumentCategory =
+  | "kyc"
+  | "business_registration"
+  | "business_financials"
+  | "income"
+  | "property"
+  | "additional";
+
+export interface ApiDocumentType {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly localName?: string;
+  readonly description?: string;
+  readonly examples?: readonly string[];
+  readonly category?: DocumentCategory;
+  readonly ownerKind: "person" | "property" | "organisation" | "case";
+  readonly requiresPeriod: boolean;
+  readonly requiresExpiry: boolean;
+  readonly periodKind?: "financial_year" | "assessment_year";
+  readonly isActive: boolean;
+  readonly displayOrder: number;
+}
+
+export interface ApiRejectionReason {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly isActive: boolean;
+  readonly displayOrder: number;
+}
+
+export interface ApiRuleCondition {
+  readonly fact: string;
+  readonly operator: string;
+  readonly values?: readonly string[];
+}
+
+export interface ApiDocumentRequirementRule {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly documentTypeCode: string;
+  readonly scope: "case" | "party" | "property";
+  readonly partyRoles?: readonly string[];
+  readonly partyKind?: "person" | "organisation";
+  readonly propertyRoles?: readonly string[];
+  readonly applicability: "mandatory" | "optional" | "not_applicable";
+  readonly applicableFromStage: CaseStage;
+  readonly financialYears?: number;
+  readonly conditions: readonly ApiRuleCondition[];
+  readonly match: "all" | "any";
+  readonly isActive: boolean;
+  readonly displayOrder: number;
+  readonly notes?: string;
+}
+
+/** From `@domain/settings/thresholds.ts` — the key set is a closed enum
+ * fixed in code; only `valueDays` is business-editable through the API. */
+export interface ApiThreshold {
+  readonly key: string;
+  readonly valueDays: number;
+  readonly description?: string;
+  readonly updatedBy?: string;
+  readonly updatedAt?: string;
+}
+
 export interface ApiUser {
   readonly id: string;
   readonly username: string;

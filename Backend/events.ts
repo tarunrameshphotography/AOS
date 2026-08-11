@@ -336,3 +336,68 @@ export async function recordSubmissionEvent(client: Queryable, event: Submission
     ],
   );
 }
+
+// ---------------------------------------------------------------------------
+// Master data (Stage 4 Item 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Event types for the four master-data tables this stage puts a write path
+ * on. Named after the table and the same verbs `Frontend/src/fake/store.ts`
+ * used for its own (localStorage-only) audit trail — `created`/`updated`,
+ * `activated`/`deactivated` — for the same reason `recordCaseEvent`'s header
+ * gives: two systems describing the same fact should not need two names for
+ * it.
+ *
+ * NO CASE ID. Master data has no owning case — it is read by every case, not
+ * written by one — so unlike `recordCaseEvent`/`recordDocumentEvent` this
+ * never sets `case_id`.
+ */
+export type MasterDataEventType =
+  | "document_type.updated"
+  | "document_type.activated"
+  | "document_type.deactivated"
+  | "rejection_reason.updated"
+  | "rejection_reason.activated"
+  | "rejection_reason.deactivated"
+  | "requirement_rule.updated"
+  | "requirement_rule.activated"
+  | "requirement_rule.deactivated"
+  | "threshold.updated";
+
+export interface MasterDataEvent {
+  readonly actorUserId: string;
+  readonly entityType: "document_type" | "rejection_reason" | "document_requirement_rule" | "operational_threshold";
+  /** Null for a threshold: `operational_threshold`'s key is a code, not the
+   * uuid `event.entity_id` expects — the key travels in the payload instead. */
+  readonly entityId: string | null;
+  readonly eventType: MasterDataEventType;
+  readonly payloadBefore?: Record<string, unknown> | null;
+  readonly payloadAfter?: Record<string, unknown> | null;
+}
+
+/**
+ * Record one change to master data — a document type, a rejection reason, a
+ * document-requirement rule, or an operational threshold.
+ *
+ * WHAT MAY GO IN THE PAYLOAD: none of these four tables carry personal data
+ * (BR-051's concern for `recordCustomerEvent`/`recordCaseEvent` does not
+ * apply here), so the payload may carry the actual field values, not just
+ * their names — "why did the KYC checklist change" is best answered by
+ * showing what changed.
+ */
+export async function recordMasterDataEvent(client: Queryable, event: MasterDataEvent): Promise<void> {
+  await client.query(
+    `insert into event (actor_kind, actor_user_id, entity_type, entity_id,
+                        event_type, payload_before, payload_after, source)
+     values ('user', $1, $2, $3, $4, $5, $6, 'ui')`,
+    [
+      event.actorUserId,
+      event.entityType,
+      event.entityId,
+      event.eventType,
+      event.payloadBefore == null ? null : JSON.stringify(event.payloadBefore),
+      event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
+    ],
+  );
+}

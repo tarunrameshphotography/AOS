@@ -48,20 +48,20 @@ import {
   type DocumentCategory,
 } from "@domain/requirements/document-catalogue.js";
 
+import { api } from "../api/client.js";
+import { useMutation } from "../api/hooks.js";
+import { useDocumentTypes, useRejectionReasons, useThresholds } from "../api/master-data.js";
+import type { ApiDocumentType, ApiRejectionReason, ApiThreshold } from "../api/types.js";
 import {
   createMasterDataRecord,
   MASTER_DATA_LABELS,
-  setDocumentTypeActive,
   setMasterDataActive,
-  setRejectionReasonActive,
-  updateDocumentTypeDetails,
   updateMasterDataRecord,
-  updateRejectionReasonDetails,
   type MasterDataInput,
   type MasterDataKind,
 } from "../fake/store.js";
 import { useDatabase } from "../fake/useDatabase.js";
-import type { DocumentType, Id, MasterDataRecord, RejectionReason } from "../fake/types.js";
+import type { Id, MasterDataRecord } from "../fake/types.js";
 import { useSession } from "../session.js";
 import {
   Badge,
@@ -116,7 +116,14 @@ interface RejectionReasonSection {
   category: MasterDataCategory;
 }
 
-type Section = SimpleSection | DocumentTypeSection | RejectionReasonSection;
+interface ThresholdSection {
+  kind: "threshold";
+  label: string;
+  hint: string;
+  category: MasterDataCategory;
+}
+
+type Section = SimpleSection | DocumentTypeSection | RejectionReasonSection | ThresholdSection;
 
 const SECTIONS: Section[] = [
   // System — rarely changes, administrator-level reference data.
@@ -126,6 +133,7 @@ const SECTIONS: Section[] = [
   { kind: "simple", key: "propertyTypes", label: "Property Types", hint: "Apartment, independent house, plot, villa, commercial, agricultural.", category: "system" },
   { kind: "simple", key: "propertyOwnershipTypes", label: "Property Ownership Types", hint: "How title is held — freehold, leasehold, ancestral, power of attorney.", category: "system" },
   { kind: "rejectionReason", label: "Rejection Reasons", hint: "Amaze's standardised categories for why a bank declined a case (ADR-028).", category: "system" },
+  { kind: "threshold", label: "Thresholds", hint: "How many days a case may sit before it needs attention (ADR-025). The set of thresholds is fixed in code; only the values are editable here.", category: "system" },
   { kind: "simple", key: "districts", label: "Districts", hint: "Districts Amaze operates in or lends against.", category: "system" },
   { kind: "simple", key: "cities", label: "Cities", hint: "Cities Amaze operates in or lends against, each within a district.", category: "system" },
   { kind: "simple", key: "requirementApplicabilities", label: "Requirement Applicability", hint: "Mandatory, optional, not applicable. Used wherever a product says how strongly it needs something.", category: "system" },
@@ -202,10 +210,10 @@ export function MasterData(): ReactNode {
       <div className="space-y-2">
         <h1 className="text-xl font-semibold tracking-tight">Master Data</h1>
         <p className="mt-1 text-sm text-ink-500">
-          A preview of AOS's operational vocabulary.
+          AOS's operational vocabulary.
           {!canManage && " This user can view but not edit — hold master_data.manage to change values."}
         </p>
-        <NotConnectedBanner />
+        {section?.kind === "simple" && <NotConnectedBanner />}
       </div>
 
       <div className="flex gap-1 border-b border-ink-200">
@@ -271,10 +279,13 @@ export function MasterData(): ReactNode {
           <SimpleMasterDataSection section={section} db={db} canManage={canManage} />
         )}
         {section?.kind === "documentType" && (
-          <DocumentTypeSectionView section={section} db={db} canManage={canManage} />
+          <DocumentTypeSectionView section={section} canManage={canManage} />
         )}
         {section?.kind === "rejectionReason" && (
-          <RejectionReasonSectionView section={section} db={db} canManage={canManage} />
+          <RejectionReasonSectionView section={section} canManage={canManage} />
+        )}
+        {section?.kind === "threshold" && (
+          <ThresholdSectionView section={section} canManage={canManage} />
         )}
         {!section && (
           <Card title={CATEGORY_LABELS[categoryKey]} subtitle={CATEGORY_HINTS[categoryKey]}>
@@ -565,18 +576,17 @@ function MasterDataForm({
 
 function DocumentTypeSectionView({
   section,
-  db,
   canManage,
 }: {
   section: DocumentTypeSection;
-  db: ReturnType<typeof useDatabase>;
   canManage: boolean;
 }): ReactNode {
-  const session = useSession();
   const toast = useToast();
-  const [editing, setEditing] = useState<DocumentType | null>(null);
+  const mutation = useMutation();
+  const [editing, setEditing] = useState<ApiDocumentType | null>(null);
 
-  const records = db.documentTypes.slice().sort((a, b) => a.displayOrder - b.displayOrder);
+  const typesQuery = useDocumentTypes();
+  const records = typesQuery.documentTypes.slice().sort((a, b) => a.displayOrder - b.displayOrder);
   const [query, setQuery, filtered] = useSearch(records);
 
   return (
@@ -584,7 +594,9 @@ function DocumentTypeSectionView({
       <div className="space-y-3">
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search document types…" />
 
-        {filtered.length === 0 ? (
+        {typesQuery.loading ? (
+          <Empty>Loading…</Empty>
+        ) : filtered.length === 0 ? (
           <Empty>Nothing matches.</Empty>
         ) : (
           <ul className="divide-y divide-ink-100">
@@ -621,14 +633,20 @@ function DocumentTypeSectionView({
                     <Button onClick={() => setEditing(type)}>Edit</Button>
                     <Button
                       variant={type.isActive ? "secondary" : "primary"}
-                      onClick={() => {
-                        const result = setDocumentTypeActive(type.id, !type.isActive, session.user.id);
-                        toast.show(
-                          result.ok
-                            ? `${type.name} ${type.isActive ? "deactivated" : "reactivated"}.`
-                            : (result.message ?? "Could not update."),
-                          result.ok ? "good" : "bad",
+                      disabled={mutation.pending}
+                      onClick={async () => {
+                        const result = await mutation.run(() =>
+                          api(`/master-data/document-types/${type.id}/active`, {
+                            method: "PUT",
+                            body: { isActive: !type.isActive },
+                          }),
                         );
+                        if (result === undefined) {
+                          toast.show(mutation.error ?? "Could not update.", "bad");
+                          return;
+                        }
+                        toast.show(`${type.name} ${type.isActive ? "deactivated" : "reactivated"}.`);
+                        typesQuery.refetch();
                       }}
                     >
                       {type.isActive ? "Deactivate" : "Reactivate"}
@@ -645,13 +663,17 @@ function DocumentTypeSectionView({
         <DocumentTypeModal
           type={editing}
           onClose={() => setEditing(null)}
-          onSubmit={(patch) => {
-            const result = updateDocumentTypeDetails(editing.id, patch, session.user.id);
-            if (result.ok) setEditing(null);
-            toast.show(
-              result.ok ? "Document type updated." : (result.message ?? "Could not update."),
-              result.ok ? "good" : "bad",
+          onSubmit={async (patch) => {
+            const result = await mutation.run(() =>
+              api(`/master-data/document-types/${editing.id}`, { method: "PUT", body: patch }),
             );
+            if (result === undefined) {
+              toast.show(mutation.error ?? "Could not update.", "bad");
+              return;
+            }
+            setEditing(null);
+            toast.show("Document type updated.");
+            typesQuery.refetch();
           }}
         />
       )}
@@ -674,7 +696,7 @@ function DocumentTypeModal({
   onClose,
   onSubmit,
 }: {
-  type: DocumentType;
+  type: ApiDocumentType;
   onClose: () => void;
   onSubmit: (patch: {
     name: string;
@@ -763,18 +785,17 @@ function DocumentTypeModal({
 
 function RejectionReasonSectionView({
   section,
-  db,
   canManage,
 }: {
   section: RejectionReasonSection;
-  db: ReturnType<typeof useDatabase>;
   canManage: boolean;
 }): ReactNode {
-  const session = useSession();
   const toast = useToast();
-  const [editing, setEditing] = useState<RejectionReason | null>(null);
+  const mutation = useMutation();
+  const [editing, setEditing] = useState<ApiRejectionReason | null>(null);
 
-  const records = db.rejectionReasons.slice().sort((a, b) => a.displayOrder - b.displayOrder);
+  const reasonsQuery = useRejectionReasons();
+  const records = reasonsQuery.rejectionReasons.slice().sort((a, b) => a.displayOrder - b.displayOrder);
   const [query, setQuery, filtered] = useSearch(records);
 
   return (
@@ -782,7 +803,9 @@ function RejectionReasonSectionView({
       <div className="space-y-3">
         <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search rejection reasons…" />
 
-        {filtered.length === 0 ? (
+        {reasonsQuery.loading ? (
+          <Empty>Loading…</Empty>
+        ) : filtered.length === 0 ? (
           <Empty>Nothing matches.</Empty>
         ) : (
           <ul className="divide-y divide-ink-100">
@@ -803,18 +826,20 @@ function RejectionReasonSectionView({
                     <Button onClick={() => setEditing(reason)}>Edit</Button>
                     <Button
                       variant={reason.isActive ? "secondary" : "primary"}
-                      onClick={() => {
-                        const result = setRejectionReasonActive(
-                          reason.id,
-                          !reason.isActive,
-                          session.user.id,
+                      disabled={mutation.pending}
+                      onClick={async () => {
+                        const result = await mutation.run(() =>
+                          api(`/master-data/rejection-reasons/${reason.id}/active`, {
+                            method: "PUT",
+                            body: { isActive: !reason.isActive },
+                          }),
                         );
-                        toast.show(
-                          result.ok
-                            ? `${reason.name} ${reason.isActive ? "deactivated" : "reactivated"}.`
-                            : (result.message ?? "Could not update."),
-                          result.ok ? "good" : "bad",
-                        );
+                        if (result === undefined) {
+                          toast.show(mutation.error ?? "Could not update.", "bad");
+                          return;
+                        }
+                        toast.show(`${reason.name} ${reason.isActive ? "deactivated" : "reactivated"}.`);
+                        reasonsQuery.refetch();
                       }}
                     >
                       {reason.isActive ? "Deactivate" : "Reactivate"}
@@ -833,13 +858,17 @@ function RejectionReasonSectionView({
           name={editing.name}
           description={editing.description ?? ""}
           onClose={() => setEditing(null)}
-          onSubmit={(patch) => {
-            const result = updateRejectionReasonDetails(editing.id, patch, session.user.id);
-            if (result.ok) setEditing(null);
-            toast.show(
-              result.ok ? "Rejection reason updated." : (result.message ?? "Could not update."),
-              result.ok ? "good" : "bad",
+          onSubmit={async (patch) => {
+            const result = await mutation.run(() =>
+              api(`/master-data/rejection-reasons/${editing.id}`, { method: "PUT", body: patch }),
             );
+            if (result === undefined) {
+              toast.show(mutation.error ?? "Could not update.", "bad");
+              return;
+            }
+            setEditing(null);
+            toast.show("Rejection reason updated.");
+            reasonsQuery.refetch();
           }}
         />
       )}
@@ -884,5 +913,103 @@ function NameDescriptionModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Thresholds (ADR-025) — the tunable day-counts. The key set is a closed
+// enum fixed in @domain/settings/thresholds.ts; only the value is edited
+// here, one row at a time, since there is nothing to search or add.
+// ---------------------------------------------------------------------------
+
+function ThresholdSectionView({
+  section,
+  canManage,
+}: {
+  section: ThresholdSection;
+  canManage: boolean;
+}): ReactNode {
+  const toast = useToast();
+  const mutation = useMutation();
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draftValue, setDraftValue] = useState("");
+
+  const thresholdsQuery = useThresholds();
+  const thresholds = thresholdsQuery.thresholds.slice().sort((a, b) => a.key.localeCompare(b.key));
+
+  return (
+    <Card title="Thresholds" subtitle={section.hint}>
+      {thresholdsQuery.loading ? (
+        <Empty>Loading…</Empty>
+      ) : thresholds.length === 0 ? (
+        <Empty>No thresholds configured.</Empty>
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {thresholds.map((threshold: ApiThreshold) => (
+            <li key={threshold.key} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">{threshold.description ?? threshold.key}</p>
+                <p className="tnum text-xs text-ink-500">{threshold.key}</p>
+              </div>
+              {editingKey === threshold.key ? (
+                <div className="flex shrink-0 items-center gap-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    value={draftValue}
+                    onChange={(event) => setDraftValue(event.target.value)}
+                    className="w-20"
+                  />
+                  <span className="text-xs text-ink-500">days</span>
+                  <Button
+                    variant="primary"
+                    disabled={mutation.pending}
+                    onClick={async () => {
+                      const valueDays = Number(draftValue);
+                      if (!Number.isInteger(valueDays) || valueDays <= 0) {
+                        toast.show("Enter a positive whole number of days.", "bad");
+                        return;
+                      }
+                      const result = await mutation.run(() =>
+                        api(`/master-data/thresholds/${encodeURIComponent(threshold.key)}`, {
+                          method: "PUT",
+                          body: { valueDays },
+                        }),
+                      );
+                      if (result === undefined) {
+                        toast.show(mutation.error ?? "Could not update.", "bad");
+                        return;
+                      }
+                      toast.show("Threshold updated.");
+                      setEditingKey(null);
+                      thresholdsQuery.refetch();
+                    }}
+                  >
+                    Save
+                  </Button>
+                  <Button variant="ghost" onClick={() => setEditingKey(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="tnum text-sm font-medium">{threshold.valueDays} days</span>
+                  {canManage && (
+                    <Button
+                      onClick={() => {
+                        setEditingKey(threshold.key);
+                        setDraftValue(String(threshold.valueDays));
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }

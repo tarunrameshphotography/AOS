@@ -32,14 +32,11 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CASE_STAGE_LABELS, CASE_STAGE_PROGRESSION } from "@domain/case/stages.js";
 import type { ProgressionStage } from "@domain/case/stages.js";
 import type { ApplicabilityCode } from "@domain/products/index.js";
-import type { RuleCondition } from "@domain/requirements/rules.js";
 
-import {
-  setDocumentRequirementRuleActive,
-  updateDocumentRequirementRule,
-} from "../fake/store.js";
-import { useDatabase } from "../fake/useDatabase.js";
-import type { DocumentRequirementRule } from "../fake/types.js";
+import { api } from "../api/client.js";
+import { useMutation } from "../api/hooks.js";
+import { useDocumentRequirementRules, useDocumentTypes } from "../api/master-data.js";
+import type { ApiDocumentRequirementRule, ApiRuleCondition } from "../api/types.js";
 import { titleCase } from "../lib.js";
 import { useSession } from "../session.js";
 import {
@@ -50,7 +47,6 @@ import {
   Field,
   Input,
   Modal,
-  NotConnectedBanner,
   Select,
   Textarea,
   useToast,
@@ -105,7 +101,7 @@ const OPERATOR_LABELS: Record<string, string> = {
   lte: "is at most",
 };
 
-function describeCondition(condition: RuleCondition): string {
+function describeCondition(condition: ApiRuleCondition): string {
   const fact = FACT_LABELS[condition.fact] ?? condition.fact;
   const operator = OPERATOR_LABELS[condition.operator] ?? condition.operator;
   const values = (condition.values ?? []).map((value) => titleCase(String(value))).join(", ");
@@ -113,11 +109,13 @@ function describeCondition(condition: RuleCondition): string {
 }
 
 export function DocumentRules(): ReactNode {
-  const db = useDatabase();
   const session = useSession();
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(false);
-  const [editing, setEditing] = useState<DocumentRequirementRule | null>(null);
+  const [editing, setEditing] = useState<ApiDocumentRequirementRule | null>(null);
+
+  const rulesQuery = useDocumentRequirementRules();
+  const typesQuery = useDocumentTypes();
 
   if (!session.can("master_data.read", "all")) {
     return (
@@ -135,16 +133,16 @@ export function DocumentRules(): ReactNode {
 
   const rules = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return db.documentRequirementRules
+    return rulesQuery.rules
       .filter((rule) => showInactive || rule.isActive)
       .filter((rule) => {
         if (!q) return true;
-        const documentType = db.documentTypes.find((t) => t.code === rule.documentTypeCode);
+        const documentTypeName = typesQuery.nameForCode(rule.documentTypeCode);
         const haystack = [
           rule.name,
           rule.code,
           rule.documentTypeCode,
-          documentType?.name ?? "",
+          documentTypeName,
           rule.notes ?? "",
           ...rule.conditions.map(describeCondition),
         ]
@@ -153,17 +151,15 @@ export function DocumentRules(): ReactNode {
         return q.split(/\s+/).every((word) => haystack.includes(word));
       })
       .sort((a, b) => a.displayOrder - b.displayOrder);
-  }, [db.documentRequirementRules, db.documentTypes, query, showInactive]);
+  }, [rulesQuery.rules, typesQuery, query, showInactive]);
 
-  const active = db.documentRequirementRules.filter((rule) => rule.isActive).length;
+  const active = rulesQuery.rules.filter((rule) => rule.isActive).length;
 
   return (
     <div className="space-y-6">
-      <NotConnectedBanner />
-
       <Card
         title="Document rules"
-        subtitle={`${active} rules in service (in this browser only — see the notice above).`}
+        subtitle={`${active} rules in service — reads and writes AOS's office database.`}
       >
         <div className="flex flex-wrap items-center gap-3">
           <input
@@ -183,9 +179,9 @@ export function DocumentRules(): ReactNode {
         </div>
 
         <p className="mt-3 text-xs text-ink-500">
-          This previews the shape a document-rules screen will have once it reads from the office
-          database. Real case checklists are generated server-side (<code>Backend/requirements.ts</code>)
-          from rules seeded by migration, not from anything edited here.
+          Real case checklists are generated server-side (<code>Backend/requirements.ts</code>) from
+          exactly these rules — a change saved here takes effect the next time a case's checklist is
+          computed.
         </p>
       </Card>
 
@@ -195,7 +191,7 @@ export function DocumentRules(): ReactNode {
         ) : (
           <ul className="divide-y divide-ink-100">
             {rules.map((rule) => {
-              const documentType = db.documentTypes.find((t) => t.code === rule.documentTypeCode);
+              const documentTypeName = typesQuery.nameForCode(rule.documentTypeCode);
               return (
                 <li key={rule.id} className="py-3 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -216,7 +212,7 @@ export function DocumentRules(): ReactNode {
                       </div>
 
                       <p className="mt-0.5 text-xs text-ink-500">
-                        Asks for <strong className="font-medium">{documentType?.name ?? rule.documentTypeCode}</strong>
+                        Asks for <strong className="font-medium">{documentTypeName}</strong>
                         {rule.partyRoles && rule.partyRoles.length > 0 && (
                           <> · of the {rule.partyRoles.map((role) => titleCase(role)).join(", ")}</>
                         )}
@@ -247,7 +243,7 @@ export function DocumentRules(): ReactNode {
                     {canEdit && (
                       <div className="flex shrink-0 gap-1.5">
                         <Button onClick={() => setEditing(rule)}>Edit</Button>
-                        <ToggleButton rule={rule} />
+                        <ToggleButton rule={rule} onSaved={rulesQuery.refetch} />
                       </div>
                     )}
                   </div>
@@ -258,28 +254,42 @@ export function DocumentRules(): ReactNode {
         )}
       </Card>
 
-      <EditRuleDialog rule={editing} onClose={() => setEditing(null)} />
+      <EditRuleDialog rule={editing} onClose={() => setEditing(null)} onSaved={rulesQuery.refetch} />
     </div>
   );
 }
 
-function ToggleButton({ rule }: { rule: DocumentRequirementRule }): ReactNode {
-  const session = useSession();
+function ToggleButton({
+  rule,
+  onSaved,
+}: {
+  rule: ApiDocumentRequirementRule;
+  onSaved: () => void;
+}): ReactNode {
   const toast = useToast();
+  const mutation = useMutation();
 
   return (
     <Button
       variant="ghost"
-      onClick={() => {
-        const result = setDocumentRequirementRuleActive(rule.id, !rule.isActive, session.user.id);
-        toast.show(
-          result.ok
-            ? rule.isActive
-              ? `${rule.name} taken out of service. Nothing already collected under it is lost.`
-              : `${rule.name} returned to service.`
-            : (result.message ?? ""),
-          result.ok ? "good" : "bad",
+      disabled={mutation.pending}
+      onClick={async () => {
+        const result = await mutation.run(() =>
+          api(`/master-data/document-rules/${rule.id}/active`, {
+            method: "PUT",
+            body: { isActive: !rule.isActive },
+          }),
         );
+        if (result === undefined) {
+          toast.show(mutation.error ?? "Could not update.", "bad");
+          return;
+        }
+        toast.show(
+          rule.isActive
+            ? `${rule.name} taken out of service. Nothing already collected under it is lost.`
+            : `${rule.name} returned to service.`,
+        );
+        onSaved();
       }}
     >
       {rule.isActive ? "Take out of service" : "Return to service"}
@@ -290,12 +300,14 @@ function ToggleButton({ rule }: { rule: DocumentRequirementRule }): ReactNode {
 function EditRuleDialog({
   rule,
   onClose,
+  onSaved,
 }: {
-  rule: DocumentRequirementRule | null;
+  rule: ApiDocumentRequirementRule | null;
   onClose: () => void;
+  onSaved: () => void;
 }): ReactNode {
-  const session = useSession();
   const toast = useToast();
+  const mutation = useMutation();
 
   const [name, setName] = useState("");
   const [applicability, setApplicability] = useState<ApplicabilityCode>("mandatory");
@@ -398,24 +410,27 @@ function EditRuleDialog({
           </Button>
           <Button
             variant="primary"
-            onClick={() => {
+            disabled={mutation.pending}
+            onClick={async () => {
               const parsed = Number(years);
-              const result = updateDocumentRequirementRule(
-                rule.id,
-                {
-                  name,
-                  applicability,
-                  applicableFromStage: stage,
-                  financialYears: years && parsed > 0 ? parsed : undefined,
-                  notes,
-                },
-                session.user.id,
+              const result = await mutation.run(() =>
+                api(`/master-data/document-rules/${rule.id}`, {
+                  method: "PUT",
+                  body: {
+                    name,
+                    applicability,
+                    applicableFromStage: stage,
+                    financialYears: years && parsed > 0 ? parsed : undefined,
+                    notes,
+                  },
+                }),
               );
-              if (!result.ok) {
-                toast.show(result.message ?? "", "bad");
+              if (result === undefined) {
+                toast.show(mutation.error ?? "Could not save.", "bad");
                 return;
               }
               toast.show("Rule saved. Open cases pick it up when they next change.");
+              onSaved();
               onClose();
             }}
           >

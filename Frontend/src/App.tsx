@@ -343,10 +343,13 @@ function WorkspaceTabs(): ReactNode {
  * (Employee Authentication milestone): the normal way to become someone else
  * is for that person to sign in themselves, not to pick their name from a
  * menu. "Clear local preview data" stays — it wipes the still-local
- * Products/Lenders/Document Rules/Master Data screens back to their seed, a
- * dev/QA convenience unrelated to identity, gated on master_data.manage
- * (nobody without a reason to see those screens sees this either), and
- * worded to say plainly that it does not touch anything on the server.
+ * Products/Lenders screens and Master Data's remaining local sections back to
+ * their seed, a dev/QA convenience unrelated to identity, gated on
+ * master_data.manage (nobody without a reason to see those screens sees this
+ * either), and worded to say plainly that it does not touch anything on the
+ * server. IT NO LONGER TOUCHES Document Rules, Document Types, Rejection
+ * Reasons or Thresholds — those save to the office database as of Stage 4
+ * Item 4, so clearing this browser's localStorage has no effect on them.
  */
 function IdentityMenu(): ReactNode {
   const session = useSession();
@@ -403,10 +406,11 @@ function IdentityMenu(): ReactNode {
               onClick={() => {
                 if (
                   confirm(
-                    "Clear this browser's local copy of Products, Lenders, Document Rules and " +
-                      "Master Data back to their starting values?\n\n" +
+                    "Clear this browser's local copy of Products, Lenders and the remaining " +
+                      "preview sections of Master Data back to their starting values?\n\n" +
                       "This does NOT reset AOS. It has no effect on real cases, customers, " +
-                      "documents or users — those live on the office server. It only clears the " +
+                      "documents, users, document rules, document types, rejection reasons or " +
+                      "thresholds — those live on the office server. It only clears the " +
                       "not-yet-connected preview screens, in this browser only.",
                   )
                 ) {
@@ -430,9 +434,10 @@ function PrototypeFooter(): ReactNode {
     <footer className="border-t border-ink-200 bg-white">
       <div className="mx-auto w-full max-w-7xl px-4 py-3">
         <p className="text-xs text-ink-500">
-          Cases, customers, users, documents and requirements are saved on the office server —
-          shared by every PC, and safe across a refresh. Products, Lenders, Document Rules and
-          Master Data are still local to this browser, pending their own migration. Stages,
+          Cases, customers, users, documents, requirements, document rules, document types,
+          rejection reasons and thresholds are saved on the office server — shared by every PC,
+          and safe across a refresh. Products, Lenders and the rest of Master Data's fixed
+          vocabulary are still local to this browser, pending their own migration. Stages,
           transitions, progress and permissions all run the real domain layer from{" "}
           <code>src/domain/</code>; if something is refused here, it is refused for the same
           reason in every other screen.

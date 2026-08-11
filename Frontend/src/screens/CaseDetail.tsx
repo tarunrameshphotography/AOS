@@ -37,7 +37,7 @@
  * refusals coming from where they are actually enforced.
  */
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
@@ -65,6 +65,7 @@ import type { ApiCase, ApiCaseRequirements, ApiRequirement } from "../api/types.
 import { bytes, exactly, lakhs, money, when } from "../lib.js";
 import { useSession } from "../session.js";
 import { BanksTab } from "./BanksTab.js";
+import { documentPreviewMode, previewFallbackMessage } from "./document-preview.js";
 import {
   CASE_TABS,
   CASE_TAB_LABELS,
@@ -955,13 +956,21 @@ function RequirementRow({
   const upload = useMutation();
   const decision = useMutation();
   const toast = useToast();
-  const [rejectOpen, setRejectOpen] = useState(false);
+  // One at a time. Nesting a reject form inside the verify dialog would put two
+  // `role="dialog"` overlays on screen at once, each claiming the same heading
+  // id — so choosing "No" closes the verify dialog and opens the reject one.
+  const [dialog, setDialog] = useState<"view" | "verify" | "reject" | null>(null);
 
   const label = documentRowLabel(
     definition?.name ?? requirement.documentTypeCode,
     periodLabelFor(requirement),
     definition?.periodKind,
   );
+
+  /** The document type's own name, without the financial-year suffix — what a
+   * dialog is titled with, so "PAN Card" and "Verify: PAN Card" name the same
+   * thing the row does. */
+  const typeName = definition?.name ?? requirement.documentTypeCode;
 
   const canReupload = requirement.status === "pending" || requirement.status === "rejected";
 
@@ -1002,24 +1011,11 @@ function RequirementRow({
         <Badge tone={statusTone(requirement.status)}>{REQUIREMENT_STATUS_LABELS[requirement.status]}</Badge>
 
         {requirement.document && (
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              try {
-                const { blob, fileName } = await apiDownload(
-                  `/documents/${requirement.document!.id}/download`,
-                );
-                const url = URL.createObjectURL(blob);
-                const anchor = document.createElement("a");
-                anchor.href = url;
-                anchor.download = fileName;
-                anchor.click();
-                URL.revokeObjectURL(url);
-              } catch {
-                toast.show("Could not download this document.");
-              }
-            }}
-          >
+          // "View" shows the document. It used to fetch the bytes and then
+          // force a save through a synthetic `<a download>`, which overrode the
+          // `Content-Disposition: inline` the server already sends — the login
+          // desk could not read a PAN card without first cluttering Downloads.
+          <Button variant="ghost" onClick={() => setDialog("view")}>
             View
           </Button>
         )}
@@ -1057,35 +1053,58 @@ function RequirementRow({
 
         {mayVerify && requirement.status === "received" && (
           <>
-            <Button
-              variant="primary"
-              disabled={decision.pending}
-              onClick={async () => {
-                const result = await decision.run(() =>
-                  api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/decision`, {
-                    method: "PUT",
-                    body: { decision: "verified" },
-                  }),
-                );
-                if (result) {
-                  toast.show(`${label} verified.`);
-                  onChanged();
-                }
-              }}
-            >
+            {/* Verification is a person's judgement about a document, so it
+                cannot be a single click on a row: this button OPENS the
+                document. The decision is only sent from inside that dialog,
+                after the document has actually been on screen. */}
+            <Button variant="primary" disabled={decision.pending} onClick={() => setDialog("verify")}>
               Verify
             </Button>
-            <Button variant="ghost" disabled={decision.pending} onClick={() => setRejectOpen(true)}>
+            <Button variant="ghost" disabled={decision.pending} onClick={() => setDialog("reject")}>
               Reject
             </Button>
           </>
         )}
       </div>
 
-      {rejectOpen && (
+      {dialog === "view" && requirement.document && (
+        <ViewDocumentDialog
+          title={typeName}
+          documentId={requirement.document.id}
+          fileName={requirement.document.fileName}
+          onClose={() => setDialog(null)}
+        />
+      )}
+
+      {dialog === "verify" && requirement.document && (
+        <VerifyDocumentDialog
+          title={`Verify: ${typeName}`}
+          documentId={requirement.document.id}
+          fileName={requirement.document.fileName}
+          pending={decision.pending}
+          error={decision.error}
+          onClose={() => setDialog(null)}
+          onReject={() => setDialog("reject")}
+          onConfirm={async () => {
+            const result = await decision.run(() =>
+              api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/decision`, {
+                method: "PUT",
+                body: { decision: "verified" },
+              }),
+            );
+            if (result) {
+              toast.show(`${label} verified.`);
+              setDialog(null);
+              onChanged();
+            }
+          }}
+        />
+      )}
+
+      {dialog === "reject" && (
         <RejectModal
           label={label}
-          onClose={() => setRejectOpen(false)}
+          onClose={() => setDialog(null)}
           onSubmit={async (reason) => {
             const result = await decision.run(() =>
               api<ApiRequirement>(`/cases/${caseId}/requirements/${requirement.id}/decision`, {
@@ -1095,7 +1114,7 @@ function RequirementRow({
             );
             if (result) {
               toast.show(`${label} rejected.`);
-              setRejectOpen(false);
+              setDialog(null);
               onChanged();
             }
           }}
@@ -1104,6 +1123,212 @@ function RequirementRow({
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Seeing the document
+// ---------------------------------------------------------------------------
+
+/**
+ * A document's bytes, on screen.
+ *
+ * The bytes are fetched with the session's bearer token (the storage route is
+ * not public, and an `<img src>` cannot carry an Authorization header), turned
+ * into an object URL, and handed to whichever element can render that type.
+ * The URL is revoked when the dialog closes — an object URL that outlives its
+ * dialog keeps the whole file alive in memory for as long as the tab is open,
+ * and a login executive works through dozens of these in a morning.
+ */
+function DocumentPreview({
+  documentId,
+  fileName,
+}: {
+  documentId: string;
+  fileName: string | null;
+}): ReactNode {
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "error"; message: string }
+    | { status: "ready"; url: string; mimeType: string; name: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    setState({ status: "loading" });
+    apiDownload(`/documents/${documentId}/download`)
+      .then(({ blob, fileName: served }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setState({
+          status: "ready",
+          url: objectUrl,
+          mimeType: blob.type,
+          name: fileName ?? served,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setState({
+          status: "error",
+          message: "This document could not be loaded. It may have been removed from storage.",
+        });
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [documentId, fileName]);
+
+  if (state.status === "loading") {
+    return (
+      <div className="flex h-64 items-center justify-center rounded-md bg-ink-50 text-sm text-ink-500">
+        Loading document…
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+        {state.message}
+      </p>
+    );
+  }
+
+  const mode = documentPreviewMode(state.mimeType, state.name);
+
+  return (
+    <div className="space-y-2">
+      {mode === "image" && (
+        <img
+          src={state.url}
+          alt={state.name}
+          className="max-h-[60vh] w-full rounded-md bg-ink-50 object-contain"
+        />
+      )}
+
+      {mode === "pdf" && (
+        // The browser's own PDF viewer. No PDF.js: shipping a renderer to read
+        // a PAN card is a large dependency to solve a problem Chrome and Edge
+        // already solve, and the office runs both.
+        <iframe
+          src={state.url}
+          title={state.name}
+          className="h-[60vh] w-full rounded-md border border-ink-200 bg-ink-50"
+        />
+      )}
+
+      {mode === "download_only" && (
+        <div className="space-y-2 rounded-md bg-ink-50 px-3 py-4">
+          <p className="text-sm text-ink-700">{previewFallbackMessage(state.name)}</p>
+          {/* A real link, not a scripted click: this is the one place a save is
+              what was actually asked for. */}
+          <a
+            href={state.url}
+            download={state.name}
+            className="inline-block text-sm text-brand-600 hover:underline"
+          >
+            Download {state.name}
+          </a>
+        </div>
+      )}
+
+      <p className="tnum text-xs text-ink-500">{state.name}</p>
+    </div>
+  );
+}
+
+/** Read-only. Opening a document is not a decision about it, so this dialog
+ * has no verdict buttons — only a way out. */
+function ViewDocumentDialog({
+  title,
+  documentId,
+  fileName,
+  onClose,
+}: {
+  title: string;
+  documentId: string;
+  fileName: string | null;
+  onClose: () => void;
+}): ReactNode {
+  return (
+    <Modal open title={title} onClose={onClose} size="wide">
+      <div className="space-y-3">
+        <DocumentPreview documentId={documentId} fileName={fileName} />
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The same viewer, with the verdict attached.
+ *
+ * WHY THE DOCUMENT IS IN THE DIALOG: "verified" is a claim that a person read
+ * this file and it says what it should. When Verify was a bare button on the
+ * row, the fastest way to clear a case was to click down the list without
+ * opening anything, and the record would say a human checked it. Putting the
+ * document in front of the verdict makes the honest path the easy one.
+ *
+ * "Not now" is offered as well as the two verdicts, because closing without
+ * deciding must not look like a refusal to decide.
+ */
+function VerifyDocumentDialog({
+  title,
+  documentId,
+  fileName,
+  pending,
+  error,
+  onConfirm,
+  onReject,
+  onClose,
+}: {
+  title: string;
+  documentId: string;
+  fileName: string | null;
+  pending: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onReject: () => void;
+  onClose: () => void;
+}): ReactNode {
+  return (
+    <Modal open title={title} onClose={onClose} size="wide">
+      <div className="space-y-3">
+        <DocumentPreview documentId={documentId} fileName={fileName} />
+
+        <p className="text-sm text-ink-700">
+          Is this the right document, and is it readable? Verifying it is a record that you have
+          read it.
+        </p>
+
+        {error && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Not now
+          </Button>
+          <Button variant="ghost" disabled={pending} onClick={onReject}>
+            No — wrong or unreadable
+          </Button>
+          <Button variant="primary" disabled={pending} onClick={onConfirm}>
+            Yes — confirm &amp; verify
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1125,7 +1350,14 @@ function RejectModal({
   return (
     <Modal open title={`Reject ${label}`} onClose={onClose}>
       <div className="space-y-3">
-        <Field label="Why" hint="Shown to whoever collects this document next — be specific.">
+        {/* Named "Reason for rejection" rather than "Why": this dialog is
+            reachable both from the row and from the verify dialog's "No", and a
+            one-word label loses its question when it arrives that second way.
+            The requirement is unchanged — no reason, no rejection. */}
+        <Field
+          label="Reason for rejection"
+          hint="Shown to whoever collects this document next — be specific."
+        >
           <Textarea
             value={reason}
             onChange={(event) => setReason(event.target.value)}
@@ -1147,7 +1379,7 @@ function RejectModal({
             disabled={pending || reason.trim().length === 0}
             onClick={() => onSubmit(reason.trim())}
           >
-            Reject
+            Confirm rejection
           </Button>
         </div>
       </div>

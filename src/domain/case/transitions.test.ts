@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CaseStage } from "./stages.js";
+import { CASE_STAGES, type CaseStage } from "./stages.js";
 import {
   type CaseSnapshot,
   deriveSystemStage,
@@ -406,14 +406,52 @@ describe("deriveSystemStagePath — advancing more than one stage", () => {
 });
 
 describe("userSelectableStages", () => {
-  it("never offers a stage reached only by a system transition", () => {
+  it("never offers a stage reached only by a system transition, from anywhere", () => {
     // ready_for_submission, submitted, sanctioned and disbursed are each only
     // reachable via a system-actor rule — the Move stage UI must not offer
     // them, or the user hits "X → Y is a system transition" for a move the
     // dropdown itself suggested.
-    for (const stage of ["ready_for_submission", "submitted", "sanctioned", "disbursed"] as const) {
-      expect(userSelectableStages(stage)).not.toContain(stage);
+    //
+    // The sweep is over every ORIGIN, not only over the four themselves: the
+    // question is "can any dropdown, anywhere, put this on screen", and asking
+    // it of the four alone would pass even if `contacted` offered `submitted`.
+    const systemOnly = ["ready_for_submission", "submitted", "sanctioned", "disbursed"] as const;
+
+    for (const from of CASE_STAGES) {
+      for (const target of systemOnly) {
+        expect(userSelectableStages(from)).not.toContain(target);
+      }
     }
+  });
+
+  it("offers every stage it does offer as a move the server will actually accept", () => {
+    // The contract between the dropdown and the endpoint: nothing on the list
+    // may be refused as a wrong-actor move. Guards (`invoiceRaised` on
+    // disbursed → closed) may still refuse on the facts, which is a refusal
+    // with a reason rather than a self-contradiction.
+    for (const from of CASE_STAGES) {
+      for (const to of userSelectableStages(from)) {
+        const outcome = evaluateTransition(snapshot({ stage: from }), { to, actor: "user" });
+        if (!outcome.allowed) {
+          expect(outcome.reason).not.toContain("system transition");
+          expect(outcome.reason).not.toContain(`cannot move from ${from}`);
+        }
+      }
+    }
+  });
+
+  it("lets a case reach documents_pending without an appointment being fixed first", () => {
+    // Appointments run alongside the file, not in front of it. Plenty of
+    // customers send documents on WhatsApp before anyone meets them, and a UI
+    // that forced appointment_fixed in between would be inventing a rule the
+    // domain does not have.
+    expect(userSelectableStages("contacted")).toContain("documents_pending");
+    expect(
+      evaluateTransition(snapshot({ stage: "contacted" }), {
+        to: "documents_pending",
+        actor: "user",
+      }).allowed,
+    ).toBe(true);
   });
 
   it("offers nothing from documents_pending — it only advances on its own", () => {

@@ -1,0 +1,346 @@
+AOS — PRODUCTION READINESS MASTER ROADMAP
+Checkpoint: 2026-08-11
+Current commit: 342e649
+
+PURPOSE
+Keep development aligned to the actual production goal. Do not invent new stages or wander into unrelated enhancements.
+
+============================================================
+CURRENT STATE
+============================================================
+
+Stage 1 — Persistence: COMPLETE
+Stage 2 — Server/API + Customer/Case Vertical Slice: COMPLETE
+Stage 3A–3D — PostgreSQL Migration / Operational Vertical Slices: COMPLETE
+
+Stage 4 — Production Readiness:
+  Item 1 — Backup & Disaster Recovery: COMPLETE
+  Item 2 — Deployment Topology: COMPLETE
+  Item 3 — Authentication & Security: COMPLETE
+  Item 4 — Master Data & Configuration: COMPLETE
+  Follow-up — PostgreSQL enum-array parsing bug: FIXED in 4e80a83
+
+Phase 1 — Column Masking / ADR-026: COMPLETE (4d56eed)
+Phase 2 — Admin-Screen Honesty: COMPLETE (342e649)
+
+Current repository:
+  HEAD: 342e649
+  origin/main: synchronized
+  Working tree: clean
+
+============================================================
+REMAINING DEVELOPMENT PHASES
+============================================================
+
+Five remaining development phases have been identified before the
+software should be considered ready for the initial production cutover.
+
+They are ordered by production risk.
+
+------------------------------------------------------------
+PHASE 1 — COLUMN MASKING / ADR-026
+STATUS: COMPLETE (4d56eed)
+PRIORITY: BLOCKER
+------------------------------------------------------------
+
+Goal:
+Protect sensitive customer information so ordinary employees cannot
+retrieve full sensitive values merely because they have normal
+person.read access.
+
+Scope:
+  - PAN / identifiers
+  - Bank account information
+  - Date of birth
+  - Address / pincode where covered by the final ADR-026 design
+  - Other sensitive columns explicitly identified by ADR-026
+
+Requirements:
+  - Use the existing permission architecture.
+  - Do not invent a second permission system.
+  - Normal roles receive appropriately masked values.
+  - Explicit permission is required for full-value reveal.
+  - Full-value reveal is server-side authorized.
+  - Full-value reveal is audited.
+  - Do not leak raw values through alternate endpoints.
+  - Preserve RLS as row visibility, not business authorization.
+
+Existing tables.ts maskedColumns declarations include:
+  - person_identifier.value_raw
+  - referrer_profile.commission_terms
+  - submission.login_fee_amount
+
+DOB/address/pincode need deliberate treatment in the domain model.
+Do not assume masking semantics without reviewing ADR-026.
+
+Exit criteria:
+  - Security tests pass.
+  - No sensitive-field endpoint leaks raw values.
+  - Authorized reveal works and is audited.
+  - Unauthorized reveal is denied.
+  - Existing workflows remain functional.
+
+------------------------------------------------------------
+PHASE 2 — ADMIN-SCREEN HONESTY
+STATUS: COMPLETE (342e649)
+PRIORITY: BLOCKER-CLASS UX / DATA-INTEGRITY TRAP
+------------------------------------------------------------
+
+Resolution: Products (LendingProducts.tsx), the Lender Catalogue
+(LenderCatalogue.tsx, all six panels), and the 14 "simple" Master Data
+vocabulary sections (MasterData.tsx) had every Add/Edit/Deactivate
+control removed — they are now read-only reference browsing over the
+per-browser prototype dataset. Document Types, Rejection Reasons,
+Document Requirement Rules and Thresholds were already
+PostgreSQL-authoritative (commit c91fc70) and were left untouched,
+keeping their real edit controls. NotConnectedBanner was reworded to
+state plainly that the data is a read-only, per-browser preview, not
+production configuration. Nav gating (App.tsx) was already correct —
+the four admin nav links are gated on master_data.manage, not
+master_data.read — so no permission-model change was required.
+No new CRUD, no new backend routes, no schema changes.
+
+Goal:
+Ensure the UI does not pretend that disconnected localStorage
+configuration is authoritative.
+
+Current problem:
+  - Products screen
+  - Lender Catalogue
+  - Most remaining Master Data sections
+
+Some screens still write to browser localStorage while the real
+operational system uses PostgreSQL. An employee could believe they
+changed production configuration when the backend ignores the change.
+
+Scope:
+  - Remove or clearly label disconnected/local-only functionality.
+  - Do not build unnecessary CRUD just to make every screen live.
+  - Preserve Item 4's PostgreSQL-authoritative configuration.
+  - Products/Lenders remain read-only unless a later business decision
+    explicitly changes that scope.
+
+Exit criteria:
+  - No screen falsely presents localStorage data as authoritative.
+  - Users cannot mistake local changes for office-wide changes.
+  - Production configuration has one clear source of truth.
+  - No unnecessary CRUD expansion.
+
+------------------------------------------------------------
+PHASE 3 — CONCURRENCY & AUDIT HARDENING
+STATUS: NOT STARTED
+PRIORITY: HIGH / PRODUCTION SAFETY
+------------------------------------------------------------
+
+Goal:
+Make multi-user, multi-PC operation safe.
+
+Known issues:
+  - Duplicate bank submission can occur if two users submit the same
+    case concurrently or double-click.
+  - regenerateRequirements mutates data from a GET path and currently
+    lacks the required audit event.
+
+Scope:
+  - Make submission idempotent / transactionally safe.
+  - Prevent duplicate lender emails.
+  - Handle concurrent submissions correctly.
+  - Move mutating regeneration behavior behind the appropriate mutation
+    path if required by the existing architecture.
+  - Add the missing audit event.
+  - Preserve existing append-only audit semantics.
+
+Exit criteria:
+  - Concurrent submission cannot send duplicate packages.
+  - Repeated submission is safely handled.
+  - Mutating operations are represented correctly in the API.
+  - Required audit events exist.
+  - Concurrency tests pass.
+
+------------------------------------------------------------
+PHASE 4 — CASE COMPLETENESS
+STATUS: NOT STARTED
+PRIORITY: HIGH / REQUIRED FOR BROADER REAL-WORLD CASES
+------------------------------------------------------------
+
+Goal:
+Represent the parties and assets that real loan cases actually contain.
+
+Known gap:
+  - No route/workflow currently exists to add:
+      * co-applicant
+      * guarantor
+      * property
+  - Requirement checklists can therefore be incomplete for common
+    secured or multi-party loan cases.
+  - Requirement waiving is also not implemented.
+
+Scope:
+  - Add/manage co-applicants.
+  - Add/manage guarantors.
+  - Add/manage properties where required.
+  - Ensure requirement rules consume the correct parties and properties.
+  - Implement controlled requirement waiving if required by the existing
+    business model.
+  - Preserve auditability and authorization.
+
+Exit criteria:
+  - Real multi-party cases can be represented.
+  - Secured-property cases can be represented.
+  - Requirement generation reflects those relationships.
+  - Waiving is controlled and audited if implemented.
+
+This phase must not become a general redesign of the case system.
+
+------------------------------------------------------------
+PHASE 5 — LOAN OUTCOME TRACKING
+STATUS: NOT STARTED
+PRIORITY: MEDIUM / POST-INITIAL-INTAKE
+------------------------------------------------------------
+
+Goal:
+Complete the lifecycle after lender submission.
+
+Known gap:
+  - Sanction tracking is not implemented.
+  - Rejection tracking is not implemented.
+  - Disbursement tracking is not implemented.
+  - The stage machine effectively dead-ends at Submitted.
+
+Scope:
+  - Record lender sanction outcomes.
+  - Record rejection outcomes/reasons.
+  - Record disbursement.
+  - Advance the case lifecycle appropriately.
+  - Preserve audit trail and permissions.
+
+Exit criteria:
+  - A submitted case can progress through its lender outcome.
+  - Sanction/rejection/disbursement are durable and auditable.
+  - Case stages accurately represent the lifecycle.
+
+IMPORTANT:
+This is NOT required before the initial intake/document/submission
+production cutover unless the business explicitly requires it.
+
+============================================================
+PRODUCTION CUTOVER — SEPARATE FROM DEVELOPMENT PHASES
+============================================================
+
+After the development phases, there is a separate OFFICE SERVER
+CUTOVER GATE. This is not another coding phase.
+
+The office server must then be configured and verified:
+
+  1. Take a verified production backup.
+  2. Apply all required migrations.
+  3. Configure aos_app with a strong production password.
+  4. Keep administrative DB credentials separate.
+  5. Configure the production .env.
+  6. Run bootstrap-production.
+  7. Confirm the five development accounts are inactive.
+  8. Configure LAN binding / production web server.
+  9. Configure Windows service startup.
+  10. Configure scheduled backup.
+  11. Configure firewall rules.
+  12. Verify from a second office PC.
+  13. Reboot the server and verify automatic recovery.
+  14. Configure production Gmail credentials.
+  15. Verify login and permissions.
+  16. Verify existing case visibility.
+  17. Verify document upload/download/verification.
+  18. Verify lender submission safely.
+  19. Verify backup and restore on the real hardware.
+  20. Confirm designated server and backup/storage topology.
+  21. Resolve orphaned document files only through an explicit,
+      reviewed cleanup procedure; never blindly delete them.
+
+The office database must NEVER be replaced with the disposable
+Home-PC database.
+
+============================================================
+WHAT "PRODUCTION READY" MEANS
+============================================================
+
+AOS is production-ready for the INITIAL production scope when:
+
+  - Authentication and authorization are secure.
+  - Sensitive customer information is appropriately protected.
+  - PostgreSQL is the authoritative operational database.
+  - Document storage is durable and backed up.
+  - Restore has been proven.
+  - Concurrent submission cannot duplicate lender sends.
+  - Audit trail is reliable and append-only.
+  - Configuration screens cannot falsely imply local changes are
+    production changes.
+  - Real customer cases can be represented accurately enough for
+    the initial business workflow.
+  - The production server survives restart/reboot.
+  - Employees can use the system from another office PC.
+  - Backup runs automatically and has been verified.
+  - Production credentials are configured securely.
+  - Initial workflow works end-to-end:
+      customer → case → requirements → documents →
+      verification → bank submission
+  - No known BLOCKER remains.
+
+IMPORTANT:
+Production-ready does NOT mean every planned AOS feature is complete.
+
+Not prerequisites for first production cutover unless the business
+changes scope:
+  - Full Products CRUD
+  - Full Lenders CRUD
+  - Management dashboards
+  - OCR/AI
+  - WhatsApp enhancements
+  - Advanced analytics
+  - Future workflow polish
+  - Every possible post-submission outcome feature
+
+============================================================
+MASTER MILESTONE
+============================================================
+
+CURRENT:
+  Phase 1 (Column Masking) and Phase 2 (Admin-screen honesty) complete
+  Commit: 342e649
+
+REMAINING DEVELOPMENT:
+  Phase 3 — Concurrency & audit
+  Phase 4 — Case completeness
+  Phase 5 — Loan outcome tracking
+
+THEN:
+  Office Server Production Cutover Gate
+
+THEN:
+  INITIAL PRODUCTION
+
+AFTER INITIAL PRODUCTION:
+  Continue Phase 4/5 features and later roadmap items based on
+  actual business priorities.
+
+============================================================
+ANTI-SCOPE-CREEP RULE
+============================================================
+
+Before starting any new task, ask:
+
+"Does this directly satisfy a remaining production phase, its exit
+criteria, or the office cutover gate?"
+
+If NO:
+  Do not implement it during Production Readiness.
+  Record it as a later enhancement instead.
+
+Do not invent new Stage 4 items.
+Do not renumber phases because a new issue is discovered.
+If a newly discovered issue is a genuine production blocker, attach
+it to the closest existing phase or explicitly flag it for roadmap
+review before implementation.
+
+The goal is not to make AOS perfect.
+
+The goal is to make the defined initial production workflow safe,
+reliable, secure, recoverable and usable with real client data.

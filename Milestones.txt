@@ -1,3 +1,12 @@
+AOS — MILESTONES (quick-glance progress tracker)
+Last updated: 2026-08-11
+Current commit / checkpoint: 4e80a83
+Full detail: see "AOS Production Readiness Master Roadmap.txt"
+
+============================================================
+ORIGINAL SEQUENCE (early planning list — history, preserved as-is)
+============================================================
+
 The sequence I'd follow
 ✅ Architecture
 ✅ Entity Management
@@ -14,3 +23,45 @@ Workflow Polish
 OCR & AI
 Email / WhatsApp Integration
 Management Dashboards
+
+============================================================
+PRODUCTION READINESS ROADMAP (current tracking structure)
+============================================================
+
+Stage 1 — Persistence ✓
+Stage 2 — Server/API + Customer/Case Vertical Slice ✓
+Stage 3A–3D — PostgreSQL Migration / Operational Vertical Slices ✓
+
+Stage 4 — Production Readiness
+  Item 1 — Backup & Disaster Recovery ✓
+  Item 2 — Deployment Topology ✓
+  Item 3 — Authentication & Security ✓
+  Item 4 — Master Data & Configuration ✓
+  Follow-up — PostgreSQL enum-array parsing fix ✓
+
+  Phase 1 — Column Masking / ADR-026 → [IN PROGRESS] CURRENT
+  Phase 2 — Admin-screen honesty ○ [ ]
+  Phase 3 — Concurrency & audit hardening ○ [ ]
+  Phase 4 — Case completeness ○ [ ]
+  Phase 5 — Loan outcome tracking ○ [ ]
+
+Office Server Production Cutover Gate ○ [ ]
+  (separate from development phases — backup, migrations, aos_app
+  production credentials, .env, bootstrap-production, service/firewall
+  setup, second-PC verification, reboot recovery, Gmail credentials,
+  end-to-end verification, backup/restore on real hardware — see master
+  roadmap for the full 21-step checklist)
+
+INITIAL PRODUCTION ○ [ ]
+  (final milestone — initial intake/document/submission workflow live
+  on the office server)
+
+============================================================
+STATE AS OF THIS CHECKPOINT
+============================================================
+
+HEAD: 4e80a83
+origin/main: synchronized
+Working tree: clean (repo sync verified)
+
+Current active work: Phase 1 — Column Masking / ADR-026 (not yet started)

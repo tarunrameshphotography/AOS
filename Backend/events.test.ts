@@ -507,3 +507,124 @@ describe("a mutation and its event share one transaction", () => {
     expect(await eventTypesFor(loanCase.id)).toEqual(["case.created"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("case timeline — GET /api/cases/:id/events (Backend/events.ts's listCaseEvents)", () => {
+  it("returns a case's own events, oldest first, labelled and attributed to the actor", async () => {
+    const session = await signInAs("telecaller");
+    const { loanCase } = await aCase(session);
+
+    const held = await api(`/api/cases/${loanCase.id}/hold`, {
+      method: "PUT",
+      token: session.token,
+      body: { isOnHold: true, holdReason: "waiting on customer" },
+    });
+    expect(held.status, JSON.stringify(held.body)).toBe(200);
+
+    const { status, body } = await api(`/api/cases/${loanCase.id}/events`, { token: session.token });
+    expect(status, JSON.stringify(body)).toBe(200);
+
+    expect(body.map((e: any) => e.eventType)).toEqual(["case.created", "case.held"]);
+    // Oldest first — a person telling the story reads top to bottom.
+    expect(new Date(body[0].occurredAt).getTime()).toBeLessThanOrEqual(
+      new Date(body[1].occurredAt).getTime(),
+    );
+    expect(body[0].label).toBe("Case created");
+    expect(body[0].actorKind).toBe("user");
+    expect(body[0].actorName).toBe("Test telecaller");
+
+    // The free-text hold reason never left `loan_case` — the timeline shows a
+    // label and, at most, the closed-vocabulary detail this file curates.
+    expect(JSON.stringify(body)).not.toContain("waiting on customer");
+    // Never the raw payload, in either casing.
+    expect(body[0].payloadAfter).toBeUndefined();
+    expect(body[0].payload_after).toBeUndefined();
+  });
+
+  it("refuses a case the actor may not read, with the same 404 a nonexistent case gets", async () => {
+    const owner = await signInAs("telecaller");
+    const stranger = await signInAs("telecaller");
+    const { loanCase } = await aCase(owner);
+
+    const refused = await api(`/api/cases/${loanCase.id}/events`, { token: stranger.token });
+    expect(refused.status).toBe(404);
+
+    // Same status AND same message as a case that genuinely does not exist —
+    // a 403, or a differently worded 404, would itself be a side channel a
+    // stranger could use to map a colleague's caseload.
+    const nonexistent = await api(`/api/cases/${randomUUID()}/events`, { token: owner.token });
+    expect(nonexistent.status).toBe(404);
+    expect(nonexistent.body.message).toBe(refused.body.message);
+  });
+
+  it("shows only the requested case's events, never a different case's", async () => {
+    const session = await signInAs("telecaller");
+    const { loanCase: caseA } = await aCase(session);
+    const { loanCase: caseB } = await aCase(session);
+
+    const { body: timelineA } = await api(`/api/cases/${caseA.id}/events`, { token: session.token });
+    const { body: timelineB } = await api(`/api/cases/${caseB.id}/events`, { token: session.token });
+
+    // Each case has exactly its own `case.created` — a leak across cases
+    // would double-count here.
+    expect(timelineA.length).toBe(1);
+    expect(timelineB.length).toBe(1);
+    expect(timelineA[0].id).not.toBe(timelineB[0].id);
+  });
+
+  it("returns an empty timeline for a case with no recorded events", async () => {
+    const session = await signInAs("telecaller");
+
+    // `event` is append-only (enforced by a trigger, not just by grants) —
+    // there is no DELETE that could strip `case.created` off a case made
+    // through the real create path. A case inserted directly, bypassing
+    // `createCase`/`recordCaseEvent` entirely, is the only way to reach a
+    // genuinely empty timeline, and it is a legitimate case row: same table,
+    // same constraints, same case_number allocator the real path uses.
+    const caseNumber = await pool.query<{ allocate_case_number: string }>(
+      `select app.allocate_case_number() as allocate_case_number`,
+    );
+    const inserted = await pool.query<{ id: string }>(
+      `insert into loan_case (case_number, loan_product_id, owner_user_id)
+       values ($1, $2, $3) returning id`,
+      [caseNumber.rows[0]!.allocate_case_number, await anyLoanProductId(), session.userId],
+    );
+    const caseId = inserted.rows[0]!.id;
+
+    const { status, body } = await api(`/api/cases/${caseId}/events`, { token: session.token });
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body).toEqual([]);
+  });
+
+  it("gives Login Executive and Manager the same case-wide access case.read already grants", async () => {
+    const owner = await signInAs("telecaller");
+    const { loanCase } = await aCase(owner);
+
+    const loginExec = await signInAs("login_executive");
+    const loginResult = await api(`/api/cases/${loanCase.id}/events`, { token: loginExec.token });
+    expect(loginResult.status, JSON.stringify(loginResult.body)).toBe(200);
+    expect(loginResult.body.length).toBeGreaterThan(0);
+
+    const manager = await signInAs("manager");
+    const managerResult = await api(`/api/cases/${loanCase.id}/events`, { token: manager.token });
+    expect(managerResult.status, JSON.stringify(managerResult.body)).toBe(200);
+    expect(managerResult.body.length).toBeGreaterThan(0);
+  });
+
+  it("does not require event.view — Telecaller and Login Executive hold no such permission", async () => {
+    // The whole point of gating on `case.read` rather than `event.view`
+    // (src/domain/permissions/roles.ts): neither role below is granted
+    // `event.view` at any scope, and both can still read their own case's
+    // timeline through `case.read`.
+    const { grantsForRoles } = await import("@domain/permissions/index.js");
+    for (const role of ["telecaller", "login_executive"] as const) {
+      expect(grantsForRoles([role]).some((g) => g.permission === "event.view")).toBe(false);
+    }
+
+    const session = await signInAs("login_executive");
+    const { loanCase } = await aCase(session);
+    const { status } = await api(`/api/cases/${loanCase.id}/events`, { token: session.token });
+    expect(status).toBe(200);
+  });
+});

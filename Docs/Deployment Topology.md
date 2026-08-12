@@ -139,11 +139,13 @@ answer in this table is worse than a blank one.
 
 | | |
 |---|---|
-| Server PC (make / asset tag / location) | *(not yet recorded)* |
-| Server LAN IP, static or DHCP-reserved | *(not yet recorded)* |
-| URL employees use | *(not yet recorded — `http://<IP>:4300`)* |
-| Backup destination (physical location) | *(not yet recorded)* |
+| Server PC (make / asset tag / location) | MAIN-PC (Amaze PC) — *(asset tag / physical location not yet recorded)* |
+| Server LAN IP, static or DHCP-reserved | `192.168.0.101` on the `192.168.0.0/24` office LAN — *(DHCP reservation status not yet recorded)* |
+| URL employees use | `http://192.168.0.101:4300` |
+| Backup destination (physical location) | `F:\AOS-Backups` on MAIN-PC — *(offsite/physical copy arrangement not yet recorded)* |
 | Who holds the database password and the login slips | *(not yet recorded)* |
+
+Other known LAN client: UNFOLDMEDIACORP at `192.168.0.102` (browser-only, runs nothing, per the rule above).
 
 A server whose IP changes on reboot breaks every bookmark in the office
 silently — reserve it in the router against that PC's MAC address before

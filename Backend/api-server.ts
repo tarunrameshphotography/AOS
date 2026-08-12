@@ -64,6 +64,7 @@ import {
   updateCustomer,
 } from "./customers.js";
 import { readReference, search } from "./reference.js";
+import { listCaseEvents } from "./events.js";
 import {
   listDocumentTypes,
   updateDocumentType,
@@ -174,16 +175,18 @@ const SESSION_TTL_MS = Number(process.env.AOS_SESSION_TTL_MS ?? 12 * 60 * 60 * 1
  * idle session can be distinguished from an active one". Nothing read it. This
  * reads it.
  *
- * Two hours: longer than a lunch break and a site visit, shorter than an
- * evening. Configurable because the right number is an office policy, not a
- * property of the code.
+ * Five minutes: an office policy tightened from the original two-hour default
+ * for a shared machine holding customer records. Configurable because the
+ * right number is an office policy, not a property of the code — the frontend
+ * warning countdown (`Frontend/src/auth/IdleSessionMonitor.tsx`) assumes this
+ * default; change both together.
  *
  * NOT enforced with `beforeunload` or `unload`, deliberately. Those fire
  * unreliably, never at all on a crash or a power cut, and are trivially
  * skipped — a browser event is not a security control. This is a server-side
  * check on every request, which is the only place it can be one.
  */
-const SESSION_IDLE_MS = Number(process.env.AOS_SESSION_IDLE_MS ?? 2 * 60 * 60 * 1000);
+const SESSION_IDLE_MS = Number(process.env.AOS_SESSION_IDLE_MS ?? 5 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // HTTP plumbing
@@ -966,6 +969,17 @@ async function route(
       await removeCaseProperty(client, requireActor(actor), id!, propertyLinkId!);
       return { ok: true };
     }
+  }
+
+  // ── Timeline ───────────────────────────────────────────────────────────────
+  //
+  // Read-only, case-scoped, authorized the same way every other case
+  // sub-resource is — `case.read` via `canActOnCase`, not `event.view` — see
+  // `listCaseEvents`'s own comment in Backend/events.ts for why.
+
+  const eventsMatch = new RegExp(`^/api/cases/(${UUID})/events$`).exec(path);
+  if (eventsMatch && method === "GET") {
+    return await listCaseEvents(client, requireActor(actor), eventsMatch[1]!);
   }
 
   // ── Requirements and documents ────────────────────────────────────────────

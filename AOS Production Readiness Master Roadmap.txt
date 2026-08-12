@@ -703,14 +703,15 @@ WHAT CHANGED
    Banks tab can say which are this case's own; package contents remain
    exactly what the operator ticked, so nothing is auto-attached.
 
-7. SESSION LIFECYCLE. An inactivity timeout (AOS_SESSION_IDLE_MS, default 2h)
+7. SESSION LIFECYCLE. An inactivity timeout (AOS_SESSION_IDLE_MS, default 5min)
    alongside the existing absolute lifetime (AOS_SESSION_TTL_MS, 12h), both
    checked server-side on every request; a lapsed session is REVOKED, on its
    own connection so the 401's transaction rollback cannot discard it. The
    browser token moved from localStorage to sessionStorage, so closing the
    browser ends the session there too — a convenience, not the control.
    Deactivation and password reset already revoked sessions and still do.
-   No beforeunload/unload anywhere.
+   No beforeunload/unload anywhere. The frontend shows a warning with a
+   "Continue session" action shortly before the idle timeout fires.
 
 BUG FOUND AND FIXED EN ROUTE. Creating a borrowing firm inline
 (`addCaseParty`, Phase 4) inserted an `organisation` with no `roles`,

@@ -34,7 +34,11 @@
  * and every later report having to know both.
  */
 
+import { CASE_STAGE_LABELS, type CaseStage } from "@domain/case/stages.js";
+
 import type { Queryable } from "./db.js";
+import { canActOnCase, type Actor } from "./authorize.js";
+import { ApiError } from "./http.js";
 
 /** Event types this module emits, enumerated so a typo is a compile error
  * rather than an event nobody can search for later. */
@@ -694,4 +698,182 @@ export async function recordMasterDataEvent(client: Queryable, event: MasterData
       event.payloadAfter == null ? null : JSON.stringify(event.payloadAfter),
     ],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Case timeline (reading)
+// ---------------------------------------------------------------------------
+
+/** 404 rather than 403 — the same reasoning as Backend/cases.ts's own
+ * `notFound()`: an actor who may not see this case must not be able to
+ * confirm it exists by probing the timeline endpoint. */
+function notFound(): ApiError {
+  return new ApiError(404, "No such case, or you do not have access to it.");
+}
+
+/**
+ * Clean, human labels for the event types this file's writers actually emit.
+ * A type with no entry here still renders — `humanizeEventType` turns the raw
+ * string into words — so an event type added to one of the writer functions
+ * above without a matching entry here is a slightly blunter label, never a
+ * broken screen.
+ */
+const EVENT_LABELS: Readonly<Record<string, string>> = {
+  "case.created": "Case created",
+  "case.facts_updated": "Case facts updated",
+  "case.stage_changed": "Stage changed",
+  "case.assigned": "Case reassigned",
+  "case.held": "Case put on hold",
+  "case.hold_lifted": "Hold lifted",
+  "case.marked_lost": "Case marked lost",
+  "case.reopened": "Case reopened",
+  "case.party_added": "Party added",
+  "case.party_profile_updated": "Party details updated",
+  "case.party_removed": "Party removed",
+  "case.property_added": "Property added",
+  "case.property_updated": "Property updated",
+  "case.property_removed": "Property removed",
+  "document.uploaded": "Document uploaded",
+  "document.verified": "Document verified",
+  "document.rejected": "Document rejected",
+  "submission.created": "Sent for submission",
+  "submission.email_sent": "Submission email sent",
+  "submission.email_failed": "Submission email failed",
+  "submission.documents_sent": "Documents sent to bank",
+  "submission.documents_partially_sent": "Documents partially sent to bank",
+  "submission.under_process": "Submission under process",
+  "submission.query_raised": "Bank query raised",
+  "submission.query_answered": "Bank query answered",
+  "submission.eligibility_received": "Eligibility received",
+  "submission.sanctioned": "Submission sanctioned",
+  "submission.rejected": "Submission rejected",
+  "submission.withdrawn": "Submission withdrawn",
+  "submission.disbursed": "Loan disbursed",
+  "offer.recorded": "Offer recorded",
+  "offer.accepted": "Offer accepted",
+  "requirement.regenerated": "Checklist updated",
+  "requirement.waived": "Requirement waived",
+  "requirement.added": "Additional document requested",
+};
+
+function humanizeWords(raw: string): string {
+  const words = raw.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function humanizeEventType(eventType: string): string {
+  const verb = eventType.split(".")[1] ?? eventType;
+  return humanizeWords(verb);
+}
+
+/**
+ * A short, safe second line for the entries where the payload already carries
+ * something worth showing — never the payload itself.
+ *
+ * DELIBERATELY NARROW. The writer functions above already keep `payload_after`
+ * free of personal data (see this file's own header), but an unlabelled
+ * internal id or code is still not something an employee should have to
+ * decode. Only the few fields below — all closed-vocabulary codes or dates —
+ * ever reach the screen; everything else in a payload stays server-side.
+ */
+function detailFor(eventType: string, payloadAfter: unknown): string | null {
+  if (payloadAfter === null || typeof payloadAfter !== "object") return null;
+  const payload = payloadAfter as Record<string, unknown>;
+
+  switch (eventType) {
+    case "case.stage_changed":
+    case "case.reopened": {
+      const stage = payload.stage;
+      return typeof stage === "string" && stage in CASE_STAGE_LABELS
+        ? CASE_STAGE_LABELS[stage as CaseStage]
+        : null;
+    }
+    case "case.marked_lost": {
+      const reason = payload.lostReason;
+      return typeof reason === "string" ? humanizeWords(reason) : null;
+    }
+    case "case.held": {
+      const until = payload.holdUntil;
+      return typeof until === "string" ? `Until ${until.slice(0, 10)}` : null;
+    }
+    case "document.uploaded":
+    case "document.verified":
+    case "document.rejected": {
+      const version = payload.version;
+      return typeof version === "number" ? `Version ${version}` : null;
+    }
+    default:
+      return null;
+  }
+}
+
+export interface CaseTimelineEntry {
+  readonly id: string;
+  readonly occurredAt: string;
+  readonly actorKind: "user" | "system";
+  readonly actorName: string | null;
+  readonly eventType: string;
+  readonly label: string;
+  readonly detail: string | null;
+}
+
+/**
+ * A case's history, oldest first — the order a person telling the story would
+ * use, matching `case-tabs.ts`'s own description of this tab: "everything
+ * that happened, in order."
+ *
+ * AUTHORIZATION follows case visibility, not a separate mechanism.
+ * Deliberately `case.read` via `canActOnCase` — the identical check
+ * `listCaseRequirements` (Backend/documents.ts) and `listCaseParties`
+ * (Backend/case-composition.ts) already use for their own case sub-resource —
+ * not `event.view`. `event.view` (src/domain/permissions/roles.ts) is held
+ * only by Admin/Manager/Managing Partner, for a different purpose (ADR-027):
+ * Admin's system-wide "why can this user not see that case" oversight across
+ * every case in the office. Gating the timeline behind it would mean a
+ * Telecaller or Login Executive — who can already open the case itself —
+ * could not see what happened on their own case, and widening `event.view` to
+ * them instead would hand out administrative event visibility across every
+ * case in the office, a far broader grant than "let me see this case's
+ * history." Reusing `case.read` gives the timeline exactly the same access
+ * the rest of the case already has: a Telecaller sees their own cases' event
+ * history, a Login Executive/Manager/Managing Partner sees every case's, and
+ * nobody sees a colleague's case — the same rule this file's own writers rely
+ * on `case_id` to make enforceable in the first place. 404, not 403, on
+ * refusal — the same reason `Backend/cases.ts`'s `notFound()` gives: a 403
+ * would itself confirm the case exists.
+ */
+export async function listCaseEvents(
+  client: Queryable,
+  actor: Actor,
+  caseId: string,
+): Promise<readonly CaseTimelineEntry[]> {
+  const { rows: caseRows } = await client.query(
+    `select owner_user_id from loan_case where id = $1`,
+    [caseId],
+  );
+  const caseRow = caseRows[0];
+  if (!caseRow || !canActOnCase(actor, caseRow.owner_user_id, "case.read")) {
+    throw notFound();
+  }
+
+  const { rows } = await client.query(
+    `select e.id, e.occurred_at, e.actor_kind, e.event_type, e.payload_after,
+            p.full_name as actor_name
+       from event e
+       left join app_user u on u.id = e.actor_user_id
+       left join person p on p.id = u.person_id
+      where e.case_id = $1
+      order by e.occurred_at asc, e.id asc`,
+    [caseId],
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    occurredAt: row.occurred_at,
+    actorKind: row.actor_kind,
+    actorName: row.actor_name,
+    eventType: row.event_type,
+    label: EVENT_LABELS[row.event_type] ?? humanizeEventType(row.event_type),
+    detail: detailFor(row.event_type, row.payload_after),
+  }));
 }

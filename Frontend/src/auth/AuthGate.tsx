@@ -31,6 +31,7 @@ import type { ApiSessionUser } from "../api/types.js";
 import { LoginScreen } from "../screens/LoginScreen.js";
 import { SessionProvider } from "../session.js";
 import { adoptAuthenticatedUser, forgetAuthenticatedUser } from "../fake/store.js";
+import { IdleSessionMonitor } from "./IdleSessionMonitor.js";
 
 type State =
   | { readonly status: "checking" }
@@ -41,6 +42,10 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
   const [state, setState] = useState<State>(() =>
     storedToken() === null ? { status: "anonymous" } : { status: "checking" },
   );
+  // Shown once on the login screen after an idle sign-out, then cleared —
+  // distinct from `LoginScreen`'s own error state, which is about a wrong
+  // password, not why the form is here at all.
+  const [notice, setNotice] = useState<string | null>(null);
 
   const adopt = useCallback((user: ApiSessionUser) => {
     // The prototype half of the app still authorises through `fake/store.ts`,
@@ -48,7 +53,19 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
     // comment: this is an identity bridge for the screens that have not
     // migrated, and carries no customer or case data.
     adoptAuthenticatedUser(user);
+    setNotice(null);
     setState({ status: "authenticated", user });
+  }, []);
+
+  // Fires when `IdleSessionMonitor`'s local clock reaches the idle timeout
+  // with no "Continue session" click. The server would refuse the next
+  // request anyway (Backend/api-server.ts's `loadActor`) — this just gets
+  // there without waiting for one, and says why, which a stray 401 would not.
+  const expireIdle = useCallback(() => {
+    storeToken(null);
+    forgetAuthenticatedUser();
+    setNotice("You were signed out after 5 minutes of inactivity.");
+    setState({ status: "anonymous" });
   }, []);
 
   // Restore on load, and re-validate rather than trusting the stored token.
@@ -118,11 +135,12 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
   }
 
   if (state.status === "anonymous") {
-    return <LoginScreen onAuthenticated={adopt} />;
+    return <LoginScreen onAuthenticated={adopt} notice={notice} />;
   }
 
   return (
     <SessionProvider user={state.user} onLogout={logout}>
+      <IdleSessionMonitor onExpire={expireIdle} />
       {children}
     </SessionProvider>
   );

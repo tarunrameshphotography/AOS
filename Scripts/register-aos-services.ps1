@@ -143,6 +143,14 @@ $Settings = New-ScheduledTaskSettingsSet `
 # behind the supervisor's own PID lock  -  two supervisors kill each other's
 # services and present as an application that flickers.
 
+$Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Highest
+
+# S4U rather than the Register-ScheduledTask -User/-RunLevel default
+# (InteractiveToken): a long-running server task tied to an interactive logon
+# session dies with the console (0xC000013A / STATUS_CONTROL_C_EXIT) the
+# moment nobody is logged in or the session locks. S4U runs the task
+# non-interactively as the named account with no session required.
+
 if ($PSCmdlet.ShouldProcess($TaskName, "Register the scheduled task")) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($existing) {
@@ -156,8 +164,7 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Register the scheduled task")) {
         -Action $Action `
         -Trigger $Trigger `
         -Settings $Settings `
-        -User $User `
-        -RunLevel Highest `
+        -Principal $Principal `
         -Description "Runs the AOS backend (web, API, document storage, mail) via Backend/supervisor.mjs. Starts at boot; waits for PostgreSQL before starting the API." | Out-Null
 
     Write-Host "  Registered."

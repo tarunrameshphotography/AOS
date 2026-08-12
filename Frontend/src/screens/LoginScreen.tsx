@@ -26,8 +26,13 @@ interface LoginResponse {
 
 export function LoginScreen({
   onAuthenticated,
+  notice,
 }: {
   onAuthenticated: (user: ApiSessionUser) => void;
+  /** Why the form is here, when it is not the first visit — e.g. an idle
+   * sign-out. Not an error: shown in a neutral tone, separate from `error`
+   * below, and cleared the moment sign-in succeeds. */
+  notice?: string | null;
 }): ReactNode {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -68,6 +73,12 @@ export function LoginScreen({
             <p className="text-xs text-ink-500">Sign in with your employee ID</p>
           </div>
         </div>
+
+        {notice && (
+          <p className="mb-4 rounded-md bg-ink-50 px-3 py-2 text-sm text-ink-700" role="status">
+            {notice}
+          </p>
+        )}
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <Field label="Username / Employee ID">

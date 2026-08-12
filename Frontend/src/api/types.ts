@@ -571,3 +571,25 @@ export interface ApiPackage {
   readonly completedAt: string | null;
   readonly emails: readonly ApiPackageEmail[];
 }
+
+// ---------------------------------------------------------------------------
+// Case timeline — mirrors Backend/events.ts's listCaseEvents
+// ---------------------------------------------------------------------------
+
+export interface ApiTimelineEntry {
+  readonly id: string;
+  readonly occurredAt: string;
+  readonly actorKind: "user" | "system";
+  /** Null when `actorKind` is `"system"` — a stage that moved itself because
+   * every requirement was met, not an employee clicking a button. */
+  readonly actorName: string | null;
+  /** The raw type (`"case.stage_changed"`), kept for anything that ever needs
+   * to key off it specifically. Screens should read `label`, not this. */
+  readonly eventType: string;
+  /** Clean, human text for `eventType` — what actually happened. */
+  readonly label: string;
+  /** A short second line where the event has one worth showing (the stage it
+   * moved to, a lost reason) — never raw payload JSON. Null when there is
+   * nothing more useful to say than `label` already does. */
+  readonly detail: string | null;
+}

@@ -532,8 +532,8 @@ describe("the full authentication lifecycle, served by an API running as aos_app
    * Chrome resumed somebody else's session, which is exactly the behaviour
    * reported.
    *
-   * `last_seen_at` is backdated rather than waited for; the window is two
-   * hours by default.
+   * `last_seen_at` is backdated rather than waited for; the window is five
+   * minutes by default.
    */
   it("expires a session that has been idle past the inactivity window", async () => {
     const employee = await createEmployee("manager");
@@ -579,7 +579,7 @@ describe("the full authentication lifecycle, served by an API running as aos_app
     const session = await signIn(appApi, employee.username);
 
     await pool.query(
-      `update api_session set last_seen_at = now() - interval '1 hour' where user_id = $1`,
+      `update api_session set last_seen_at = now() - interval '4 minutes' where user_id = $1`,
       [session.userId],
     );
     expect((await appApi("/api/cases", { token: session.token })).status).toBe(200);
@@ -590,6 +590,28 @@ describe("the full authentication lifecycle, served by an API running as aos_app
       [session.userId],
     );
     expect(Date.now() - new Date(rows[0].last_seen_at).getTime()).toBeLessThan(60_000);
+  });
+
+  it("enforces the five-minute idle window at its boundary, not merely 'eventually'", async () => {
+    // The two tests above prove "well inside" and "way past". This pins the
+    // actual configured value (AOS_SESSION_IDLE_MS default, Backend/api-server.ts)
+    // rather than some arbitrarily larger number that would also pass a looser
+    // check.
+    const employee = await createEmployee("manager");
+
+    const stillIdle = await signIn(appApi, employee.username);
+    await pool.query(
+      `update api_session set last_seen_at = now() - interval '4 minutes 30 seconds' where user_id = $1`,
+      [stillIdle.userId],
+    );
+    expect((await appApi("/api/cases", { token: stillIdle.token })).status).toBe(200);
+
+    const tooIdle = await signIn(appApi, employee.username);
+    await pool.query(
+      `update api_session set last_seen_at = now() - interval '5 minutes 30 seconds' where user_id = $1`,
+      [tooIdle.userId],
+    );
+    expect((await appApi("/api/cases", { token: tooIdle.token })).status).toBe(401);
   });
 
   it("refuses a deactivated employee at the login form and on an existing token", async () => {

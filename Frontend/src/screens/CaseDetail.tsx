@@ -68,6 +68,7 @@ import type {
   ApiCaseRequirements,
   ApiCustomer,
   ApiRequirement,
+  ApiTimelineEntry,
   CasePartyRole,
   CasePropertyRole,
 } from "../api/types.js";
@@ -171,7 +172,7 @@ export function CaseDetail(): ReactNode {
       {tab === "overview" && <Overview loanCase={loanCase} onChanged={query.refetch} />}
       {tab === "documents" && <DocumentsTab loanCase={loanCase} onCaseChanged={query.refetch} />}
       {tab === "banks" && <BanksTab loanCase={loanCase} onCaseChanged={query.refetch} />}
-      {tab === "timeline" && <NotYetMigrated tab={tab} />}
+      {tab === "timeline" && <TimelineTab loanCase={loanCase} />}
     </div>
   );
 }
@@ -2162,35 +2163,58 @@ function RejectModal({
 }
 
 // ---------------------------------------------------------------------------
-// The tabs that have not moved yet
+// Timeline
 // ---------------------------------------------------------------------------
 
-/** What each un-migrated tab is waiting for, in the words of the thing it
- * needs. Vague placeholders ("coming soon") teach nobody anything; naming the
- * dependency tells a reader when to expect it back. Documents moved in
- * Stage 3C, Banks in Stage 3D — see `DocumentsTab`/`BanksTab` — and left
- * this list. */
-const WAITING_ON: Record<"timeline", { what: string; why: string }> = {
-  timeline: {
-    what: "The case timeline",
-    why: "The event log records what every other slice does. It is written for administrative actions, case, customer, document and submission events already; the reading screen is what has not moved.",
-  },
-};
+/**
+ * Everything that happened on this case, in order — the last of the four
+ * sections to move off the prototype store (Overview/Documents/Banks moved in
+ * Stages 3B/3C/3D). Follows exactly the same fetch/loading/error/empty shape
+ * as `DocumentsTab`/`BanksTab`: `useApiQuery` against the server, which is the
+ * one source of truth.
+ *
+ * NO PermissionCode HERE, unlike Documents/Banks. `GET /cases/:id/events`
+ * (Backend/events.ts's `listCaseEvents`) never returns 403 — an actor who may
+ * not see this case gets the identical 404 a nonexistent case would, so there
+ * is no permission code to disclose and nothing to show beyond the server's
+ * own message.
+ */
+function TimelineTab({ loanCase }: { loanCase: ApiCase }): ReactNode {
+  const query = useApiQuery<readonly ApiTimelineEntry[]>(`/cases/${loanCase.id}/events`);
 
-function NotYetMigrated({ tab }: { tab: "timeline" }): ReactNode {
-  const waiting = WAITING_ON[tab];
+  if (query.loading) return <Empty>Loading timeline…</Empty>;
+  if (query.error || !query.data) {
+    return (
+      <Card title="Timeline">
+        <p className="text-sm text-ink-700">
+          {query.error?.message ?? "Could not load this case's timeline."}
+        </p>
+      </Card>
+    );
+  }
+
+  const entries = query.data;
 
   return (
-    <Card title={CASE_TAB_LABELS[tab]}>
-      <div className="max-w-prose space-y-3">
-        <p className="text-sm font-medium text-ink-900">Not yet migrated.</p>
-        <p className="text-sm text-ink-700">
-          This case lives in PostgreSQL. {waiting.what} has not moved to the server yet, so there
-          is nothing here — rather than something that would not survive a refresh, and would not
-          be visible to anyone else in the office.
-        </p>
-        <p className="text-xs text-ink-500">{waiting.why}</p>
-      </div>
+    <Card title="Timeline" subtitle="Everything that happened, in order.">
+      {entries.length === 0 ? (
+        <Empty>Nothing recorded yet.</Empty>
+      ) : (
+        <ol className="space-y-4">
+          {entries.map((entry) => (
+            <li key={entry.id} className="border-l-2 border-ink-100 py-0.5 pl-4">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-sm font-medium text-ink-900">{entry.label}</p>
+                <span className="shrink-0 text-xs text-ink-500">{exactly(entry.occurredAt)}</span>
+              </div>
+              {entry.detail && <p className="text-sm text-ink-700">{entry.detail}</p>}
+              <p className="mt-0.5 text-xs text-ink-500">
+                {entry.actorKind === "system" ? "System" : (entry.actorName ?? "Unknown")}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
     </Card>
   );
 }

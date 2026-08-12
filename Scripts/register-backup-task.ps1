@@ -120,6 +120,12 @@ if (-not (Test-Path $BackupRoot)) {
     }
 }
 
+$Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Highest
+
+# S4U rather than the Register-ScheduledTask -User/-RunLevel default
+# (InteractiveToken): the same non-interactive logon fix as
+# register-aos-services.ps1, applied here for consistency.
+
 if ($PSCmdlet.ShouldProcess($TaskName, "Register the scheduled task")) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($existing) {
@@ -132,8 +138,7 @@ if ($PSCmdlet.ShouldProcess($TaskName, "Register the scheduled task")) {
         -Action $Action `
         -Trigger $Trigger `
         -Settings $Settings `
-        -User $User `
-        -RunLevel Highest `
+        -Principal $Principal `
         -Description "Nightly AOS backup: pg_dump of the operational database plus a copy of the document store, verified before retention prunes anything (Backend/backup.mjs)." | Out-Null
 
     Write-Host ""

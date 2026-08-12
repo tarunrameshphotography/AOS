@@ -119,6 +119,51 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(listener);
 }
 
+/**
+ * When the browser last got a response to a request that carried a bearer
+ * token and was not itself refused as unauthenticated.
+ *
+ * This mirrors `api_session.last_seen_at` on the server (Backend/api-server.ts)
+ * without asking it: the server touches that column on every request that
+ * resolves to a valid session, REGARDLESS of what the specific route then
+ * decides — a 403 or a validation 400 still means the token was good and the
+ * clock restarted there. So the rule here is the same: any completed request
+ * that sent a token and did not come back 401 counts, whatever its status.
+ *
+ * NOT updated by mouse moves, key presses, or any other browser event — only
+ * by a request the server actually saw and accepted the token for. A page
+ * left open on the login screen (no token) never counts, and neither does
+ * idle mouse motion over an authenticated page — matching the server, which
+ * has no idea either of those happened.
+ */
+let lastActivityAt = Date.now();
+
+type ActivityListener = (at: number) => void;
+const activityListeners = new Set<ActivityListener>();
+
+/** `IdleSessionMonitor` subscribes so it can recompute its countdown the
+ * moment activity resets it, rather than waiting for its next poll tick. */
+export function onActivity(listener: ActivityListener): () => void {
+  activityListeners.add(listener);
+  return () => activityListeners.delete(listener);
+}
+
+export function getLastActivityAt(): number {
+  return lastActivityAt;
+}
+
+function noteActivity(): void {
+  lastActivityAt = Date.now();
+  for (const listener of activityListeners) listener(lastActivityAt);
+}
+
+/** True for exactly the requests that should count as activity: a token was
+ * actually sent, and the server did not refuse it as unauthenticated. Shared
+ * by every request-sending function below so the rule is asserted once. */
+function countsAsActivity(tokenSent: string | null, status: number): boolean {
+  return tokenSent !== null && status !== 401;
+}
+
 export interface RequestOptions {
   readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly body?: unknown;
@@ -129,8 +174,9 @@ export interface RequestOptions {
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const token = storedToken();
+  const tokenSent = options.anonymous ? null : token;
   const headers: Record<string, string> = {};
-  if (token && !options.anonymous) headers.Authorization = `Bearer ${token}`;
+  if (tokenSent) headers.Authorization = `Bearer ${tokenSent}`;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
   let response: Response;
@@ -150,6 +196,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     storeToken(null);
     for (const listener of unauthorizedListeners) listener();
   }
+  if (countsAsActivity(tokenSent, response.status)) noteActivity();
 
   const payload = await response.json().catch(() => null);
 
@@ -190,6 +237,7 @@ export async function apiUpload<T>(path: string, file: File): Promise<T> {
     storeToken(null);
     for (const listener of unauthorizedListeners) listener();
   }
+  if (countsAsActivity(token, response.status)) noteActivity();
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -223,6 +271,7 @@ export async function apiDownload(
     storeToken(null);
     for (const listener of unauthorizedListeners) listener();
   }
+  if (countsAsActivity(token, response.status)) noteActivity();
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);

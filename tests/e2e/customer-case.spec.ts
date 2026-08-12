@@ -283,6 +283,13 @@ test.describe("one authoritative database", () => {
       await expect(otherPage.getByText("No such case, or you do not have access to it.")).toBeVisible();
       expect(await otherPage.content()).not.toContain(number);
 
+      // The Timeline tab is not a side door: the same URL with ?tab=timeline
+      // gets the identical refusal, never a peek at the case's event history.
+      await otherPage.goto(`${url}?tab=timeline`);
+      await expect(otherPage.getByText("No such case, or you do not have access to it.")).toBeVisible();
+      expect(await otherPage.content()).not.toContain(number);
+      await expect(otherPage.getByText("Case created")).toHaveCount(0);
+
       // And it is absent from their list.
       await otherPage.goto("/#/cases");
       await expect(otherPage.getByRole("link", { name: number })).toHaveCount(0);
@@ -312,18 +319,29 @@ test.describe("one authoritative database", () => {
   });
 });
 
-test.describe("the un-migrated tabs say so", () => {
-  test("Documents, Banks and Timeline are marked not yet migrated", async ({ page }) => {
+/**
+ * Was "the un-migrated tabs say so" — Documents and Banks moved in Stages 3C
+ * and 3D, Timeline last of the four. All four tabs are now live reads against
+ * the real server; none should ever show the placeholder again.
+ */
+test.describe("all four case tabs are live on PostgreSQL", () => {
+  test("Overview, Documents, Banks and Timeline all render real content, and none says not yet migrated", async ({
+    page,
+  }) => {
     await signIn(page, TELECALLER);
     await openCase(page, unique("Tabbed"));
 
+    await expect(page.getByText("What this case is asking for")).toBeVisible();
+
     for (const tab of ["Documents", "Banks", "Timeline"]) {
       await page.getByRole("button", { name: tab }).click();
-      // Explicit, so an unmigrated tab is never mistaken for an empty one.
-      await expect(page.getByText("Not yet migrated.")).toBeVisible();
+      await expect(page.getByText("Not yet migrated.")).toHaveCount(0);
     }
 
-    await page.getByRole("button", { name: "Overview" }).click();
-    await expect(page.getByText("What this case is asking for")).toBeVisible();
+    // Timeline is the tab under test here: a freshly opened case has exactly
+    // one real event, read from the server, not a placeholder.
+    await page.getByRole("button", { name: "Timeline" }).click();
+    await expect(page.getByText("Case created")).toBeVisible();
+    await expect(page.getByText("Nothing recorded yet.")).toHaveCount(0);
   });
 });

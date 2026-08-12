@@ -1,6 +1,6 @@
 AOS — MILESTONES (quick-glance progress tracker)
-Last updated: 2026-08-11
-Current commit / checkpoint: Phase 6 (Case intake & document workflow) complete — see git log for the commit hash
+Last updated: 2026-08-12
+Current commit / checkpoint: Phase 6 (Case intake & document workflow) complete — 4e82ab1, verified on the office PC 2026-08-12 (typecheck/642 unit/202 integration/build green; migration 0035 confirmed applied to the real `aos` database; see roadmap for detail)
 Full detail: see "AOS Production Readiness Master Roadmap.txt"
 
 ============================================================

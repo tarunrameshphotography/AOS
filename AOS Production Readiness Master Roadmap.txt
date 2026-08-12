@@ -1,6 +1,6 @@
 AOS — PRODUCTION READINESS MASTER ROADMAP
-Checkpoint: 2026-08-11
-Current commit: ad0ec68
+Checkpoint: 2026-08-12 (office PC — verification pass, see note at end of Phase 6 section)
+Current commit: 4e82ab1
 
 PURPOSE
 Keep development aligned to the actual production goal. Do not invent new stages or wander into unrelated enhancements.
@@ -618,6 +618,41 @@ TESTS: +7 unit (642 total), +22 integration (202 total), all green.
 Baseline was green on all four; the three pre-existing Playwright failures
 in customer-case.spec.ts are unchanged and documented in the final report.
 
+------------------------------------------------------------
+2026-08-12 OFFICE-PC VERIFICATION (no code changes)
+------------------------------------------------------------
+A session opened on the office PC to "begin Phase 6" found the checkout
+already at 4e82ab1 (this commit), 0 commits ahead/behind origin/main —
+Phase 6 had already been implemented and pushed from elsewhere. Rather than
+redo or re-scope it, this session verified the claims above hold in the
+actual office environment, against the real office `aos` database:
+  - `node Backend/migrate.mjs --status` (read-only) against `aos` (the
+    office PC's .env points AOS_DB_NAME at `aos`, not a test database):
+    migration 0035 is APPLIED to the office database. The note this Phase 6
+    section originally wrote — that 0035 had been applied only to
+    aos_test/aos_e2e — was stale; it has since been applied to `aos` too.
+    It is additive (nullable columns, one defaulted column, three
+    document_type row updates), so this caused no discontinuity.
+  - `npm run typecheck`: clean.
+  - `npm test`: 642/642 unit tests passed.
+  - `npm run test:integration` (hard-wired to aos_test, verified via
+    vitest.integration.config.ts before running — never touches `aos`):
+    202/202 passed, including Backend/security.test.ts and
+    Backend/security-workflows.test.ts, which Phase 4's note had flagged as
+    failing to spawn their child aos_app server in an isolated worktree —
+    both pass cleanly on the office PC itself.
+  - `npm run build`: succeeded (pre-existing >500kB chunk-size warning only,
+    unrelated to Phase 6).
+  - Playwright, the five enabled suites (auth.spec.ts, case-flows.spec.ts,
+    document-submission.spec.ts, role-workflow.spec.ts and
+    workflow-polish.spec.ts remain entirely skipped, unrelated to this
+    verification): 36 passed, 3 failed — the same three pre-existing
+    customer-case.spec.ts failures named in this section's own commit
+    ("moves a case through the stages...", "edits a customer's contact
+    details", "the un-migrated tabs say so"), unchanged.
+No source code was modified in this pass. The only changes are this note
+and the correction to the paragraph above it.
+
 ============================================================
 MASTER MILESTONE
 ============================================================
@@ -634,9 +669,10 @@ REMAINING DEVELOPMENT:
 THEN:
   Office Server Production Cutover Gate (unstarted — see the 21-step
   checklist above; nothing in Phase 6 advances or substitutes for it.
-  Migration 0035 has been applied ONLY to the throwaway aos_test and
-  aos_e2e databases; applying it to the office database is a cutover-gate
-  step and was not authorized here)
+  Migration 0035 is now confirmed applied to the office `aos` database
+  itself, not only aos_test/aos_e2e — see the 2026-08-12 office-PC
+  verification note at the end of this Phase 6 section. This does not
+  advance the cutover gate; the remaining 21 steps are still unstarted)
 
 THEN:
   INITIAL PRODUCTION

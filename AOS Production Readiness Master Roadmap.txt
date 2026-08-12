@@ -1,6 +1,7 @@
 AOS — PRODUCTION READINESS MASTER ROADMAP
-Checkpoint: 2026-08-12 (office PC — verification pass, see note at end of Phase 6 section)
-Current commit: 4e82ab1
+Checkpoint: 2026-08-12 (office PC — Cutover Gate audit and execution in progress,
+  see the OFFICE SERVER PRODUCTION CUTOVER GATE section for status)
+Current commit: see git log
 
 PURPOSE
 Keep development aligned to the actual production goal. Do not invent new stages or wander into unrelated enhancements.
@@ -494,6 +495,112 @@ The office server must then be configured and verified:
 
 The office database must NEVER be replaced with the disposable
 Home-PC database.
+
+------------------------------------------------------------
+STATUS as of 2026-08-12, office PC, this checkpoint
+------------------------------------------------------------
+  1. Verified production backup — DONE. Latest verified run:
+     C:\AOS\Backups\2026-08-12_05-56-00 (dump checksum + all 110 document
+     files byte-for-byte). Two earlier same-day runs also verify; one older
+     pre-checksum-format run does not (expected, not corruption).
+  2. All required migrations applied — DONE, including a NEW migration 0036
+     found necessary by this same audit (see below). `migrate.mjs --status`:
+     0001 through 0036 all `applied` on the real `aos`, no CHANGED checksums.
+  3. aos_app configured with a strong production password — DONE (long
+     random, generated and verified on this machine, never committed).
+  4. Administrative DB credentials kept separate — DONE:
+     AOS_DB_ADMIN_USER=postgres / AOS_DB_ADMIN_PASSWORD set in .env
+     alongside AOS_DB_USER=aos_app, per Docs/Installation.md §5a.
+  5. Production .env configured — DONE for DB role and AOS_WEB_HOST/PORT.
+     Gmail (§9) was already configured with real credentials before this
+     session (not newly added here).
+  6. bootstrap-production — ALREADY DONE in an earlier session (2026-08-10);
+     reconfirmed this session, not re-run.
+  7. Five development accounts inactive — CONFIRMED: telecaller.a/b,
+     login.exec, manager.m, partner.p all is_active=f. Six real employee
+     accounts active.
+  8. LAN binding / production web server — DONE in .env (AOS_WEB_HOST=0.0.0.0,
+     AOS_WEB_PORT=4300); functionally verified (health, login-path smoke
+     test, reachable at the real LAN IP from this machine). NOT YET started
+     as the permanent service — see #9.
+  9. Windows service startup (Scripts/register-aos-services.ps1) —
+     NOT DONE. Requires an ELEVATED PowerShell session; this session's
+     PowerShell had a UAC-filtered token and could not self-elevate.
+     Exact command to run, once, in an elevated window:
+       cd "<repo>"; .\Scripts\register-aos-services.ps1
+ 10. Scheduled backup (Scripts/register-backup-task.ps1) — NOT DONE, same
+     elevation blocker as #9:
+       cd "<repo>"; .\Scripts\register-backup-task.ps1 -Time 20:30
+     Then immediately: Start-ScheduledTask -TaskName "AOS Nightly Backup";
+     npm run backup:verify
+ 11. Firewall rule — NOT DONE, same elevation blocker:
+       New-NetFirewallRule -DisplayName "AOS web (4300)" -Direction Inbound `
+         -Action Allow -Protocol TCP -LocalPort 4300 -Profile Private
+     The office Wi-Fi network is already correctly classified Private.
+ 12. Verify from a second office PC — NOT DONE. Needs a human at a second
+     physical machine; blocked on #9/#11 running first. See the flagged risk
+     below about this machine's LAN IP.
+ 13. Reboot and verify automatic recovery — NOT DONE. Deliberately not
+     attempted without asking first — this session's audit found a consumer
+     VPN client (HotspotShield) active on this machine, which is not a
+     dedicated-server configuration; rebooting a shared PC needs the human
+     operator's go-ahead regardless.
+ 14. Production Gmail credentials — ALREADY CONFIGURED before this session
+     (real OAuth client id/secret/refresh token in .env). Confirmed live:
+     mail backend reports "provider 'gmail' - able to send". No real email
+     was sent as part of this verification.
+ 15. Verify login and permissions — DONE by proxy: the full security/
+     permission test suite (642 unit + 202 integration, including
+     security.test.ts/security-workflows.test.ts under a real aos_app
+     connection) passes. A real employee sign-in still needs a human who
+     holds a real password — this session could not do that itself.
+ 16. Verify existing case visibility — DONE, read-only: 4 real cases
+     confirmed present (AL-2026-00002 through 00005) and not modified.
+ 17. Verify document upload/download/verification — DONE via the existing
+     proven code path (security-workflows.test.ts, run this session under
+     the real aos_app role) plus a storage-store audit: 110 files on disk,
+     43 real document rows, 24 files (12 uploads, under person/per_001 and
+     per_002) identified as orphaned — pre-existing, not created or deleted
+     this session, flagged for a later controlled cleanup, per instruction.
+ 18. Verify lender submission safely — DONE for the code path (same test
+     suite, capture-mode mail, never a real send). No real bank email was
+     sent, per instruction.
+ 19. Verify backup and restore on the real hardware — DONE. A restore-drill
+     bug specific to this environment (vite-node choking on a shebang line)
+     was found and fixed; 16/16 checks then passed genuinely under aos_app,
+     never touching `aos` or C:\AOS\Data. A full restore of the newest real
+     backup into a disposable "aos_rehearsal" database also succeeded
+     (used to rehearse migration 0036 before applying it to `aos`).
+ 20. Designated server / topology recorded — STILL BLANK. Docs/Deployment
+     Topology.md's own "still to be recorded" table (server identity, LAN
+     IP, backup location, password custodian) needs a human to fill in —
+     not guessable from software. NOTE: this machine's automatic IP
+     detection (Scripts/register-aos-services.ps1, aos-status.ps1) picked
+     a HotspotShield VPN tunnel address instead of the real LAN IP, because
+     more than one non-loopback interface exists. The real address is
+     192.168.0.102 (DHCP, Wi-Fi, not yet router-reserved) — use that one,
+     not whatever those scripts print, until the VPN is removed or the
+     scripts are made interface-aware.
+ 21. Orphaned files — UNDERSTOOD, NOT DELETED. See #17. Left exactly as
+     found for a deliberate, separate cleanup decision.
+
+  ONE GENUINE PRODUCTION BLOCKER WAS FOUND AND FIXED BY THIS AUDIT:
+  switching AOS_DB_USER to aos_app (required by #3) is the first time this
+  ever actually happened on a machine holding real data, and it surfaced a
+  real gap nothing had caught before: migration 0033 granted aos_app only
+  SELECT on document_type, document_requirement_rule, operational_threshold
+  and rejection_reason. Stage 4 Item 4 (commit c91fc70) gave those tables
+  real UPDATE routes afterwards, and nobody had run the app as aos_app
+  against a real deployment since, so a Manager saving an edited Document
+  Rule or Document Type would have failed with "Could not save." Fixed by
+  migration 0036 (UPDATE only, matching exactly what the API writes; no
+  INSERT/DELETE — the master-data vocabulary is closed and additive-only
+  through migrations). Backed up, rehearsed against a full restore of the
+  real `aos` data into a disposable database, verified there, verified
+  again end-to-end through the real Playwright suite against aos_e2e, THEN
+  applied to `aos` and reverified. Four smaller, narrower bugs in test/
+  backup/restore tooling (never previously exercised under aos_app on any
+  machine) were found and fixed the same way — see the commit for detail.
 
 ============================================================
 WHAT "PRODUCTION READY" MEANS

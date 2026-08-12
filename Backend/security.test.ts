@@ -33,7 +33,7 @@ import { hashPassword } from "@domain/auth/password.js";
 import type { Role } from "@domain/permissions/index.js";
 
 import { createApiServer, resetLoginThrottle } from "./api-server.js";
-import { pool, withActor } from "./db.js";
+import { adminPool, closeAdminPool, pool, withActor } from "./db.js";
 import { DEV_SEED_USERNAMES, disableDevelopmentAccounts } from "./dev-accounts.js";
 
 const PASSWORD = "integration-test-password";
@@ -51,6 +51,14 @@ const APP_ROLE_PASSWORD = randomBytes(18).toString("base64url");
 
 /** Connected as `aos_app` — the role the application uses in production. */
 let appRole: pg.Client;
+
+/** Whatever `aos_app`'s password was before this file touched it — a raw
+ * SCRAM verifier, or `null` if none was set — restored in `afterAll`. Roles
+ * are cluster-wide, not per-database: on a machine where an office `aos`
+ * install has already set a real password for `aos_app`, unconditionally
+ * nulling it out at teardown (the old behaviour) would silently lock that
+ * office out until someone re-ran Docs/Installation.md §5a. */
+let previousAppRolePassword: string | null = null;
 
 /** The in-process server, used for the checks that do not care which role is
  * underneath (CORS, throttling, bootstrap). Connected as whatever
@@ -175,9 +183,13 @@ async function startAppRoleServer(): Promise<void> {
 }
 
 beforeAll(async () => {
-  // Set the aos_app password for this run. Requires the owner connection,
-  // which is what `pool` is under the integration config.
-  await pool.query(`alter role aos_app password '${APP_ROLE_PASSWORD}'`);
+  // Save whatever password aos_app already had — reading pg_authid needs a
+  // superuser, hence adminPool() rather than pool — then set this run's own.
+  const { rows } = await adminPool().query<{ rolpassword: string | null }>(
+    `select rolpassword from pg_authid where rolname = 'aos_app'`,
+  );
+  previousAppRolePassword = rows[0]?.rolpassword ?? null;
+  await adminPool().query(`alter role aos_app password '${APP_ROLE_PASSWORD}'`);
 
   appRole = new pg.Client({
     host: process.env.AOS_DB_HOST ?? "127.0.0.1",
@@ -199,9 +211,14 @@ afterAll(async () => {
   appRoleServer?.kill();
   await appRole?.end();
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  // Leave no usable credential behind on the cluster role.
-  await pool.query(`alter role aos_app password null`);
-  await pool.end();
+  // Restore exactly what was there before this file ran — not always null.
+  if (previousAppRolePassword === null) {
+    await adminPool().query(`alter role aos_app password null`);
+  } else {
+    await adminPool().query(`alter role aos_app password '${previousAppRolePassword}'`);
+  }
+  await closeAdminPool();
+  if (!pool.ended) await pool.end();
 });
 
 // ---------------------------------------------------------------------------

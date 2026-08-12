@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
+import { loadDotEnv } from "./Backend/env.mjs";
 
 /**
  * Integration tests — real PostgreSQL, real HTTP, real permission checks.
@@ -12,7 +13,25 @@ import { fileURLToPath } from "node:url";
  * `AOS_DB_NAME` is set here rather than in `.env` so the suite physically
  * cannot address the office database: `loadDotEnv` never overwrites a variable
  * that is already set.
+ *
+ * `AOS_DB_USER`/`AOS_DB_PASSWORD` are resolved here for the same reason, not
+ * merely inherited from `.env`. Most fixture helpers in this suite call
+ * `pool.query(...)` directly rather than `withActor`, which needs a role RLS
+ * does not block — true by default on a machine still connecting as
+ * `postgres`, false the moment an office switches `AOS_DB_USER` to `aos_app`
+ * (Docs/Installation.md §5a). `security.test.ts`/`security-workflows.test.ts`
+ * still deliberately connect as `aos_app` themselves, through their own
+ * explicit client and spawned server — this only fixes what the *shared* pool
+ * uses. Same fallback as `Backend/db.ts`'s `adminPool()`: prefer
+ * `AOS_DB_ADMIN_USER`/`_PASSWORD` if the machine's `.env` set them, else fall
+ * back to `AOS_DB_USER`/`_PASSWORD` (a plain dev machine, still `postgres`).
  */
+loadDotEnv();
+const testDbUser = process.env.AOS_DB_ADMIN_USER?.trim() || process.env.AOS_DB_USER || "postgres";
+const testDbPassword = process.env.AOS_DB_ADMIN_USER?.trim()
+  ? process.env.AOS_DB_ADMIN_PASSWORD
+  : process.env.AOS_DB_PASSWORD;
+
 export default defineConfig({
   test: {
     globals: true,
@@ -20,6 +39,14 @@ export default defineConfig({
     globalSetup: ["Backend/test-globalsetup.ts"],
     env: {
       AOS_DB_NAME: "aos_test",
+      AOS_DB_USER: testDbUser,
+      AOS_DB_PASSWORD: testDbPassword ?? "",
+      // Never leak the office admin-fallback pair into the suite itself —
+      // it already got what it needs above, and `adminPool()` falling back
+      // to this same value a second time inside a test process is harmless
+      // but confusing to trace.
+      AOS_DB_ADMIN_USER: "",
+      AOS_DB_ADMIN_PASSWORD: "",
       // api-server.ts listens on import when started as a process; the tests
       // want to bind their own ephemeral port instead.
       AOS_API_NO_LISTEN: "1",

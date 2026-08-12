@@ -32,7 +32,7 @@ import pg from "pg";
 import { hashPassword } from "@domain/auth/password.js";
 import type { Role } from "@domain/permissions/index.js";
 
-import { pool, withActor } from "./db.js";
+import { adminPool, closeAdminPool, pool, withActor } from "./db.js";
 
 const PASSWORD = "integration-test-password";
 const FIXTURE = readFileSync(path.join(process.cwd(), "tests", "fixtures", "pan-card.pdf"));
@@ -51,6 +51,11 @@ let appRoleBaseUrl: string;
 /** A direct connection as aos_app, for the database-level assertions
  * (event append-only) that HTTP cannot exercise on its own. */
 let appRole: pg.Client;
+
+/** Whatever aos_app's password was before this file touched it — see
+ * security.test.ts's identical variable for why this must be restored
+ * rather than unconditionally nulled. */
+let previousAppRolePassword: string | null = null;
 
 async function waitHealthy(url: string): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -214,7 +219,11 @@ beforeAll(async () => {
   await startStorageServer();
   await startMailServer();
 
-  await pool.query(`alter role aos_app password '${APP_ROLE_PASSWORD}'`);
+  const { rows } = await adminPool().query<{ rolpassword: string | null }>(
+    `select rolpassword from pg_authid where rolname = 'aos_app'`,
+  );
+  previousAppRolePassword = rows[0]?.rolpassword ?? null;
+  await adminPool().query(`alter role aos_app password '${APP_ROLE_PASSWORD}'`);
   await startAppRoleServer();
 
   appRole = new pg.Client({
@@ -234,8 +243,13 @@ afterAll(async () => {
   mailServer?.kill();
   rmSync(storageRoot, { recursive: true, force: true });
   rmSync(mailCaptureDir, { recursive: true, force: true });
-  await pool.query(`alter role aos_app password null`);
-  await pool.end();
+  if (previousAppRolePassword === null) {
+    await adminPool().query(`alter role aos_app password null`);
+  } else {
+    await adminPool().query(`alter role aos_app password '${previousAppRolePassword}'`);
+  }
+  await closeAdminPool();
+  if (!pool.ended) await pool.end();
 }, 30_000);
 
 describe("document upload/download, submission and mail, served by an API running as aos_app", () => {

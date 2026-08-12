@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Prove a backup is restorable — or say precisely why it is not.
  *

@@ -65,10 +65,18 @@ HEAD: see git log (Phase 6 commit, this checkpoint)
 origin/main: pushed by this change
 Working tree: clean except pre-existing untracked scratch files
 
-Current active work: Phase 6 complete. No development phase is currently
-queued — next is the Office Server Production Cutover Gate, whenever the
-business is ready for it. Inbound bank-email ingestion remains explicitly
-deferred.
+Current active work: the Office Server Production Cutover Gate, in progress
+on the real office PC as of 2026-08-12 — see the master roadmap's "STATUS as
+of 2026-08-12" note under that section for the full 21-item state. Database
+role switched to aos_app, one real gap found and fixed (migration 0036 —
+aos_app could read but not save Document Rules/Types/Rejection Reasons/
+Thresholds, invisible until now because no prior install had ever actually
+run as aos_app against real data), backups verified, restore-drill fixed and
+passing. Still needs an elevated PowerShell session (scheduled tasks,
+firewall rule — this session's shell could not self-elevate), a second-PC
+reachability test, a reboot test, and the human-only router/topology
+recording. No development phase is queued behind this. Inbound bank-email
+ingestion remains explicitly deferred.
 
 Phase 6 in one line: the document checklist finally reflects the customer,
 because New Case now RECORDS what the rule engine has always been able to

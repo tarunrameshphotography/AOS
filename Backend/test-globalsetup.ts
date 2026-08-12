@@ -30,12 +30,21 @@ loadDotEnv();
 const TEST_DB = "aos_test";
 
 export async function setup(): Promise<void> {
+  // Creating a database needs CREATEDB, which `aos_app` (migration 0033) does
+  // not have and must not have — same admin-fallback reasoning as
+  // `Backend/db-config.mjs`'s `connectionConfig()`: prefer
+  // `AOS_DB_ADMIN_USER`/`_PASSWORD` when the machine's `.env` set them (an
+  // office server past Docs/Installation.md §5a), else fall back to
+  // `AOS_DB_USER`/`_PASSWORD` (a plain dev machine, still `postgres`).
+  const adminUser = process.env.AOS_DB_ADMIN_USER?.trim();
   const admin = new pg.Client({
     host: process.env.AOS_DB_HOST ?? "127.0.0.1",
     port: Number(process.env.AOS_DB_PORT ?? 5432),
     database: "postgres",
-    user: process.env.AOS_DB_USER ?? "postgres",
-    password: process.env.AOS_DB_PASSWORD ?? "",
+    user: adminUser || process.env.AOS_DB_USER || "postgres",
+    password: adminUser
+      ? (process.env.AOS_DB_ADMIN_PASSWORD ?? "")
+      : (process.env.AOS_DB_PASSWORD ?? ""),
   });
 
   await admin.connect();

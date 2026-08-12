@@ -31,13 +31,20 @@ loadDotEnv();
 
 export { E2E_DB, E2E_PASSWORD, E2E_USERS };
 
+// Administrative throughout (CREATEDB, seeding accounts with no actor yet) —
+// same admin-fallback as Backend/db-config.mjs's connectionConfig(): prefer
+// AOS_DB_ADMIN_USER/_PASSWORD when the machine's .env set them (an office
+// server past Docs/Installation.md §5a), else AOS_DB_USER/_PASSWORD.
 function connection(database: string): pg.Client {
+  const adminUser = process.env.AOS_DB_ADMIN_USER?.trim();
   return new pg.Client({
     host: process.env.AOS_DB_HOST ?? "127.0.0.1",
     port: Number(process.env.AOS_DB_PORT ?? 5432),
     database,
-    user: process.env.AOS_DB_USER ?? "postgres",
-    password: process.env.AOS_DB_PASSWORD ?? "",
+    user: adminUser || process.env.AOS_DB_USER || "postgres",
+    password: adminUser
+      ? (process.env.AOS_DB_ADMIN_PASSWORD ?? "")
+      : (process.env.AOS_DB_PASSWORD ?? ""),
   });
 }
 

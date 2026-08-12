@@ -135,15 +135,23 @@ function sha256(bytes: Uint8Array | Buffer): string {
 
 /** A `pg.Client` against an arbitrary database on the configured server —
  * for creating and dropping the drill's databases, and for reading the
- * RESTORED one, which is not the database the pool is connected to. */
+ * RESTORED one, which is not the database the pool is connected to.
+ *
+ * Administrative throughout (CREATEDB, reading across whatever RLS would
+ * otherwise hide) — never a stand-in for the application's own role, which is
+ * `security.test.ts`'s job. Same admin-fallback as `Backend/db-config.mjs`:
+ * prefer `AOS_DB_ADMIN_USER`/`_PASSWORD` when set, else `AOS_DB_USER`/`_PASSWORD`. */
 async function connectTo(database: string) {
   const pg = (await import("pg")).default;
+  const adminUser = process.env.AOS_DB_ADMIN_USER?.trim();
   const client = new pg.Client({
     host: process.env.AOS_DB_HOST ?? "127.0.0.1",
     port: Number(process.env.AOS_DB_PORT ?? 5432),
     database,
-    user: process.env.AOS_DB_USER ?? "postgres",
-    password: process.env.AOS_DB_PASSWORD ?? "",
+    user: adminUser || process.env.AOS_DB_USER || "postgres",
+    password: adminUser
+      ? (process.env.AOS_DB_ADMIN_PASSWORD ?? "")
+      : (process.env.AOS_DB_PASSWORD ?? ""),
   });
   await client.connect();
   return client;
@@ -215,9 +223,17 @@ async function seedSyntheticCase(): Promise<Seeded> {
   const fixture = readFileSync(path.join(process.cwd(), "tests", "fixtures", "pan-card.pdf"));
   const customerName = "Drill Testcase";
 
-  return await withActor(null, async (client) => {
+  // Creating the operator's account is a tier-A operation (person/app_user/
+  // user_role are readable and writable with no identity yet — that is how an
+  // identity comes to exist, Database/README.md). Everything after this
+  // point is not: `createCustomer` writes to `event`, tier B, which refuses a
+  // transaction with no authenticated actor. So this is two transactions, not
+  // one — matching reality, where an account is created once (an owner's
+  // bootstrap) and signs in to act later, never both in the same breath.
+  const authIdentityId = await withActor(null, async (client) => {
     // An employee holding both roles — one creates and uploads, the same one
     // verifies. Two accounts would prove nothing extra about a backup.
+    const generatedAuthIdentityId = randomUUID();
     const person = await client.query<{ id: string }>(
       `insert into person (full_name) values ($1) returning id`,
       ["Drill Operator"],
@@ -225,7 +241,12 @@ async function seedSyntheticCase(): Promise<Seeded> {
     const user = await client.query<{ id: string }>(
       `insert into app_user (person_id, auth_identity_id, username, password_hash, is_active)
        values ($1, $2, $3, $4, true) returning id`,
-      [person.rows[0]!.id, randomUUID(), `drill.${randomUUID().slice(0, 8)}`, await hashPassword(randomUUID())],
+      [
+        person.rows[0]!.id,
+        generatedAuthIdentityId,
+        `drill.${randomUUID().slice(0, 8)}`,
+        await hashPassword(randomUUID()),
+      ],
     );
     const userId = user.rows[0]!.id;
     for (const role of ["telecaller", "login_executive"]) {
@@ -234,14 +255,17 @@ async function seedSyntheticCase(): Promise<Seeded> {
         role,
       ]);
     }
+    return generatedAuthIdentityId;
+  });
 
-    const { rows: authRows } = await client.query<{ auth_identity_id: string }>(
-      `select auth_identity_id from app_user where id = $1`,
-      [userId],
+  return await withActor(authIdentityId, async (client) => {
+    const { rows: userRows } = await client.query<{ id: string }>(
+      `select id from app_user where auth_identity_id = $1`,
+      [authIdentityId],
     );
     const actor = {
-      userId,
-      authIdentityId: authRows[0]!.auth_identity_id,
+      userId: userRows[0]!.id,
+      authIdentityId,
       roles: ["telecaller", "login_executive"] as never,
       overrides: [],
     };

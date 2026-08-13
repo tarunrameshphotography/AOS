@@ -35,6 +35,7 @@
  */
 
 import { CASE_STAGE_LABELS, type CaseStage } from "@domain/case/stages.js";
+import { hasPermissionWithOverrides } from "@domain/permissions/index.js";
 
 import type { Queryable } from "./db.js";
 import { canActOnCase, type Actor } from "./authorize.js";
@@ -875,5 +876,56 @@ export async function listCaseEvents(
     eventType: row.event_type,
     label: EVENT_LABELS[row.event_type] ?? humanizeEventType(row.event_type),
     detail: detailFor(row.event_type, row.payload_after),
+  }));
+}
+
+export interface OrgTimelineEntry extends CaseTimelineEntry {
+  readonly caseId: string;
+  readonly caseNumber: string;
+}
+
+/**
+ * The organisation-wide counterpart to `listCaseEvents`: recent case activity
+ * across every case, not one. This is the "Admin's system-wide … oversight
+ * across every case in the office" `event.view` was defined for (ADR-027) but
+ * had no reader for until the Founders Dashboard — same permission, same
+ * table, a wider `where` clause. `case_id is not null` scopes this to case
+ * activity, which is what a founder's activity feed is for; the separate
+ * user-admin event family (`user.roles_changed` and friends) already has its
+ * own home on the Users screen's audit trail and is not duplicated here.
+ */
+export async function listOrgEvents(
+  client: Queryable,
+  actor: Actor,
+  limit: number,
+): Promise<readonly OrgTimelineEntry[]> {
+  if (!hasPermissionWithOverrides(actor.roles, actor.overrides, "event.view", "all")) {
+    throw new ApiError(403, "You do not have permission to do that (event.view).");
+  }
+
+  const { rows } = await client.query(
+    `select e.id, e.occurred_at, e.actor_kind, e.event_type, e.payload_after,
+            e.case_id, c.case_number,
+            p.full_name as actor_name
+       from event e
+       join loan_case c on c.id = e.case_id
+       left join app_user u on u.id = e.actor_user_id
+       left join person p on p.id = u.person_id
+      where e.case_id is not null
+      order by e.occurred_at desc, e.id desc
+      limit $1`,
+    [limit],
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    occurredAt: row.occurred_at,
+    actorKind: row.actor_kind,
+    actorName: row.actor_name,
+    eventType: row.event_type,
+    label: EVENT_LABELS[row.event_type] ?? humanizeEventType(row.event_type),
+    detail: detailFor(row.event_type, row.payload_after),
+    caseId: row.case_id,
+    caseNumber: row.case_number,
   }));
 }

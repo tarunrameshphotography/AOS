@@ -75,6 +75,7 @@ import {
   type OutgoingEmail,
 } from "@domain/communications/index.js";
 import type { CaseStage } from "@domain/case/stages.js";
+import { hasPermissionWithOverrides } from "@domain/permissions/index.js";
 
 import type { Queryable } from "./db.js";
 import { canActOnCase, type Actor } from "./authorize.js";
@@ -237,6 +238,69 @@ export async function listSubmissions(
   const header = await loadCaseHeader(client, caseId);
   requireCaseAccess(actor, header, "submission.read");
   return await submissionViewsFor(client, caseId);
+}
+
+export interface SubmissionBoardEntry {
+  readonly id: string;
+  readonly caseId: string;
+  readonly counterparty: string;
+  readonly status: string;
+  readonly submittedAt: string | null;
+  readonly createdAt: string;
+  readonly rejectionReasonId: string | null;
+  readonly bankReasonText: string | null;
+}
+
+/**
+ * Every submission across every case, for the Founders Dashboard's
+ * Banks/Applications view. Deliberately lighter than `SubmissionView` — no
+ * recipients, packages, offers or queries, none of which a founder-level
+ * "how are we doing with lenders" board needs — so this stays one query
+ * instead of the N+1 that reusing `submissionViewsFor` per case would mean.
+ * Gated on `submission.read` at `all`, the same permission `listSubmissions`
+ * already requires for a founder/admin reading any case's submissions.
+ */
+export async function listAllSubmissions(
+  client: Queryable,
+  actor: Actor,
+  limit: number,
+): Promise<SubmissionBoardEntry[]> {
+  if (!hasPermissionWithOverrides(actor.roles, actor.overrides, "submission.read", "all")) {
+    throw new ApiError(403, "You do not have permission to do that (submission.read).");
+  }
+
+  const { rows } = await client.query<
+    Pick<
+      SubmissionRow,
+      | "id"
+      | "case_id"
+      | "bank_name_at_submission"
+      | "branch_name_at_submission"
+      | "status"
+      | "submitted_at"
+      | "created_at"
+      | "rejection_reason_id"
+      | "bank_reason_text"
+    >
+  >(
+    `select id, case_id, bank_name_at_submission, branch_name_at_submission, status,
+            submitted_at::text, created_at::text, rejection_reason_id, bank_reason_text
+       from submission
+      order by created_at desc
+      limit $1`,
+    [limit],
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    caseId: row.case_id,
+    counterparty: counterpartyOf(row),
+    status: row.status,
+    submittedAt: row.submitted_at,
+    createdAt: row.created_at,
+    rejectionReasonId: row.rejection_reason_id,
+    bankReasonText: row.bank_reason_text,
+  }));
 }
 
 /**

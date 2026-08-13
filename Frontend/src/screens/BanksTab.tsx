@@ -50,7 +50,7 @@ import {
   useToast,
 } from "../ui/index.js";
 
-const SUBMISSION_STATUS_LABELS: Record<SubmissionStatus, string> = {
+export const SUBMISSION_STATUS_LABELS: Record<SubmissionStatus, string> = {
   not_submitted: "Draft",
   submitted: "Submitted",
   under_process: "Under process",
@@ -62,7 +62,7 @@ const SUBMISSION_STATUS_LABELS: Record<SubmissionStatus, string> = {
   disbursed: "Disbursed",
 };
 
-function statusTone(status: SubmissionStatus): "neutral" | "info" | "warn" | "good" | "bad" {
+export function statusTone(status: SubmissionStatus): "neutral" | "info" | "warn" | "good" | "bad" {
   switch (status) {
     case "not_submitted":
       return "neutral";

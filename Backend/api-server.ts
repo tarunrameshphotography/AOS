@@ -64,7 +64,7 @@ import {
   updateCustomer,
 } from "./customers.js";
 import { readReference, search } from "./reference.js";
-import { listCaseEvents } from "./events.js";
+import { listCaseEvents, listOrgEvents } from "./events.js";
 import {
   listDocumentTypes,
   updateDocumentType,
@@ -114,6 +114,7 @@ import {
   acceptOffer,
   answerQuery,
   createSubmission,
+  listAllSubmissions,
   listPackages,
   listSubmissions,
   preparePackage,
@@ -982,6 +983,14 @@ async function route(
     return await listCaseEvents(client, requireActor(actor), eventsMatch[1]!);
   }
 
+  // Organisation-wide activity feed — `event.view`, not `case.read`: the
+  // Founders Dashboard's Recent Activity, see `listOrgEvents`'s own comment.
+  if (method === "GET" && path === "/api/events") {
+    const limitParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("limit");
+    const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
+    return await listOrgEvents(client, requireActor(actor), limit);
+  }
+
   // ── Requirements and documents ────────────────────────────────────────────
   //
   // Stage 3C. `document.upload` and `document.verify` are separate
@@ -1040,6 +1049,16 @@ async function route(
   // separately from sending its documents, and sending is itself two steps —
   // `prepare` plans and writes nothing, `send`/`retry` write and dispatch —
   // so the review screen and the sender walk the same object (package.ts).
+
+  // Organisation-wide submission board — the Founders Dashboard's
+  // Banks/Applications view. Matched before the per-case route below since
+  // `/api/submissions` never matches that route's UUID segment anyway, but
+  // ordered first for a reader's sake: the org view, then the per-case one.
+  if (method === "GET" && path === "/api/submissions") {
+    const limitParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("limit");
+    const limit = Math.min(Math.max(Number(limitParam) || 200, 1), 500);
+    return await listAllSubmissions(client, requireActor(actor), limit);
+  }
 
   const submissionsMatch = new RegExp(`^/api/cases/(${UUID})/submissions$`).exec(path);
   if (submissionsMatch && method === "GET") {

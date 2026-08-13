@@ -397,6 +397,16 @@ export interface ApiSessionUser {
   }[];
 }
 
+/** From `GET /api/health/detail` — unauthenticated, deliberately minimal
+ * (`Backend/api-server.ts`): whether each of the API's own dependencies
+ * answers, never a version or a count. */
+export interface ApiHealthDetail {
+  readonly ok: boolean;
+  readonly database: "up" | "down";
+  readonly storage: "up" | "down";
+  readonly mail: "up" | "unconfigured" | "down";
+}
+
 export interface ApiSearchHit {
   readonly kind: "person" | "case";
   readonly id: string;
@@ -592,4 +602,29 @@ export interface ApiTimelineEntry {
    * moved to, a lost reason) — never raw payload JSON. Null when there is
    * nothing more useful to say than `label` already does. */
   readonly detail: string | null;
+}
+
+/** `ApiTimelineEntry` plus which case it happened on — from `GET /api/events`
+ * (`Backend/events.ts`'s `listOrgEvents`), the organisation-wide feed behind
+ * the Founders Dashboard's Recent Activity. */
+export interface ApiOrgEvent extends ApiTimelineEntry {
+  readonly caseId: string;
+  readonly caseNumber: string;
+}
+
+/** A submission as returned by `GET /api/submissions` (`listAllSubmissions`)
+ * — the lightweight, cross-case board view behind the Founders Dashboard's
+ * Banks/Applications section. Deliberately narrower than `ApiSubmission`:
+ * no recipients, packages, offers or queries, which a founder-level board
+ * does not need and which per-case `GET /api/cases/:id/submissions` still
+ * carries for the case screen itself. */
+export interface ApiSubmissionBoardEntry {
+  readonly id: string;
+  readonly caseId: string;
+  readonly counterparty: string;
+  readonly status: SubmissionStatus;
+  readonly submittedAt: string | null;
+  readonly createdAt: string;
+  readonly rejectionReasonId: string | null;
+  readonly bankReasonText: string | null;
 }

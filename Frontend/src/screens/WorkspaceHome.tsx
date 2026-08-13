@@ -25,6 +25,7 @@ import type { ApiCase } from "../api/types.js";
 import { lakhs, when } from "../lib.js";
 import { WORKSPACE_QUESTIONS, useSession } from "../session.js";
 import { Badge, Card, Empty, StageBadge } from "../ui/index.js";
+import { FoundersDashboard } from "./FoundersDashboard.js";
 
 export function WorkspaceHome(): ReactNode {
   const session = useSession();
@@ -35,6 +36,22 @@ export function WorkspaceHome(): ReactNode {
     () => all.filter((c) => c.stage !== "closed" && c.stage !== "lost"),
     [all],
   );
+
+  // Manager and Managing Partner land here too (session.tsx's own
+  // DEFAULT_WORKSPACE/WORKSPACE_ROLES) — the Founders Dashboard replaces the
+  // old, thinner management panel rather than adding a second route, so the
+  // "founders land on their dashboard" requirement rides the same
+  // server-derived role/workspace mechanism every other workspace already
+  // uses. It owns its own heading (a time-of-day greeting, not the generic
+  // "Which cases need attention today?" question below), so it renders in
+  // place of the shared header rather than under it.
+  if (session.workspace === "management") {
+    return cases.error ? (
+      <Empty>{cases.error.message}</Empty>
+    ) : (
+      <FoundersDashboard all={all} active={active} loading={cases.loading} />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -55,8 +72,6 @@ export function WorkspaceHome(): ReactNode {
         <CallingWorkspace active={active} />
       ) : session.workspace === "login_desk" ? (
         <LoginDeskWorkspace active={active} />
-      ) : session.workspace === "management" ? (
-        <ManagementWorkspace all={all} active={active} />
       ) : session.workspace === "finance" ? (
         <FinanceWorkspace all={all} />
       ) : (
@@ -209,49 +224,6 @@ function LoginDeskWorkspace({ active }: { active: readonly ApiCase[] }): ReactNo
           what="The verification queue is built from document requirements, which move to the server in a later stage."
         />
       </div>
-    </div>
-  );
-}
-
-function ManagementWorkspace({
-  all,
-  active,
-}: {
-  all: readonly ApiCase[];
-  active: readonly ApiCase[];
-}): ReactNode {
-  const attention = active.filter(needsAttention);
-
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-4">
-        <Stat label="Active cases" value={String(active.length)} />
-        <Stat label="Need attention" value={String(attention.length)} hint="Untouched 3+ days" />
-        <Stat
-          label="On hold"
-          value={String(active.filter((c) => c.isOnHold).length)}
-          hint="Deliberately quiet"
-        />
-        <Stat
-          label="Lost"
-          value={String(all.filter((c) => c.stage === "lost").length)}
-          hint="All time"
-        />
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Needs attention" subtitle="Nobody has touched these in three days">
-          <CaseRows cases={attention} empty="Everything is moving." />
-        </Card>
-        <Card title="On hold" subtitle="Parked deliberately — with a reason on each">
-          <CaseRows cases={active.filter((c) => c.isOnHold)} empty="Nothing on hold." />
-        </Card>
-      </div>
-
-      <Pending
-        title="Offers expiring, and why banks reject"
-        what="Both are built from submissions and offers, which have not moved to the server yet."
-      />
     </div>
   );
 }

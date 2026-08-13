@@ -77,3 +77,37 @@ body {
   font-family: var(--font-display);
   letter-spacing: -0.015em;
 }
+
+/* A quiet entrance for content that replaces itself in place — a dashboard
+   section switching, a filtered list repainting — never a page-load flourish
+   and never anything that loops or bounces (motion communicates state, it is
+   not decoration). */
+@keyframes aos-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.aos-animate-in {
+  animation: aos-fade-up 200ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aos-animate-in {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

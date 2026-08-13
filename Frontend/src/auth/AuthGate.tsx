@@ -128,7 +128,7 @@ export function AuthGate({ children }: { children: ReactNode }): ReactNode {
     // signed in, for the length of one request, trains them to type their
     // password into a screen that was about to disappear.
     return (
-      <div className="grid min-h-full place-items-center bg-ink-50">
+      <div className="grid min-h-full place-items-center bg-canvas">
         <p className="text-sm text-ink-500">Restoring your session…</p>
       </div>
     );

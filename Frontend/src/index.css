@@ -5,21 +5,54 @@
  * Dense, quiet, high-contrast where it matters. Colour carries meaning and is
  * never decorative — a stage badge is coloured because the stage means
  * something, and nothing else competes with it.
+ *
+ * Design system, v2 (premium light SaaS). Two type roles: Space Grotesk for
+ * page titles and the big numerals on a dashboard — the confident, slightly
+ * technical face that gives the product a face of its own — and Inter for
+ * everything a person reads or types all day (body copy, tables, forms,
+ * navigation), because density and legibility win over personality there.
+ * The ink and brand scales share one hue (258, a deep ledger blue) so text,
+ * borders and interactive colour all feel like one material rather than a
+ * palette bolted together from unrelated greys. Gold is the one deliberately
+ * rare accent — never a status colour, only used where "this is the one
+ * thing that matters on this screen" is true.
  */
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
 
-  --color-ink-900: oklch(0.21 0.02 260);
-  --color-ink-700: oklch(0.38 0.015 260);
-  --color-ink-500: oklch(0.55 0.012 260);
-  --color-ink-300: oklch(0.78 0.008 260);
-  --color-ink-100: oklch(0.94 0.004 260);
-  --color-ink-50: oklch(0.975 0.003 260);
+  --color-canvas: oklch(0.984 0.004 92);
 
-  --color-brand-600: oklch(0.52 0.16 258);
-  --color-brand-500: oklch(0.6 0.16 258);
+  --color-ink-900: oklch(0.2 0.021 258);
+  --color-ink-800: oklch(0.29 0.019 258);
+  --color-ink-700: oklch(0.38 0.017 258);
+  --color-ink-600: oklch(0.465 0.015 258);
+  --color-ink-500: oklch(0.55 0.013 258);
+  --color-ink-400: oklch(0.665 0.011 258);
+  --color-ink-300: oklch(0.78 0.009 258);
+  --color-ink-200: oklch(0.87 0.007 258);
+  --color-ink-150: oklch(0.9 0.006 258);
+  --color-ink-100: oklch(0.945 0.005 258);
+  --color-ink-50: oklch(0.978 0.004 258);
+
+  --color-brand-700: oklch(0.4 0.12 258);
+  --color-brand-600: oklch(0.47 0.145 258);
+  --color-brand-500: oklch(0.55 0.15 258);
   --color-brand-100: oklch(0.94 0.03 258);
+  --color-brand-50: oklch(0.975 0.015 258);
+
+  /* The one premium accent — used sparingly (see comment above). */
+  --color-gold-600: oklch(0.6 0.12 78);
+  --color-gold-500: oklch(0.73 0.13 82);
+  --color-gold-100: oklch(0.95 0.045 92);
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+
+  --shadow-elevated: 0 4px 16px -4px oklch(0.2 0.02 258 / 0.12), 0 2px 6px -2px oklch(0.2 0.02 258 / 0.08);
 }
 
 html,
@@ -29,11 +62,18 @@ body,
 }
 
 body {
-  @apply bg-ink-50 text-ink-900 antialiased;
+  @apply bg-canvas text-ink-900 antialiased;
   font-feature-settings: "tnum" 1;
 }
 
 /* Tabular numerals everywhere a figure is compared to another figure. */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* Page titles and dashboard numerals — the one place the display face
+   appears. Restrained on purpose: everything else stays on Inter. */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
 }

@@ -39,7 +39,7 @@ export function WorkspaceHome(): ReactNode {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-900">
           {WORKSPACE_QUESTIONS[session.workspace]}
         </h1>
         <p className="mt-1 text-sm text-ink-500">
@@ -119,10 +119,12 @@ function CaseRows({ cases, empty }: { cases: readonly ApiCase[]; empty: string }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }): ReactNode {
   return (
-    <div className="rounded-lg bg-white p-4 ring-1 ring-ink-100">
-      <p className="text-xs text-ink-500">{label}</p>
-      <p className="tnum mt-1 text-2xl font-semibold tracking-tight">{value}</p>
-      {hint && <p className="mt-0.5 text-xs text-ink-400">{hint}</p>}
+    <div className="rounded-lg bg-white p-4 ring-1 ring-ink-150">
+      <p className="text-xs font-medium text-ink-500">{label}</p>
+      <p className="font-display tnum mt-1.5 text-3xl font-semibold tracking-tight text-ink-900">
+        {value}
+      </p>
+      {hint && <p className="mt-1 text-xs text-ink-400">{hint}</p>}
     </div>
   );
 }

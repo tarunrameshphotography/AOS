@@ -62,20 +62,22 @@ export function LoginScreen({
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-ink-50 px-4">
-      <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-sm ring-1 ring-ink-100">
-        <div className="mb-6 flex items-center gap-2">
-          <span className="grid h-8 w-8 place-items-center rounded bg-brand-600 text-sm font-bold text-white">
+    <div className="flex min-h-full items-center justify-center bg-canvas px-4">
+      <div className="w-full max-w-sm rounded-lg bg-white p-7 shadow-elevated ring-1 ring-ink-150">
+        <div className="mb-6 flex items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-brand-600 text-sm font-bold text-white">
             AL
           </span>
           <div>
-            <p className="text-sm font-semibold text-ink-900">Amaze Operating System</p>
+            <p className="font-display text-sm font-semibold text-ink-900">
+              Amaze Operating System
+            </p>
             <p className="text-xs text-ink-500">Sign in with your employee ID</p>
           </div>
         </div>
 
         {notice && (
-          <p className="mb-4 rounded-md bg-ink-50 px-3 py-2 text-sm text-ink-700" role="status">
+          <p className="mb-4 rounded-md bg-brand-50 px-3 py-2 text-sm text-ink-700" role="status">
             {notice}
           </p>
         )}

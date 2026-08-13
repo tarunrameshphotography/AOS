@@ -60,17 +60,24 @@ export function App(): ReactNode {
 // Top bar: identity, workspace, one search box
 // ---------------------------------------------------------------------------
 
+function navLinkClass({ isActive }: { isActive: boolean }): string {
+  return cx(
+    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+    isActive ? "bg-brand-50 text-brand-700" : "text-ink-700 hover:bg-ink-50",
+  );
+}
+
 function TopBar(): ReactNode {
   const session = useSession();
 
   return (
-    <header className="sticky top-0 z-40 border-b border-ink-200 bg-white">
+    <header className="sticky top-0 z-40 border-b border-ink-150 bg-white">
       <div className="mx-auto flex w-full max-w-7xl items-center gap-4 px-4 py-2.5">
         <Link to="/" className="flex shrink-0 items-center gap-2">
-          <span className="grid h-7 w-7 place-items-center rounded bg-brand-600 text-xs font-bold text-white">
+          <span className="grid h-7 w-7 place-items-center rounded-md bg-brand-600 text-xs font-bold text-white">
             AL
           </span>
-          <span className="text-sm font-semibold tracking-tight">AOS</span>
+          <span className="font-display text-sm font-semibold tracking-tight">AOS</span>
         </Link>
 
         <GlobalSearch />
@@ -80,91 +87,34 @@ function TopBar(): ReactNode {
               what this role/session should be looking at right now. Before
               this label existed, the logo was the only way to it, and nothing
               distinguished "your work" from "every case" (audit finding 11.1). */}
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              cx(
-                "rounded-md px-3 py-1.5 text-sm font-medium",
-                isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-              )
-            }
-          >
+          <NavLink to="/" end className={navLinkClass}>
             My Work
           </NavLink>
-          <NavLink
-            to="/cases"
-            className={({ isActive }) =>
-              cx(
-                "rounded-md px-3 py-1.5 text-sm font-medium",
-                isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-              )
-            }
-          >
+          <NavLink to="/cases" className={navLinkClass}>
             All Cases
           </NavLink>
           {session.can("master_data.manage", "all") && (
-            <NavLink
-              to="/admin/lending-products"
-              className={({ isActive }) =>
-                cx(
-                  "rounded-md px-3 py-1.5 text-sm font-medium",
-                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-                )
-              }
-            >
+            <NavLink to="/admin/lending-products" className={navLinkClass}>
               Products
             </NavLink>
           )}
           {session.can("master_data.manage", "all") && (
-            <NavLink
-              to="/admin/lenders"
-              className={({ isActive }) =>
-                cx(
-                  "rounded-md px-3 py-1.5 text-sm font-medium",
-                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-                )
-              }
-            >
+            <NavLink to="/admin/lenders" className={navLinkClass}>
               Lenders
             </NavLink>
           )}
           {session.can("master_data.manage", "all") && (
-            <NavLink
-              to="/admin/document-rules"
-              className={({ isActive }) =>
-                cx(
-                  "rounded-md px-3 py-1.5 text-sm font-medium",
-                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-                )
-              }
-            >
+            <NavLink to="/admin/document-rules" className={navLinkClass}>
               Document Rules
             </NavLink>
           )}
           {session.can("master_data.manage", "all") && (
-            <NavLink
-              to="/admin/master-data"
-              className={({ isActive }) =>
-                cx(
-                  "rounded-md px-3 py-1.5 text-sm font-medium",
-                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-                )
-              }
-            >
+            <NavLink to="/admin/master-data" className={navLinkClass}>
               Master Data
             </NavLink>
           )}
           {session.can("user.manage", "all") && (
-            <NavLink
-              to="/admin/users"
-              className={({ isActive }) =>
-                cx(
-                  "rounded-md px-3 py-1.5 text-sm font-medium",
-                  isActive ? "bg-ink-100 text-ink-900" : "text-ink-700 hover:bg-ink-50",
-                )
-              }
-            >
+            <NavLink to="/admin/users" className={navLinkClass}>
               Users
             </NavLink>
           )}
@@ -256,12 +206,12 @@ function GlobalSearch(): ReactNode {
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Ravi · 9843 · Anna Nagar · AL-2026-00041"
-        className="w-full rounded-md bg-ink-50 px-3 py-1.5 text-sm ring-1 ring-ink-200 focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
+        placeholder="Search cases, people, phone numbers…"
+        className="w-full rounded-md bg-ink-50 px-3 py-1.5 text-sm ring-1 ring-ink-150 transition-shadow focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
       />
 
       {open && trimmed.length >= 2 && (
-        <div className="absolute top-full left-0 mt-1 w-full overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-ink-200">
+        <div className="absolute top-full left-0 mt-1 w-full overflow-hidden rounded-lg bg-white shadow-elevated ring-1 ring-ink-150">
           {hits.length === 0 ? (
             <p className="px-3 py-4 text-sm text-ink-500">
               Nothing found. Try a fragment — a first name, a locality, four digits of a phone.
@@ -302,7 +252,7 @@ function WorkspaceTabs(): ReactNode {
 
   if (session.availableWorkspaces.length < 2) {
     return (
-      <div className="border-t border-ink-100 bg-ink-50/60">
+      <div className="border-t border-ink-100 bg-brand-50/40">
         <div className="mx-auto w-full max-w-7xl px-4 py-1.5">
           <p className="text-xs text-ink-500">
             {WORKSPACE_QUESTIONS[session.workspace]}
@@ -313,7 +263,7 @@ function WorkspaceTabs(): ReactNode {
   }
 
   return (
-    <div className="border-t border-ink-100 bg-ink-50/60">
+    <div className="border-t border-ink-100 bg-brand-50/40">
       <div className="mx-auto flex w-full max-w-7xl items-center gap-1 px-4">
         {session.availableWorkspaces.map((workspace) => (
           <button
@@ -372,7 +322,7 @@ function IdentityMenu(): ReactNode {
         onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-ink-50"
       >
-        <span className="grid h-7 w-7 place-items-center rounded-full bg-ink-200 text-xs font-semibold">
+        <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-xs font-semibold text-brand-700">
           {session.displayName.slice(0, 2).toUpperCase()}
         </span>
         <span className="hidden text-left sm:block">
@@ -384,7 +334,7 @@ function IdentityMenu(): ReactNode {
       </button>
 
       {open && (
-        <div className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-lg ring-1 ring-ink-200">
+        <div className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-elevated ring-1 ring-ink-150">
           <div className="px-2 py-1.5">
             <p className="text-sm font-medium">{session.displayName}</p>
             <p className="text-xs text-ink-500">
@@ -431,7 +381,7 @@ function IdentityMenu(): ReactNode {
 
 function PrototypeFooter(): ReactNode {
   return (
-    <footer className="border-t border-ink-200 bg-white">
+    <footer className="border-t border-ink-150 bg-white">
       <div className="mx-auto w-full max-w-7xl px-4 py-3">
         <p className="text-xs text-ink-500">
           Cases, customers, users, documents, requirements, document rules, document types,

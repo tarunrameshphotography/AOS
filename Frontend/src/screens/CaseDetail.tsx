@@ -95,6 +95,7 @@ import {
   ProgressBar,
   Select,
   StageBadge,
+  StageRail,
   Textarea,
   cx,
   useToast,
@@ -196,9 +197,15 @@ function CaseHeader({
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="tnum text-xl font-semibold tracking-tight">{loanCase.caseNumber}</h1>
+          <h1 className="font-display tnum text-xl font-semibold tracking-tight text-ink-900">
+            {loanCase.caseNumber}
+          </h1>
           <StageBadge stage={loanCase.stage} label={CASE_STAGE_LABELS[loanCase.stage]} />
           {loanCase.isOnHold && <Badge tone="warn">On hold</Badge>}
+        </div>
+
+        <div className="mt-2 max-w-xs">
+          <StageRail stage={loanCase.stage} />
         </div>
 
         <p className="mt-1 text-sm text-ink-700">

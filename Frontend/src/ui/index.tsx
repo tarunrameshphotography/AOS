@@ -15,7 +15,13 @@ import {
   type ReactNode,
 } from "react";
 
-import type { CaseStage } from "@domain/case/stages.js";
+import {
+  CASE_STAGE_LABELS,
+  CASE_STAGE_PROGRESSION,
+  isTerminalStage,
+  stageOrdinal,
+  type CaseStage,
+} from "@domain/case/stages.js";
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -28,10 +34,10 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const BUTTON_STYLES: Record<ButtonVariant, string> = {
-  primary: "bg-brand-600 text-white hover:bg-brand-500 disabled:bg-ink-300",
-  secondary: "bg-white text-ink-900 ring-1 ring-ink-300 hover:bg-ink-50 disabled:text-ink-300",
+  primary: "bg-brand-600 text-white hover:bg-brand-700 disabled:bg-ink-300",
+  secondary: "bg-white text-ink-900 ring-1 ring-ink-150 hover:bg-ink-50 disabled:text-ink-300",
   ghost: "text-ink-700 hover:bg-ink-100 disabled:text-ink-300",
-  danger: "bg-red-600 text-white hover:bg-red-500 disabled:bg-ink-300",
+  danger: "bg-red-600 text-white hover:bg-red-700 disabled:bg-ink-300",
 };
 
 export function Button({
@@ -44,7 +50,7 @@ export function Button({
       {...props}
       className={cx(
         "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5",
-        "text-sm font-medium transition-colors disabled:cursor-not-allowed",
+        "text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed",
         BUTTON_STYLES[variant],
         className,
       )}
@@ -97,7 +103,7 @@ export function Card({
   className?: string;
 }): ReactNode {
   return (
-    <section className={cx("rounded-lg bg-white ring-1 ring-ink-100", className)}>
+    <section className={cx("rounded-lg bg-white ring-1 ring-ink-150", className)}>
       {(title || actions) && (
         <header className="flex items-start justify-between gap-4 border-b border-ink-100 px-4 py-3">
           <div>
@@ -138,12 +144,64 @@ export function StageBadge({ stage, label }: { stage: CaseStage; label: string }
   return (
     <span
       className={cx(
-        "inline-flex items-center rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         STAGE_STYLES[stage],
       )}
     >
       {label}
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// StageRail — the case lifecycle, drawn as the progression it actually is
+// ---------------------------------------------------------------------------
+
+/**
+ * The eight-step system progression (`CASE_STAGE_PROGRESSION`), filled up to
+ * wherever this case currently sits. This is the one place the design system
+ * spends its signature move: everywhere else colour and shape stay quiet, but
+ * a case's position in its own lifecycle is the single fact this product
+ * exists to track, so it gets a real visual, not just a coloured word.
+ *
+ * Terminal stages (`closed`, `lost`) have no ordinal (`stageOrdinal` returns
+ * `null` for them by design, ADR-023) — asking "how far along" is not a
+ * question with an answer for a case that is not in progress any more, so
+ * they render as a plain outcome marker instead of a partially-filled rail.
+ */
+export function StageRail({ stage }: { stage: CaseStage }): ReactNode {
+  if (isTerminalStage(stage)) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span
+          className={cx(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            stage === "closed" ? "bg-ink-700" : "bg-red-500",
+          )}
+        />
+        <span className="text-xs font-medium text-ink-500">{CASE_STAGE_LABELS[stage]}</span>
+      </div>
+    );
+  }
+
+  const ordinal = stageOrdinal(stage) ?? 0;
+  return (
+    <div
+      className="flex items-center gap-1"
+      role="img"
+      aria-label={`Stage ${ordinal + 1} of ${CASE_STAGE_PROGRESSION.length}: ${CASE_STAGE_LABELS[stage]}`}
+    >
+      {CASE_STAGE_PROGRESSION.map((step, index) => (
+        <span
+          key={step}
+          title={CASE_STAGE_LABELS[step]}
+          className={cx(
+            "h-1.5 w-4 rounded-full transition-colors",
+            index <= ordinal ? "bg-brand-600" : "bg-ink-150",
+          )}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -171,7 +229,7 @@ export function Badge({
     <span
       {...(title ? { title } : {})}
       className={cx(
-        "inline-flex items-center rounded px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         TONE_STYLES[tone],
       )}
     >
@@ -330,7 +388,7 @@ export function Modal({
         aria-modal="true"
         aria-labelledby="modal-title"
         className={cx(
-          "w-full rounded-lg bg-white shadow-xl ring-1 ring-ink-200",
+          "w-full rounded-lg bg-white shadow-elevated ring-1 ring-ink-150",
           size === "wide" ? "max-w-3xl" : "max-w-lg",
         )}
       >
@@ -379,7 +437,7 @@ export function ToastProvider({ children }: { children: ReactNode }): ReactNode 
         <div
           role="status"
           className={cx(
-            "fixed bottom-4 left-1/2 z-50 max-w-lg -translate-x-1/2 rounded-lg px-4 py-2.5 text-sm shadow-lg",
+            "fixed bottom-4 left-1/2 z-50 max-w-lg -translate-x-1/2 rounded-lg px-4 py-2.5 text-sm shadow-elevated",
             toast.tone === "bad" ? "bg-red-600 text-white" : "bg-ink-900 text-white",
           )}
         >

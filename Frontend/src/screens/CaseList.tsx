@@ -29,7 +29,20 @@ import { useApiQuery } from "../api/hooks.js";
 import type { ApiCase } from "../api/types.js";
 import { lakhs, when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, ProgressBar, Select, StageBadge, cx } from "../ui/index.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  ProgressBar,
+  Select,
+  StageBadge,
+  TABLE_ROW,
+  Table,
+  Td,
+  Th,
+  cx,
+} from "../ui/index.js";
 
 export function CaseList(): ReactNode {
   const session = useSession();
@@ -116,82 +129,64 @@ export function CaseList(): ReactNode {
               : "No cases match this filter."}
           </Empty>
         ) : (
-          <div className="-m-4 overflow-x-auto">
-            <table className="w-full min-w-4xl text-sm">
-              <thead>
-                <tr className="border-b border-ink-100 text-left text-xs text-ink-500">
-                  <th className="px-4 py-2 font-medium">Case</th>
-                  <th className="px-4 py-2 font-medium">Applicant</th>
-                  <th className="px-4 py-2 font-medium">Product</th>
-                  <th className="px-4 py-2 text-right font-medium">Amount</th>
-                  <th className="px-4 py-2 font-medium">Stage</th>
-                  <th className="px-4 py-2 font-medium">Documents</th>
-                  <th className="px-4 py-2 font-medium">Owner</th>
-                  <th className="px-4 py-2 font-medium">Opened</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100">
-                {filtered.map((loanCase) => (
-                  <tr
-                    key={loanCase.id}
-                    className={cx("hover:bg-ink-50", loanCase.isOnHold && "opacity-70")}
-                  >
-                    <td className="px-4 py-2">
-                      <Link
-                        to={`/cases/${loanCase.id}`}
-                        className="tnum font-medium hover:underline"
-                      >
-                        {loanCase.caseNumber}
+          <Table className="min-w-4xl">
+            <thead>
+              <tr className="border-b border-ink-150 text-left">
+                <Th>Case</Th>
+                <Th>Applicant</Th>
+                <Th>Product</Th>
+                <Th align="right">Amount</Th>
+                <Th>Stage</Th>
+                <Th>Documents</Th>
+                <Th>Owner</Th>
+                <Th>Opened</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((loanCase) => (
+                <tr key={loanCase.id} className={cx(TABLE_ROW, loanCase.isOnHold && "opacity-70")}>
+                  <Td>
+                    <Link to={`/cases/${loanCase.id}`} className="tnum font-medium text-ink-900 hover:underline">
+                      {loanCase.caseNumber}
+                    </Link>
+                    {loanCase.isOnHold && (
+                      <span className="ml-2">
+                        <Badge tone="warn">Hold</Badge>
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    {loanCase.applicantId ? (
+                      <Link to={`/people/${loanCase.applicantId}`} className="hover:underline">
+                        {loanCase.applicantName}
                       </Link>
-                      {loanCase.isOnHold && (
-                        <span className="ml-2">
-                          <Badge tone="warn">Hold</Badge>
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2">
-                      {loanCase.applicantId ? (
-                        <Link
-                          to={`/people/${loanCase.applicantId}`}
-                          className="hover:underline"
-                        >
-                          {loanCase.applicantName}
-                        </Link>
-                      ) : (
-                        <span className="text-ink-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-ink-700">
-                      {reference.productLabel(loanCase.loanProductId)}
-                    </td>
-                    <td className="tnum px-4 py-2 text-right">
-                      {lakhs(loanCase.requestedAmount ?? undefined)}
-                    </td>
-                    <td className="px-4 py-2">
-                      <StageBadge
-                        stage={loanCase.stage}
-                        label={CASE_STAGE_LABELS[loanCase.stage]}
+                    ) : (
+                      <span className="text-ink-400">—</span>
+                    )}
+                  </Td>
+                  <Td muted>{reference.productLabel(loanCase.loanProductId)}</Td>
+                  <Td align="right" className="tnum">
+                    {lakhs(loanCase.requestedAmount ?? undefined)}
+                  </Td>
+                  <Td>
+                    <StageBadge stage={loanCase.stage} label={CASE_STAGE_LABELS[loanCase.stage]} />
+                  </Td>
+                  <Td className="w-40">
+                    {loanCase.progress ? (
+                      <ProgressBar
+                        percent={loanCase.progress.percentComplete}
+                        applicable={loanCase.progress.applicableCount}
                       />
-                    </td>
-                    <td className="w-40 px-4 py-2">
-                      {loanCase.progress ? (
-                        <ProgressBar
-                          percent={loanCase.progress.percentComplete}
-                          applicable={loanCase.progress.applicableCount}
-                        />
-                      ) : (
-                        <span className="text-xs text-ink-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-ink-500">
-                      {users.ownerName(loanCase.ownerUserId)}
-                    </td>
-                    <td className="px-4 py-2 text-ink-500">{when(loanCase.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    ) : (
+                      <span className="text-xs text-ink-400">—</span>
+                    )}
+                  </Td>
+                  <Td muted>{users.ownerName(loanCase.ownerUserId)}</Td>
+                  <Td muted>{when(loanCase.createdAt)}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
         )}
       </Card>
     </div>

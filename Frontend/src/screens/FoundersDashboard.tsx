@@ -58,7 +58,7 @@ import type {
 } from "../api/types.js";
 import { when } from "../lib.js";
 import { useSession } from "../session.js";
-import { Badge, Button, Card, Empty, StageBadge, cx } from "../ui/index.js";
+import { Badge, Button, Card, Empty, StageBadge, TABLE_ROW, Table, Td, Th, cx } from "../ui/index.js";
 import { SUBMISSION_STATUS_LABELS, statusTone } from "./BanksTab.js";
 
 // ---------------------------------------------------------------------------
@@ -268,11 +268,11 @@ export function FoundersDashboard({
     <div className="pb-20 sm:pb-0">
       <Greeting name={session.displayName} />
 
-      <div className="mt-6">
+      <div className="mt-8">
         <DesktopSectionNav section={section} onChange={selectSection} />
       </div>
 
-      <div key={showMore ? "more" : section} className="aos-animate-in mt-6">
+      <div key={showMore ? "more" : section} className="aos-animate-in mt-7">
         {showMore ? (
           <MoreMenu onSelect={selectSection} />
         ) : section === "overview" ? (
@@ -337,10 +337,14 @@ function Greeting({ name }: { name: string }): ReactNode {
   const [hour] = useState(() => new Date().getHours());
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-900 sm:text-3xl">
+      {/* A short gold rule rather than a coloured word — the one signature
+          mark on the page that isn't tied to a status, sitting where a
+          founder's eye lands first. */}
+      <div className="mb-3 h-0.5 w-9 rounded-full bg-gold-500" aria-hidden />
+      <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-900 sm:text-4xl">
         {greetingWord(hour)}, {name}
       </h1>
-      <p className="mt-1 text-sm text-ink-500">Here's what's happening across Amaze today.</p>
+      <p className="mt-2 text-sm text-ink-500">Here's what's happening across Amaze today.</p>
     </div>
   );
 }
@@ -363,16 +367,39 @@ function DesktopSectionNav({
           key={item}
           onClick={() => onChange(item)}
           className={cx(
-            "shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors duration-150",
+            "shrink-0 rounded-t-md border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors duration-150",
             section === item
               ? "border-brand-600 text-ink-900"
-              : "border-transparent text-ink-500 hover:text-ink-700",
+              : "border-transparent text-ink-500 hover:bg-ink-50/60 hover:text-ink-700",
           )}
         >
           {SECTION_LABELS[item]}
         </button>
       ))}
     </nav>
+  );
+}
+
+function MobileNavButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}): ReactNode {
+  return (
+    <button
+      onClick={onClick}
+      className={cx(
+        "relative flex-1 py-3 text-center text-xs font-medium transition-colors duration-150",
+        active ? "text-brand-700" : "text-ink-500 active:text-ink-700",
+      )}
+    >
+      {active && <span aria-hidden className="absolute inset-x-1/4 top-0 h-0.5 rounded-full bg-brand-600" />}
+      {label}
+    </button>
   );
 }
 
@@ -390,26 +417,14 @@ function MobileBottomNav({
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-ink-150 bg-white/95 backdrop-blur sm:hidden">
       {MOBILE_PRIMARY.map((item) => (
-        <button
+        <MobileNavButton
           key={item}
+          label={SECTION_LABELS[item]}
+          active={!moreActive && section === item}
           onClick={() => onSelect(item)}
-          className={cx(
-            "flex-1 py-2.5 text-center text-xs font-medium transition-colors duration-150",
-            !moreActive && section === item ? "text-brand-700" : "text-ink-500",
-          )}
-        >
-          {SECTION_LABELS[item]}
-        </button>
+        />
       ))}
-      <button
-        onClick={onMore}
-        className={cx(
-          "flex-1 py-2.5 text-center text-xs font-medium transition-colors duration-150",
-          moreActive ? "text-brand-700" : "text-ink-500",
-        )}
-      >
-        More
-      </button>
+      <MobileNavButton label="More" active={moreActive} onClick={onMore} />
     </nav>
   );
 }
@@ -440,23 +455,36 @@ function MoreMenu({ onSelect }: { onSelect: (next: Section) => void }): ReactNod
 // Shared row/tile pieces
 // ---------------------------------------------------------------------------
 
+/**
+ * `primary` is for the two or three numbers a founder actually opens this
+ * screen to check — everything else is `secondary`. The difference is size,
+ * padding and elevation, not colour: colour still belongs to `warn` alone.
+ */
 function StatTile({
   label,
   value,
   hint,
   warn,
+  primary = false,
 }: {
   label: string;
   value: string;
   hint?: string;
   warn?: boolean;
+  primary?: boolean;
 }): ReactNode {
   return (
-    <div className="rounded-lg bg-white p-4 ring-1 ring-ink-150 transition-shadow duration-150 hover:shadow-elevated">
+    <div
+      className={cx(
+        "rounded-lg bg-white ring-1 transition-shadow duration-200",
+        primary ? "p-5 shadow-elevated ring-ink-150" : "p-4 ring-ink-100 hover:shadow-soft",
+      )}
+    >
       <p className="text-xs font-medium text-ink-500">{label}</p>
       <p
         className={cx(
-          "font-display tnum mt-1.5 text-3xl font-semibold tracking-tight",
+          "font-display tnum mt-1.5 font-semibold tracking-tight",
+          primary ? "text-4xl" : "text-2xl",
           warn ? "text-amber-700" : "text-ink-900",
         )}
       >
@@ -504,8 +532,17 @@ function AttentionRow({
     item.kind === "hold_overdue"
       ? `Hold follow-up ${Math.round(item.daysIdle)}d overdue`
       : `${Math.round(item.daysIdle)}d in stage (limit ${item.thresholdDays}d)`;
+  // Restrained severity, not a bigger warning: a case that has drifted twice
+  // its stage's normal pace (or a hold follow-up, which has no "mild" form)
+  // reads as `bad` instead of `warn` — the same badge, a stronger colour,
+  // nothing louder than that.
+  const severe = item.kind === "hold_overdue" || (item.thresholdDays !== null && item.daysIdle >= item.thresholdDays * 2);
   return (
-    <CaseMiniRow loanCase={item.loanCase} ownerName={ownerName} trailing={<Badge tone="warn">{label}</Badge>} />
+    <CaseMiniRow
+      loanCase={item.loanCase}
+      ownerName={ownerName}
+      trailing={<Badge tone={severe ? "bad" : "warn"}>{label}</Badge>}
+    />
   );
 }
 
@@ -523,27 +560,75 @@ function PipelineChart({ all }: { all: readonly ApiCase[] }): ReactNode {
   const closed = all.filter((c) => c.stage === "closed").length;
   const lost = all.filter((c) => c.stage === "lost").length;
 
+  // The one stage genuinely holding the most cases — the bottleneck a
+  // founder actually wants to see at a glance. Ties and an empty pipeline
+  // both resolve to "no bottleneck": a mark on every stage would mean nothing
+  // (ADR-011's own logic applied here — a signal that always fires is noise).
+  const bottleneck = useMemo(() => {
+    let winner: CaseStage | null = null;
+    let ties = 0;
+    for (const stage of CASE_STAGE_PROGRESSION) {
+      const count = counts.get(stage) ?? 0;
+      if (count === 0) continue;
+      if (winner === null || count > (counts.get(winner) ?? 0)) {
+        winner = stage;
+        ties = 1;
+      } else if (count === counts.get(winner)) {
+        ties += 1;
+      }
+    }
+    return ties === 1 ? winner : null;
+  }, [counts]);
+
   return (
     <div>
-      <div className="space-y-2.5">
+      {/* A thin spine running through every stage's marker reads as one flow
+          rather than eight independent bars — the connective tissue a plain
+          stack of progress rows was missing. */}
+      <div className="relative space-y-3 pl-1">
+        <div aria-hidden className="absolute top-1 bottom-1 left-[7px] w-px bg-ink-150" />
         {CASE_STAGE_PROGRESSION.map((stage) => {
           const count = counts.get(stage) ?? 0;
+          const isBottleneck = stage === bottleneck;
           return (
-            <div key={stage} className="flex items-center gap-3">
+            <div key={stage} className="relative flex items-center gap-3 pl-6">
+              <span
+                aria-hidden
+                className={cx(
+                  "absolute top-1/2 left-0 h-[7px] w-[7px] -translate-y-1/2 rounded-full ring-2 ring-canvas",
+                  isBottleneck ? "bg-gold-500" : count > 0 ? "bg-brand-400" : "bg-ink-200",
+                )}
+              />
               <span className="w-36 shrink-0 text-xs text-ink-600">{CASE_STAGE_LABELS[stage]}</span>
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-ink-100">
                 <div
-                  className="h-full rounded-full bg-brand-500 transition-all duration-300 ease-out"
+                  className={cx(
+                    "h-full rounded-full transition-all duration-300 ease-out",
+                    isBottleneck ? "bg-gold-500" : "bg-brand-500",
+                  )}
                   style={{ width: `${(count / max) * 100}%` }}
                 />
               </div>
-              <span className="tnum w-6 shrink-0 text-right text-xs font-medium text-ink-700">{count}</span>
+              <span
+                className={cx(
+                  "tnum w-6 shrink-0 text-right text-xs",
+                  isBottleneck ? "font-semibold text-ink-900" : "font-medium text-ink-700",
+                )}
+              >
+                {count}
+              </span>
             </div>
           );
         })}
       </div>
-      <p className="mt-3 text-xs text-ink-400">
+      <p className="mt-4 text-xs text-ink-400">
         Outcomes, all time — Closed {closed} · Lost {lost}
+        {bottleneck && (
+          <>
+            {" "}
+            · <span className="text-gold-700">Most volume sitting in {CASE_STAGE_LABELS[bottleneck]}</span>
+          </>
+        )}
       </p>
     </div>
   );
@@ -624,27 +709,40 @@ function OverviewSection({
   const bankGroups = useMemo(() => buildBankGroups(submissions).slice(0, 4), [submissions]);
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatTile label="Active cases" value={String(active.length)} />
-        <StatTile label="New leads" value={String(newLeads)} hint="Last 7 days" />
-        <StatTile label="Needs attention" value={String(attention.length)} warn={attention.length > 0} />
-        <StatTile label="Pending documents" value={String(pendingDocs)} />
-        <StatTile
-          label="With a bank"
-          value={submissionsAllowed ? String(liveApplications) : "—"}
-          hint="Live applications"
-        />
+    <div className="space-y-8">
+      <div className="space-y-3">
+        {/* The business pulse: two numbers a founder is here to see, given
+            room to breathe, with the rest of the count as a quieter second
+            row rather than five equal tiles competing for the same glance. */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StatTile label="Active cases" value={String(active.length)} primary />
+          <StatTile
+            label="Needs attention"
+            value={String(attention.length)}
+            warn={attention.length > 0}
+            primary
+          />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <StatTile label="New leads" value={String(newLeads)} hint="Last 7 days" />
+          <StatTile label="Pending documents" value={String(pendingDocs)} />
+          <StatTile
+            label="With a bank"
+            value={submissionsAllowed ? String(liveApplications) : "—"}
+            hint="Live applications"
+          />
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card title="Pipeline" subtitle="Volume by stage" className="lg:col-span-2">
+        <Card title="Pipeline" subtitle="Volume by stage" elevated className="lg:col-span-2">
           <PipelineChart all={all} />
         </Card>
         <Card
           title="Needs attention"
           subtitle={`Top ${Math.min(5, attention.length)} of ${attention.length}`}
           actions={attention.length > 0 && <ViewAllButton onClick={() => onNavigate("tasks")} />}
+          elevated={attention.length > 0}
         >
           {attention.length === 0 ? (
             <Empty>Everything is moving at a healthy pace.</Empty>
@@ -855,38 +953,40 @@ function TeamSection({ rows, loading }: { rows: readonly TeamRow[]; loading: boo
       ) : rows.length === 0 ? (
         <Empty>No active team members.</Empty>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-ink-100 text-left text-xs text-ink-500">
-                <th className="pb-2 font-medium">Team member</th>
-                <th className="pb-2 font-medium">Role</th>
-                <th className="pb-2 text-right font-medium">Active cases</th>
-                <th className="pb-2 text-right font-medium">Needs attention</th>
-                <th className="pb-2 text-right font-medium">On hold</th>
+        <Table>
+          <thead>
+            <tr className="border-b border-ink-150 text-left">
+              <Th>Team member</Th>
+              <Th>Role</Th>
+              <Th align="right">Active cases</Th>
+              <Th align="right">Needs attention</Th>
+              <Th align="right">On hold</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.user.id} className={TABLE_ROW}>
+                <Td className="font-medium whitespace-nowrap text-ink-900">{row.user.fullName}</Td>
+                <Td muted className="whitespace-nowrap">
+                  {row.user.roles.map((role) => ROLE_LABELS[role]).join(", ")}
+                </Td>
+                <Td align="right" className="tnum">
+                  {row.activeCases}
+                </Td>
+                <Td align="right" className="tnum">
+                  {row.attentionCount > 0 ? (
+                    <Badge tone="warn">{row.attentionCount}</Badge>
+                  ) : (
+                    <span className="text-ink-300">0</span>
+                  )}
+                </Td>
+                <Td align="right" muted className="tnum">
+                  {row.onHoldCount}
+                </Td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-ink-100">
-              {rows.map((row) => (
-                <tr key={row.user.id}>
-                  <td className="py-2.5 font-medium whitespace-nowrap text-ink-900">{row.user.fullName}</td>
-                  <td className="py-2.5 whitespace-nowrap text-ink-500">
-                    {row.user.roles.map((role) => ROLE_LABELS[role]).join(", ")}
-                  </td>
-                  <td className="tnum py-2.5 text-right">{row.activeCases}</td>
-                  <td className="tnum py-2.5 text-right">
-                    {row.attentionCount > 0 ? (
-                      <Badge tone="warn">{row.attentionCount}</Badge>
-                    ) : (
-                      <span className="text-ink-300">0</span>
-                    )}
-                  </td>
-                  <td className="tnum py-2.5 text-right text-ink-500">{row.onHoldCount}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </Table>
       )}
     </Card>
   );
@@ -1021,30 +1121,36 @@ function BanksSection({
         ) : groups.length === 0 ? (
           <Empty>No submissions yet.</Empty>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-ink-100 text-left text-xs text-ink-500">
-                  <th className="pb-2 font-medium">Lender</th>
-                  <th className="pb-2 text-right font-medium">Live</th>
-                  <th className="pb-2 text-right font-medium">Sanctioned</th>
-                  <th className="pb-2 text-right font-medium">Rejected</th>
-                  <th className="pb-2 text-right font-medium">Total</th>
+          <Table>
+            <thead>
+              <tr className="border-b border-ink-150 text-left">
+                <Th>Lender</Th>
+                <Th align="right">Live</Th>
+                <Th align="right">Sanctioned</Th>
+                <Th align="right">Rejected</Th>
+                <Th align="right">Total</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((group) => (
+                <tr key={group.counterparty} className={TABLE_ROW}>
+                  <Td className="font-medium whitespace-nowrap text-ink-900">{group.counterparty}</Td>
+                  <Td align="right" className="tnum">
+                    {group.live}
+                  </Td>
+                  <Td align="right" className="tnum text-emerald-700">
+                    {group.sanctioned}
+                  </Td>
+                  <Td align="right" className="tnum text-red-700">
+                    {group.rejected}
+                  </Td>
+                  <Td align="right" muted className="tnum">
+                    {group.total}
+                  </Td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100">
-                {groups.map((group) => (
-                  <tr key={group.counterparty}>
-                    <td className="py-2.5 font-medium whitespace-nowrap text-ink-900">{group.counterparty}</td>
-                    <td className="tnum py-2.5 text-right">{group.live}</td>
-                    <td className="tnum py-2.5 text-right text-emerald-700">{group.sanctioned}</td>
-                    <td className="tnum py-2.5 text-right text-red-700">{group.rejected}</td>
-                    <td className="tnum py-2.5 text-right text-ink-500">{group.total}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </Table>
         )}
       </Card>
 

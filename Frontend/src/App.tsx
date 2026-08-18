@@ -62,7 +62,8 @@ export function App(): ReactNode {
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return cx(
-    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors duration-150",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1",
     isActive ? "bg-brand-50 text-brand-700" : "text-ink-700 hover:bg-ink-50",
   );
 }
@@ -198,6 +199,18 @@ function GlobalSearch(): ReactNode {
 
   return (
     <div ref={container} className="relative w-full max-w-md">
+      {/* The one icon on the whole nav bar — a search box reads as a search
+          box faster with the glass in it, and nowhere else in this bar needs
+          the help. */}
+      <svg
+        aria-hidden
+        viewBox="0 0 16 16"
+        className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-ink-400"
+        fill="none"
+      >
+        <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M10 10l4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
       <input
         value={query}
         name="search"
@@ -207,11 +220,11 @@ function GlobalSearch(): ReactNode {
         }}
         onFocus={() => setOpen(true)}
         placeholder="Search cases, people, phone numbers…"
-        className="w-full rounded-md bg-ink-50 px-3 py-1.5 text-sm ring-1 ring-ink-150 transition-shadow focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
+        className="w-full rounded-md bg-ink-50 py-1.5 pr-3 pl-8 text-sm ring-1 ring-ink-150 transition-shadow duration-150 focus:bg-white focus:ring-2 focus:ring-brand-500 focus:outline-none"
       />
 
       {open && trimmed.length >= 2 && (
-        <div className="absolute top-full left-0 mt-1 w-full overflow-hidden rounded-lg bg-white shadow-elevated ring-1 ring-ink-150">
+        <div className="aos-animate-pop absolute top-full left-0 mt-1 w-full overflow-hidden rounded-lg bg-white shadow-elevated ring-1 ring-ink-150">
           {hits.length === 0 ? (
             <p className="px-3 py-4 text-sm text-ink-500">
               Nothing found. Try a fragment — a first name, a locality, four digits of a phone.
@@ -334,7 +347,7 @@ function IdentityMenu(): ReactNode {
       </button>
 
       {open && (
-        <div className="absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-elevated ring-1 ring-ink-150">
+        <div className="aos-animate-pop absolute top-full right-0 mt-1 w-64 rounded-lg bg-white p-2 shadow-elevated ring-1 ring-ink-150">
           <div className="px-2 py-1.5">
             <p className="text-sm font-medium">{session.displayName}</p>
             <p className="text-xs text-ink-500">

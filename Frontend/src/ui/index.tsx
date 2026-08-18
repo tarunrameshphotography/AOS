@@ -34,10 +34,10 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const BUTTON_STYLES: Record<ButtonVariant, string> = {
-  primary: "bg-brand-600 text-white hover:bg-brand-700 disabled:bg-ink-300",
-  secondary: "bg-white text-ink-900 ring-1 ring-ink-150 hover:bg-ink-50 disabled:text-ink-300",
-  ghost: "text-ink-700 hover:bg-ink-100 disabled:text-ink-300",
-  danger: "bg-red-600 text-white hover:bg-red-700 disabled:bg-ink-300",
+  primary: "bg-brand-600 text-white shadow-sm hover:bg-brand-700 disabled:bg-ink-300 disabled:shadow-none",
+  secondary: "bg-white text-ink-900 ring-1 ring-ink-200 hover:bg-ink-50 hover:ring-ink-300 disabled:text-ink-300 disabled:hover:bg-white disabled:hover:ring-ink-200",
+  ghost: "text-ink-700 hover:bg-ink-100 disabled:text-ink-300 disabled:hover:bg-transparent",
+  danger: "bg-red-600 text-white shadow-sm hover:bg-red-700 disabled:bg-ink-300 disabled:shadow-none",
 };
 
 export function Button({
@@ -49,8 +49,10 @@ export function Button({
     <button
       {...props}
       className={cx(
-        "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5",
-        "text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed",
+        "inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5",
+        "text-sm font-medium transition-[background-color,box-shadow,transform] duration-150",
+        "active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 focus-visible:ring-offset-white",
         BUTTON_STYLES[variant],
         className,
       )}
@@ -89,23 +91,38 @@ export function NotConnectedBanner(): ReactNode {
 // Card
 // ---------------------------------------------------------------------------
 
+/**
+ * Two elevation steps, not a scale: `elevated` for the handful of surfaces on
+ * a screen that are genuinely primary (the pipeline, the thing a founder
+ * opened this screen to check) — everything else stays at the quiet default.
+ * Reach for `elevated` sparingly; a screen where everything is elevated is a
+ * screen where nothing is.
+ */
 export function Card({
   title,
   subtitle,
   actions,
   children,
   className,
+  elevated = false,
 }: {
   title?: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   children?: ReactNode;
   className?: string;
+  elevated?: boolean;
 }): ReactNode {
   return (
-    <section className={cx("rounded-lg bg-white ring-1 ring-ink-150", className)}>
+    <section
+      className={cx(
+        "rounded-lg bg-white transition-shadow duration-200",
+        elevated ? "shadow-elevated ring-1 ring-ink-150" : "ring-1 ring-ink-150",
+        className,
+      )}
+    >
       {(title || actions) && (
-        <header className="flex items-start justify-between gap-4 border-b border-ink-100 px-4 py-3">
+        <header className="flex items-start justify-between gap-4 border-b border-ink-100 px-4 py-3.5 sm:px-5">
           <div>
             {title && <h2 className="text-sm font-semibold text-ink-900">{title}</h2>}
             {subtitle && <p className="mt-0.5 text-xs text-ink-500">{subtitle}</p>}
@@ -113,7 +130,7 @@ export function Card({
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </header>
       )}
-      <div className="p-4">{children}</div>
+      <div className="p-4 sm:p-5">{children}</div>
     </section>
   );
 }
@@ -140,17 +157,11 @@ const STAGE_STYLES: Record<CaseStage, string> = {
   lost: "bg-red-100 text-red-900",
 };
 
+const BADGE_BASE =
+  "inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap";
+
 export function StageBadge({ stage, label }: { stage: CaseStage; label: string }): ReactNode {
-  return (
-    <span
-      className={cx(
-        "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap",
-        STAGE_STYLES[stage],
-      )}
-    >
-      {label}
-    </span>
-  );
+  return <span className={cx(BADGE_BASE, STAGE_STYLES[stage])}>{label}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,13 +237,7 @@ export function Badge({
   children: ReactNode;
 }): ReactNode {
   return (
-    <span
-      {...(title ? { title } : {})}
-      className={cx(
-        "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium whitespace-nowrap",
-        TONE_STYLES[tone],
-      )}
-    >
+    <span {...(title ? { title } : {})} className={cx(BADGE_BASE, TONE_STYLES[tone])}>
       {children}
     </span>
   );
@@ -287,6 +292,74 @@ export function Empty({ children }: { children: ReactNode }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
+// Table — one shared treatment for CaseList, the Founders Dashboard's Team
+// and Banks sections, and the admin user table, so a header, a row and a
+// hover state look the same everywhere instead of each screen inventing its
+// own. `Table` only owns the scroll container and base text size; real
+// tables still write their own <thead>/<tbody> so columns can vary freely.
+// ---------------------------------------------------------------------------
+
+export function Table({ children, className }: { children: ReactNode; className?: string }): ReactNode {
+  return (
+    <div className="-mx-4 overflow-x-auto sm:-mx-5">
+      <table className={cx("w-full text-sm", className)}>{children}</table>
+    </div>
+  );
+}
+
+export function Th({
+  children,
+  align = "left",
+  className,
+}: {
+  children: ReactNode;
+  align?: "left" | "right";
+  className?: string;
+}): ReactNode {
+  return (
+    <th
+      className={cx(
+        "px-4 py-2 text-xs font-medium text-ink-500 first:pl-4 last:pr-4 sm:first:pl-5 sm:last:pr-5",
+        align === "right" && "text-right",
+        className,
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+export function Td({
+  children,
+  align = "left",
+  muted = false,
+  className,
+}: {
+  children: ReactNode;
+  align?: "left" | "right";
+  muted?: boolean;
+  className?: string;
+}): ReactNode {
+  return (
+    <td
+      className={cx(
+        "px-4 py-2.5 first:pl-4 last:pr-4 sm:first:pl-5 sm:last:pr-5",
+        align === "right" && "text-right",
+        muted && "text-ink-500",
+        className,
+      )}
+    >
+      {children}
+    </td>
+  );
+}
+
+/** Applied to each `<tr>` in `<tbody>` — a hairline separator plus a quiet
+ * hover wash, so a row reads as scannable without the grid lines a
+ * spreadsheet needs. */
+export const TABLE_ROW = "border-b border-ink-50 transition-colors duration-150 last:border-0 hover:bg-ink-50/60";
+
+// ---------------------------------------------------------------------------
 // Permission refusals
 // ---------------------------------------------------------------------------
 
@@ -332,8 +405,8 @@ export function Field({
 }
 
 const CONTROL =
-  "w-full rounded-md bg-white px-2.5 py-1.5 text-sm ring-1 ring-ink-300 " +
-  "focus:ring-2 focus:ring-brand-500 focus:outline-none";
+  "w-full rounded-md bg-white px-2.5 py-2 text-sm ring-1 ring-ink-300 transition-shadow duration-150 " +
+  "hover:ring-ink-400 focus:ring-2 focus:ring-brand-500 focus:outline-none disabled:bg-ink-50 disabled:text-ink-400 disabled:hover:ring-ink-300";
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>): ReactNode {
   return <input {...props} className={cx(CONTROL, props.className)} />;
@@ -379,7 +452,7 @@ export function Modal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/30 p-4 pt-16">
+    <div className="aos-animate-in fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/30 p-4 pt-16">
       {/* `role="dialog"` and `aria-modal` so a screen reader announces this as
           a dialog rather than as more of the page behind it, and so its title
           is what names it. */}
@@ -388,7 +461,7 @@ export function Modal({
         aria-modal="true"
         aria-labelledby="modal-title"
         className={cx(
-          "w-full rounded-lg bg-white shadow-elevated ring-1 ring-ink-150",
+          "aos-animate-pop w-full rounded-lg bg-white shadow-elevated ring-1 ring-ink-150",
           size === "wide" ? "max-w-3xl" : "max-w-lg",
         )}
       >
@@ -437,7 +510,7 @@ export function ToastProvider({ children }: { children: ReactNode }): ReactNode 
         <div
           role="status"
           className={cx(
-            "fixed bottom-4 left-1/2 z-50 max-w-lg -translate-x-1/2 rounded-lg px-4 py-2.5 text-sm shadow-elevated",
+            "aos-animate-pop fixed bottom-4 left-1/2 z-50 max-w-lg -translate-x-1/2 rounded-lg px-4 py-2.5 text-sm shadow-elevated",
             toast.tone === "bad" ? "bg-red-600 text-white" : "bg-ink-900 text-white",
           )}
         >

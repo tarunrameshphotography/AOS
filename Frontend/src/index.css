@@ -43,6 +43,7 @@
   --color-brand-50: oklch(0.975 0.015 258);
 
   /* The one premium accent — used sparingly (see comment above). */
+  --color-gold-700: oklch(0.5 0.1 76);
   --color-gold-600: oklch(0.6 0.12 78);
   --color-gold-500: oklch(0.73 0.13 82);
   --color-gold-100: oklch(0.95 0.045 92);
@@ -52,6 +53,12 @@
   --radius-lg: 0.875rem;
   --radius-xl: 1.25rem;
 
+  /* Two elevation steps only: a barely-there lift for a surface that is
+     merely hoverable, and the existing --shadow-elevated for the handful of
+     surfaces (primary stat tiles, modals, the one open menu) that should
+     visibly sit above the page. Anything needing a third step is a sign the
+     hierarchy question should be answered with spacing or type, not shadow. */
+  --shadow-soft: 0 1px 3px oklch(0.2 0.02 258 / 0.06);
   --shadow-elevated: 0 4px 16px -4px oklch(0.2 0.02 258 / 0.12), 0 2px 6px -2px oklch(0.2 0.02 258 / 0.08);
 }
 
@@ -95,6 +102,24 @@ body {
 
 .aos-animate-in {
   animation: aos-fade-up 200ms ease-out both;
+}
+
+/* A dialog or menu that appears on top of the page, rather than in place of
+   content already there — a slightly quicker, slightly smaller motion than
+   aos-fade-up so it reads as "arriving" rather than "replacing". */
+@keyframes aos-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.aos-animate-pop {
+  animation: aos-pop-in 150ms ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {

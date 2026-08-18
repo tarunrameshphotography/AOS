@@ -24,7 +24,7 @@ import { useApiQuery } from "../api/hooks.js";
 import type { ApiCase } from "../api/types.js";
 import { lakhs, when } from "../lib.js";
 import { WORKSPACE_QUESTIONS, useSession } from "../session.js";
-import { Badge, Card, Empty, StageBadge } from "../ui/index.js";
+import { Badge, Card, Empty, StageBadge, TABLE_ROW, Table, Td, Th } from "../ui/index.js";
 import { FoundersDashboard } from "./FoundersDashboard.js";
 
 export function WorkspaceHome(): ReactNode {
@@ -278,34 +278,32 @@ function AdminWorkspace({ all }: { all: readonly ApiCase[] }): ReactNode {
         {users.loading ? (
           <Empty>Loading…</Empty>
         ) : (
-          <table className="w-full text-sm">
+          <Table>
             <thead>
-              <tr className="border-b border-ink-100 text-left text-xs text-ink-500">
-                <th className="pb-2 font-medium">User</th>
-                <th className="pb-2 font-medium">Roles</th>
-                <th className="pb-2 font-medium">Cases owned</th>
-                <th className="pb-2 font-medium">Status</th>
+              <tr className="border-b border-ink-150 text-left">
+                <Th>User</Th>
+                <Th>Roles</Th>
+                <Th>Cases owned</Th>
+                <Th>Status</Th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-ink-100">
+            <tbody>
               {users.users.map((user) => (
-                <tr key={user.id}>
-                  <td className="py-2">{user.fullName}</td>
-                  <td className="py-2 text-ink-500">{user.roles.join(", ")}</td>
-                  <td className="tnum py-2">
-                    {all.filter((c) => c.ownerUserId === user.id).length}
-                  </td>
-                  <td className="py-2">
+                <tr key={user.id} className={TABLE_ROW}>
+                  <Td className="font-medium text-ink-900">{user.fullName}</Td>
+                  <Td muted>{user.roles.join(", ")}</Td>
+                  <Td className="tnum">{all.filter((c) => c.ownerUserId === user.id).length}</Td>
+                  <Td>
                     {user.isActive ? (
                       <Badge tone="good">Active</Badge>
                     ) : (
                       <Badge tone="neutral">Deactivated</Badge>
                     )}
-                  </td>
+                  </Td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         )}
       </Card>
 
